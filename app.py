@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-AARAMBH (आरंभ) TDA - Topological Mispricing Detection
+AARAMBH (आरंभ) GEOMETRIC - Latent Equilibrium Manifold
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Topological Data Analysis · Persistent Homology · Structural Mispricing
-Measures structural deformation of the multivariate metric space.
+Manifold Learning · Geometric Distance · Complex System Equilibrium
+Measures distance from the equilibrium structure of a multivariate phase space.
 
 Architecture:
-  1. State Space Construction: Z_t = (Y_t, X_t)
-  2. Rolling Window TDA: Vietoris-Rips complex over state cloud
-  3. Persistent Homology: Wasserstein distance D_t vs Equilibrium
-  4. Composite Mispricing: Ω_t = αZ_t + βD_t + γS_t
+  1. Manifold Learning: Kernel PCA maps X_t to low-dim ψ_t
+  2. Equilibrium Surface: y_fair = g(ψ_t)
+  3. Geometric Distance: D_t = || X_t - Π_M(X_t) ||
+  4. Mean Reversion: OU process estimating decay speed (κ)
+  5. Metric Attribution: ∇f(X) via numerical Jacobian
 """
 
 import streamlit as st
@@ -36,29 +37,23 @@ except ImportError:
     STATSMODELS_AVAILABLE = False
 
 try:
-    from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-    from sklearn.linear_model import RidgeCV, HuberRegressor
+    from sklearn.metrics import mean_squared_error, r2_score
+    from sklearn.linear_model import Ridge
     from sklearn.preprocessing import StandardScaler
+    from sklearn.decomposition import KernelPCA
     SKLEARN_AVAILABLE = True
 except ImportError:
     SKLEARN_AVAILABLE = False
 
-try:
-    import ripser
-    import persim
-    TDA_AVAILABLE = True
-except ImportError:
-    TDA_AVAILABLE = False
-
 # ── Constants ───────────────────────────────────────────────────────────────
-VERSION = "v3.0.0-TDA"
-PRODUCT_NAME = "Aarambh TDA"
+VERSION = "v4.0.0-Manifold"
+PRODUCT_NAME = "Aarambh Geometric"
 COMPANY = "Hemrek Capital"
 
 # ── Page Config ─────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="AARAMBH TDA | Topological Mispricing",
-    page_icon="🍩",
+    page_title="AARAMBH | Geometric Equilibrium",
+    page_icon="🌌",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -200,16 +195,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # MATHEMATICAL PRIMITIVES
 # ══════════════════════════════════════════════════════════════════════════════
 
 def kalman_filter_1d(observations, process_var=None, measurement_var=None):
-    """
-    1D Kalman filter for structural index smoothing.
-    Returns: (filtered_state, kalman_gains, estimate_variances)
-    """
+    """1D Kalman filter for conviction smoothing."""
     obs = np.asarray(observations, dtype=np.float64)
     n = len(obs)
     if n == 0:
@@ -244,59 +235,55 @@ def kalman_filter_1d(observations, process_var=None, measurement_var=None):
     
     return filtered, gains, variances
 
-def compute_tda_distance(cloud_t, cloud_eq):
+def ornstein_uhlenbeck_estimate(series, dt=1.0):
     """
-    Computes Wasserstein distance between the Persistent Homology diagrams
-    of the current state cloud and the equilibrium state cloud.
-    Provides mathematical fallback if ripser is unavailable.
+    Estimate OU parameters: dx = κ(μ−x)dt + σdW.
+    Returns: (kappa, mu, sigma)
+    Used to estimate mean-reversion speed (κ).
     """
-    if TDA_AVAILABLE:
-        try:
-            dgms_t = ripser.ripser(cloud_t, maxdim=1)['dgms']
-            dgms_eq = ripser.ripser(cloud_eq, maxdim=1)['dgms']
-
-            # Wasserstein for H0 (Connected Components)
-            d0 = persim.wasserstein(dgms_t[0], dgms_eq[0], matching=False)
-
-            # Wasserstein for H1 (Loops)
-            if len(dgms_t) > 1 and len(dgms_eq) > 1:
-                h1_t = dgms_t[1] if len(dgms_t[1]) > 0 else np.array([[0, 0]])
-                h1_eq = dgms_eq[1] if len(dgms_eq[1]) > 0 else np.array([[0, 0]])
-                d1 = persim.wasserstein(h1_t, h1_eq, matching=False)
-            else:
-                d1 = 0.0
-
-            return d0 + d1
-        except Exception:
-            pass
-            
-    # Topological Proxy Fallback: Frobenius norm of correlation manifold deformation
-    # This precisely captures the geometric distortion of the point cloud
-    c_t = np.corrcoef(cloud_t, rowvar=False)
-    c_eq = np.corrcoef(cloud_eq, rowvar=False)
-    c_t = np.nan_to_num(c_t)
-    c_eq = np.nan_to_num(c_eq)
-    return np.linalg.norm(c_t - c_eq)
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TOPOLOGICAL PRICING ENGINE (TDA)
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TopologicalPricingEngine:
-    """
-    TDA-based Structural Inference Engine.
+    x = np.asarray(series, dtype=np.float64)
+    x = x[np.isfinite(x)]
+    if len(x) < 20: return 0.05, 0.0, max(np.std(x), 1e-6) if len(x) > 1 else (0.05, 0.0, 1.0)
     
-    1. Constructs Z_t = (Y_t, X_t) state space.
-    2. Computes Persistent Homology over expanding/sliding windows.
-    3. Calculates D_t = W(T_t, T_eq) (Wasserstein distance).
-    4. Combines Z_t (Statistical), D_t (Topological), S_t (Surprise) into Ω_t.
+    x_lag, x_curr = x[:-1], x[1:]
+    n = len(x_lag)
+    sx, sy = np.sum(x_lag), np.sum(x_curr)
+    sxx, sxy = np.sum(x_lag ** 2), np.sum(x_lag * x_curr)
+    
+    denom = n * sxx - sx ** 2
+    if abs(denom) < 1e-12: return 0.05, np.mean(x), max(np.std(x), 1e-6)
+    
+    a = (n * sxy - sx * sy) / denom
+    b = (sy * sxx - sx * sxy) / denom
+    a = np.clip(a, 1e-6, 1.0 - 1e-6)
+    
+    kappa = -np.log(a) / dt
+    mu = b / (1 - a)
+    residuals = x_curr - a * x_lag - b
+    sigma = np.sqrt(max(np.var(residuals) * 2 * kappa / (1 - a ** 2), 1e-12))
+    
+    return max(kappa, 1e-4), mu, max(sigma, 1e-6)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MANIFOLD PRICING ENGINE (GEOMETRIC)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ManifoldPricingEngine:
+    """
+    Geometric Inference Engine.
+    
+    1. Manifold Learning: Kernel PCA (RBF) maps X -> ψ
+    2. Equilibrium Surface: Ridge Regressor y = g(ψ)
+    3. Projection Distance: D_t = ||X_t - KPCA_inv(KPCA(X_t))||_2
+    4. Deviation Dynamics: OU decay rate (κ) on Δ_t = y_t - y_fair
+    5. Gradient Attribution: ∇f(X) via numerical Jacobian
     """
     
     LOOKBACKS = [5, 10, 20, 50, 100]
-    MIN_TRAIN_SIZE = 30 
+    MIN_TRAIN_SIZE = 40
     
     def __init__(self):
-        self.scaler = StandardScaler() if SKLEARN_AVAILABLE else None
+        self.scaler = None
     
     def fit(self, X, y, feature_names=None, progress_callback=None):
         start_time = time.time()
@@ -307,22 +294,22 @@ class TopologicalPricingEngine:
         
         n = self.n_samples
         self.predictions = np.full(n, np.nan)
+        self.D_t_series = np.zeros(n)
+        self.top_drivers = np.full(n, "N/A", dtype=object)
         
-        # 1. Walk-Forward Regression to establish statistical baseline (Y_fair)
-        refit_step = 5 
-        last_models = {'ridge': None, 'huber': None, 'ols': None}
+        refit_step = 5
         current_scaler = None
+        kpca = None
+        surface_model = None
         
         for t in range(n):
             if progress_callback and t % max(1, n // 10) == 0:
-                progress_callback(t / n * 0.4, f"Walk-forward modeling: {t}/{n}...")
+                progress_callback(t / n * 0.6, f"Learning equilibrium manifold: {t}/{n}...")
                 
             if t < self.MIN_TRAIN_SIZE:
                 self.predictions[t] = np.mean(y[:t + 1])
+                self.D_t_series[t] = 0.0
             else:
-                X_pred = X[t:t + 1]
-                preds_at_t = []
-                
                 if t == self.MIN_TRAIN_SIZE or t % refit_step == 0:
                     X_train = X[:t]
                     y_train = y[:t]
@@ -330,99 +317,84 @@ class TopologicalPricingEngine:
                         scaler_t = StandardScaler()
                         X_train_s = scaler_t.fit_transform(X_train)
                         current_scaler = scaler_t
+                        
                         try:
-                            ridge = RidgeCV(alphas=[0.01, 0.1, 1.0, 10.0], cv=None)
-                            ridge.fit(X_train_s, y_train)
-                            last_models['ridge'] = ridge
-                        except Exception: pass
-                        try:
-                            huber = HuberRegressor(epsilon=1.35, max_iter=50)
-                            huber.fit(X_train_s, y_train)
-                            last_models['huber'] = huber
-                        except Exception: pass
-                    
-                    if STATSMODELS_AVAILABLE:
-                        try:
-                            X_train_c = np.insert(X_train, 0, 1.0, axis=1)
-                            ols = sm.OLS(y_train, X_train_c).fit()
-                            last_models['ols'] = ols
-                        except Exception: pass
+                            # 1. Manifold Learning: Φ : X -> R^k
+                            k = min(4, X.shape[1])
+                            kpca = KernelPCA(n_components=k, kernel='rbf', fit_inverse_transform=True, gamma=1.0/X.shape[1])
+                            psi_train = kpca.fit_transform(X_train_s)
+                            
+                            # 2. Equilibrium Surface: y_fair = g(ψ)
+                            surface_model = Ridge(alpha=1.0)
+                            surface_model.fit(psi_train, y_train)
+                        except Exception:
+                            pass
                 
-                if SKLEARN_AVAILABLE and current_scaler is not None:
-                    X_pred_s = current_scaler.transform(X_pred)
-                    if last_models['ridge']: preds_at_t.append(last_models['ridge'].predict(X_pred_s)[0])
-                    if last_models['huber']: preds_at_t.append(last_models['huber'].predict(X_pred_s)[0])
-                
-                if STATSMODELS_AVAILABLE and last_models['ols']:
-                    try: preds_at_t.append(last_models['ols'].predict(np.insert(X_pred, 0, 1.0, axis=1))[0])
-                    except Exception: pass
-                
-                self.predictions[t] = np.mean(preds_at_t) if preds_at_t else np.mean(y[:t + 1])
+                # Projection and Prediction for current state t
+                X_pred = X[t:t + 1]
+                if SKLEARN_AVAILABLE and current_scaler is not None and kpca is not None and surface_model is not None:
+                    try:
+                        X_pred_s = current_scaler.transform(X_pred)
+                        
+                        # Project onto manifold
+                        psi_test = kpca.transform(X_pred_s)
+                        
+                        # Geometric Distance D_t = | X_t - Π_M(X_t) |
+                        X_reconstructed = kpca.inverse_transform(psi_test)
+                        self.D_t_series[t] = np.linalg.norm(X_pred_s - X_reconstructed)
+                        
+                        # Predict Fair Value
+                        y_fair = surface_model.predict(psi_test)[0]
+                        self.predictions[t] = y_fair
+                        
+                        # 5. Multi-Metric Contribution Attribution ∇f(X_t)
+                        # Numerical Jacobian approximation
+                        delta_y = np.zeros(X.shape[1])
+                        epsilon = 0.01
+                        for i in range(X.shape[1]):
+                            X_plus = X_pred_s.copy()
+                            X_plus[0, i] += epsilon
+                            y_plus = surface_model.predict(kpca.transform(X_plus))[0]
+                            delta_y[i] = (y_plus - y_fair) / epsilon
+                            
+                        top_idx = np.argmax(np.abs(delta_y))
+                        self.top_drivers[t] = self.feature_names[top_idx][:12] # Limit length for UI
+                        
+                    except Exception:
+                        self.predictions[t] = self.predictions[t-1] if t > 0 else y[t]
+                else:
+                    self.predictions[t] = np.mean(y[:t + 1])
         
+        # Deviation Δ_t = y_t - y_fair
         self.residuals = y - self.predictions
         
-        # 2. State Space Construction
         if progress_callback:
-            progress_callback(0.4, "Constructing Topological State Space...")
+            progress_callback(0.7, "Estimating OU Manifold Dynamics...")
             
-        Z_state = np.column_stack([y, X])
-        baseline_cloud = Z_state[:self.MIN_TRAIN_SIZE]
-        base_scaled = StandardScaler().fit_transform(baseline_cloud)
-        
-        # Arrays for TDA components
-        self.D_t_series = np.zeros(n)
-        self.S_t_series = np.zeros(n)
-        self.lookback_data = {lb: {'D_t': np.zeros(n), 'Z_t': np.zeros(n)} for lb in self.LOOKBACKS}
-        
-        # 3. Computing TDA (Wasserstein Distance) across multi-scales
-        tda_step = 3
-        last_D = {lb: 0.0 for lb in self.LOOKBACKS}
-        
+        self.lookback_data = {lb: {'Z_t': np.zeros(n)} for lb in self.LOOKBACKS}
         for t in range(self.MIN_TRAIN_SIZE, n):
-            if progress_callback and t % max(1, n // 10) == 0:
-                progress_callback(0.4 + (t/n)*0.4, f"Computing persistent homology: {t}/{n}...")
-                
-            # Surprise Index (S_t) - local statistical shock
-            if t >= 10:
-                recent_M = self.residuals[t-10:t]
-                std_M = np.std(recent_M) + 1e-8
-                self.S_t_series[t] = abs(self.residuals[t] - self.residuals[t-1]) / std_M
-            
-            # Topological Deformation (D_t)
-            if t % tda_step == 0:
-                for lb in self.LOOKBACKS:
-                    if t >= lb:
-                        window_t = Z_state[t-lb:t]
-                        # Subsample to keep Vietoris-Rips extremely fast
-                        if len(window_t) > 40:
-                            idx = np.linspace(0, len(window_t)-1, 40, dtype=int)
-                            window_t = window_t[idx]
-                        
-                        win_scaled = StandardScaler().fit_transform(window_t)
-                        last_D[lb] = compute_tda_distance(win_scaled, base_scaled)
-            
             for lb in self.LOOKBACKS:
-                self.lookback_data[lb]['D_t'][t] = last_D[lb]
-                
-                # Compute rolling statistical z-score of residual for this lookback
                 if t >= lb:
                     rmean = np.mean(self.residuals[t-lb:t])
                     rstd = np.std(self.residuals[t-lb:t]) + 1e-8
                     self.lookback_data[lb]['Z_t'][t] = (self.residuals[t] - rmean) / rstd
         
-        self.D_t_series = self.lookback_data[20]['D_t']  # Main structural deformation
+        # 4. OU Mean Reversion Speed (κ) estimation
+        oos_resid = self.residuals[self.MIN_TRAIN_SIZE:]
+        kappa, mu, sigma = ornstein_uhlenbeck_estimate(oos_resid)
+        self.kappa = kappa
         
         if progress_callback:
-            progress_callback(0.8, "Finalizing Composite Structural Index...")
+            progress_callback(0.9, "Synthesizing Topological Score...")
             
         self._compute_model_stats()
         self._compute_composite_mispricing()
-        self._compute_topological_breadth()
-        self._detect_structural_breaks()
+        self._compute_manifold_breadth()
+        self._detect_regime_shifts()
         self._compute_forward_returns()
         
         elapsed = time.time() - start_time
-        logging.info(f"TDA engine [{n} obs, {len(self.feature_names)} features] in {elapsed:.1f}s")
+        logging.info(f"Geometric engine [{n} obs, {len(self.feature_names)} features] in {elapsed:.1f}s")
         
         if progress_callback:
             progress_callback(1.0, "Done.")
@@ -442,27 +414,22 @@ class TopologicalPricingEngine:
             self.model_stats = {
                 'r2_oos': r2_score(y_valid, p_valid),
                 'rmse_oos': np.sqrt(mean_squared_error(y_valid, p_valid)),
-                'avg_model_spread': np.mean(self.D_t_series[oos_mask]), # Repurposed to D_t mean
+                'avg_model_spread': np.mean(self.D_t_series[oos_mask]), # Mean D_t distance
             }
         else:
             self.model_stats = {'r2_oos': 0.0, 'rmse_oos': 0.0, 'avg_model_spread': 0.0}
     
     def _compute_composite_mispricing(self):
         """
-        Calculates Ω_t = αZ_t + βD_t + γS_t
+        Calculates geometric conviction: Ω_t = αZ_t + βD_t * sign(Z_t)
+        Distance from manifold amplifies the standard mispricing score.
         """
-        n = len(self.y)
-        
         D_z = (self.D_t_series - np.mean(self.D_t_series)) / (np.std(self.D_t_series) + 1e-8)
-        S_z = (self.S_t_series - np.mean(self.S_t_series)) / (np.std(self.S_t_series) + 1e-8)
         Z_stat = (self.residuals - np.mean(self.residuals)) / (np.std(self.residuals) + 1e-8)
         
-        # The topological and surprise terms amplify the statistical direction
-        alpha, beta, gamma = 15.0, 10.0, 5.0
+        alpha, beta = 20.0, 15.0
         
-        # Negative Omega = Undervalued (Buy), Positive Omega = Overvalued (Sell)
-        # Z_stat is (Y - Y_fair), so positive Z_stat means price > fair (Overvalued)
-        Omega_raw = (alpha * Z_stat) + (beta * D_z * np.sign(Z_stat)) + (gamma * S_z * np.sign(Z_stat))
+        Omega_raw = (alpha * Z_stat) + (beta * D_z * np.sign(Z_stat))
         
         filtered_omega, _, variances = kalman_filter_1d(Omega_raw)
         kalman_std = np.sqrt(np.maximum(variances, 0))
@@ -471,9 +438,9 @@ class TopologicalPricingEngine:
             'Actual': self.y,
             'FairValue': self.predictions,
             'Residual': self.residuals,
-            'ModelSpread': self.D_t_series, # Map D_t to ModelSpread for UI compat
+            'ModelSpread': self.D_t_series, # Map to Dist for UI
             'AvgZ': Z_stat,
-            'Surprise': self.S_t_series,
+            'TopDriver': self.top_drivers,
             'ConvictionRaw': Omega_raw,
             'ConvictionScore': np.clip(filtered_omega, -100, 100),
             'ConvictionUpper': np.clip(filtered_omega + 1.96 * kalman_std, -100, 100),
@@ -489,52 +456,37 @@ class TopologicalPricingEngine:
             else: regimes.append('NEUTRAL')
         self.ts_data['Regime'] = regimes
 
-    def _compute_topological_breadth(self):
-        """
-        Multi-Scale Structure tracking across different persistent homology window sizes.
-        Replaces simple moving averages with topological zone clustering.
-        """
+    def _compute_manifold_breadth(self):
+        """Multi-Scale Structure tracking combining Z_t and Manifold D_t"""
         n = len(self.y)
         oversold_count = np.zeros(n)
         overbought_count = np.zeros(n)
-        extreme_os = np.zeros(n)
-        extreme_ob = np.zeros(n)
+        
+        D_threshold = np.percentile(self.D_t_series[self.MIN_TRAIN_SIZE:], 75)
         
         for i in range(n):
             for lb in self.LOOKBACKS:
                 z = self.lookback_data[lb]['Z_t'][i]
-                d = self.lookback_data[lb]['D_t'][i]
+                d = self.D_t_series[i]
+                d_is_high = d > D_threshold
                 
-                # TDA logic: statistical mispricing amplified by high topological distance
-                d_is_high = d > np.percentile(self.lookback_data[lb]['D_t'][:max(i+1, 20)], 75)
-                
-                if z < -1.5 and d_is_high:
-                    extreme_os[i] += 1
-                    oversold_count[i] += 1
-                elif z < -0.5:
-                    oversold_count[i] += 1
+                if z < -1.5 and d_is_high: oversold_count[i] += 1
+                elif z < -0.5: oversold_count[i] += 1
                     
-                if z > 1.5 and d_is_high:
-                    extreme_ob[i] += 1
-                    overbought_count[i] += 1
-                elif z > 0.5:
-                    overbought_count[i] += 1
+                if z > 1.5 and d_is_high: overbought_count[i] += 1
+                elif z > 0.5: overbought_count[i] += 1
 
         num_lb = len(self.LOOKBACKS)
         self.ts_data['OversoldBreadth'] = oversold_count / num_lb * 100
         self.ts_data['OverboughtBreadth'] = overbought_count / num_lb * 100
         
-        # UI Compatibility keys
         self.ts_data['BuySignalBreadth'] = np.where(self.ts_data['OversoldBreadth'] > 60, 1, 0)
         self.ts_data['SellSignalBreadth'] = np.where(self.ts_data['OverboughtBreadth'] > 60, 1, 0)
         self.ts_data['IsPivotTop'] = False
         self.ts_data['IsPivotBottom'] = False
 
-    def _detect_structural_breaks(self):
-        """
-        Topological signals often appear before statistical models fail.
-        Detects divergences where D_t spikes, preceding a regime shift.
-        """
+    def _detect_regime_shifts(self):
+        """Regime shifts correspond to topological changes in manifold distances."""
         n = len(self.y)
         bull_div = np.zeros(n, dtype=bool)
         bear_div = np.zeros(n, dtype=bool)
@@ -542,20 +494,16 @@ class TopologicalPricingEngine:
         D_thresh = np.percentile(self.D_t_series[self.MIN_TRAIN_SIZE:], 90)
         
         for i in range(self.MIN_TRAIN_SIZE, n):
-            # If structural distance spikes while undervalued -> Early Warning Bullish
             if self.D_t_series[i] > D_thresh:
-                if self.ts_data['AvgZ'].iloc[i] < -1.0:
-                    bull_div[i] = True
-                elif self.ts_data['AvgZ'].iloc[i] > 1.0:
-                    bear_div[i] = True
+                if self.ts_data['AvgZ'].iloc[i] < -1.0: bull_div[i] = True
+                elif self.ts_data['AvgZ'].iloc[i] > 1.0: bear_div[i] = True
                     
         self.ts_data['BullishDiv'] = bull_div
         self.ts_data['BearishDiv'] = bear_div
         
-        # We replace OU Projection mathematically with a topological decay path
-        # Equation: D_t relaxes back to equilibrium 
+        # OU Decay Path Projection
         current_r = self.residuals[-1]
-        self.ou_projection = current_r * np.exp(-0.05 * np.arange(1, 91))
+        self.ou_projection = current_r * np.exp(-self.kappa * np.arange(1, 91))
         
     def _compute_forward_returns(self):
         n = len(self.y)
@@ -597,11 +545,11 @@ class TopologicalPricingEngine:
             'fair_value': current['FairValue'],
             'actual': current['Actual'],
             'avg_z': current['AvgZ'],
-            'model_spread': current['ModelSpread'],
+            'model_spread': current['ModelSpread'], # Maps to D_t geometric distance
             'has_bullish_div': current['BullishDiv'],
             'has_bearish_div': current['BearishDiv'],
-            'ou_half_life': current['ModelSpread'], # Replaced by D_t mathematically
-            'hurst': current['Surprise'],           # Replaced by S_t mathematically
+            'top_driver': current['TopDriver'],
+            'kappa': self.kappa,
         }
     
     def get_model_stats(self):
@@ -711,16 +659,15 @@ def render_landing_page():
     with col1:
         st.markdown("""
         <div class='metric-card purple' style='min-height: 280px; justify-content: flex-start;'>
-            <h3 style='color: var(--purple); margin-bottom: 0.5rem;'>🎯 Walk-Forward Fair Value</h3>
+            <h3 style='color: var(--purple); margin-bottom: 0.5rem;'>🌌 Manifold Learning</h3>
             <p style='color: var(--text-muted); font-size: 0.9rem; line-height: 1.6;'>
-                v3.0 uses expanding-window regression: at each time T, the model only sees data up to T.
-                No look-ahead bias. The R² you see is out-of-sample.
+                Instead of linear regression, the engine learns a low-dimensional manifold embedded in high-dimensional phase space.
             </p>
             <br>
             <p style='color: var(--text-secondary); font-size: 0.85rem;'>
-                <strong>Ensemble:</strong> Ridge + Huber + OLS<br>
-                <strong>Validation:</strong> Walk-forward OOS<br>
-                <strong>Z-Score:</strong> Statistical mispricing
+                <strong>Method:</strong> Kernel PCA (RBF)<br>
+                <strong>Surface:</strong> Equilibrium mapping g(ψ)<br>
+                <strong>Attribution:</strong> ∇f(X) Jacobian
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -728,16 +675,15 @@ def render_landing_page():
     with col2:
         st.markdown("""
         <div class='metric-card info' style='min-height: 280px; justify-content: flex-start;'>
-            <h3 style='color: var(--info-cyan); margin-bottom: 0.5rem;'>📉 Topological Data Analysis</h3>
+            <h3 style='color: var(--info-cyan); margin-bottom: 0.5rem;'>📐 Geometric Distance</h3>
             <p style='color: var(--text-muted); font-size: 0.9rem; line-height: 1.6;'>
-                Instead of assuming a statistical model, we study the shape of the data.
-                Persistent homology tracks structural deformation to detect mispricing regimes.
+                Mispricing isn't just a statistical gap; it's a structural deformation. We measure distance from the latent equilibrium geometry.
             </p>
             <br>
             <p style='color: var(--text-secondary); font-size: 0.85rem;'>
-                <strong>Method:</strong> Vietoris-Rips Complex<br>
-                <strong>Metric:</strong> Wasserstein Distance (D_t)<br>
-                <strong>Multi-Scale:</strong> Timeframe homology
+                <strong>Projection:</strong> | Z_t - Π_M(Z_t) |<br>
+                <strong>Metric:</strong> D_t (Manifold Dist)<br>
+                <strong>Dynamics:</strong> OU Decay Speed (κ)
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -745,14 +691,13 @@ def render_landing_page():
     with col3:
         st.markdown("""
         <div class='metric-card primary' style='min-height: 280px; justify-content: flex-start;'>
-            <h3 style='color: var(--primary-color); margin-bottom: 0.5rem;'>📊 Composite Mispricing (Ω)</h3>
+            <h3 style='color: var(--primary-color); margin-bottom: 0.5rem;'>📊 Composite Mispricing</h3>
             <p style='color: var(--text-muted); font-size: 0.9rem; line-height: 1.6;'>
-                Integrates statistical Z-scores with Wasserstein distance of persistence diagrams
-                and Information Surprise to form an ultimate structural conviction score.
+                Integrates statistical Z-scores with structural distance D_t to form an ultimate geometric conviction score.
             </p>
             <br>
             <p style='color: var(--text-secondary); font-size: 0.85rem;'>
-                <strong>Equation:</strong> Ω_t = αZ_t + βD_t + γS_t<br>
+                <strong>Equation:</strong> Ω_t = αZ_t + βD_t<br>
                 <strong>Smoothing:</strong> Adaptive Kalman<br>
                 <strong>Range:</strong> -100 to +100
             </p>
@@ -764,10 +709,9 @@ def render_landing_page():
     <div class='info-box'>
         <h4>🚀 Getting Started</h4>
         <p>Use the <strong>Sidebar</strong> to load data (CSV/Excel or Google Sheet).
-        Select a <strong>Target</strong> and <strong>Predictors</strong>, then click <strong>Apply</strong> to run the topological engine.</p>
+        Select a <strong>Target</strong> and <strong>Predictors</strong>, then click <strong>Apply</strong> to run the geometric engine.</p>
     </div>
     """, unsafe_allow_html=True)
-
 
 def render_footer():
     utc_now = datetime.now()
@@ -784,7 +728,7 @@ def main():
         st.markdown("""
         <div style="text-align: center; padding: 1rem 0; margin-bottom: 1rem;">
             <div style="font-size: 1.75rem; font-weight: 800; color: #FFC300;">AARAMBH</div>
-            <div style="color: #888888; font-size: 0.75rem; margin-top: 0.25rem;">आरंभ | Topological Inference</div>
+            <div style="color: #888888; font-size: 0.75rem; margin-top: 0.25rem;">आरंभ | Geometric Inference</div>
         </div>
         """, unsafe_allow_html=True)
         st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
@@ -816,8 +760,8 @@ def main():
     if df is None:
         st.markdown("""
         <div class="premium-header">
-            <h1>AARAMBH : Topological Inference</h1>
-            <div class="tagline">State Space Homology · Structural Deformation · TDA Conviction | Quantitative Reversal Analysis</div>
+            <h1>AARAMBH : Geometric Inference</h1>
+            <div class="tagline">Latent Equilibrium Manifold · Geometric Distance · Complex System Equilibrium</div>
         </div>
         """, unsafe_allow_html=True)
         render_landing_page()
@@ -896,7 +840,7 @@ def main():
         <div class='info-box'>
             <p style='font-size: 0.8rem; margin: 0; color: var(--text-muted); line-height: 1.5;'>
                 <strong>Version:</strong> {VERSION}<br>
-                <strong>Engine:</strong> TDA · Persistent Homology<br>
+                <strong>Engine:</strong> Latent Manifold · OU Reversion<br>
                 <strong>Lookbacks:</strong> 5D, 10D, 20D, 50D, 100D
             </p>
         </div>
@@ -909,8 +853,8 @@ def main():
     
     st.markdown("""
     <div class="premium-header">
-        <h1>AARAMBH : Topological Inference</h1>
-        <div class="tagline">State Space Homology · Structural Deformation · TDA Conviction | Quantitative Reversal Analysis</div>
+        <h1>AARAMBH : Geometric Inference</h1>
+        <div class="tagline">Latent Equilibrium Manifold · Geometric Distance · Complex System Equilibrium</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -936,20 +880,20 @@ def main():
     data = clean_data(df, active_target, feature_cols, active_date if active_date != "None" else None)
     
     if len(data) < 80:
-        st.error("Need 80+ data points for topological analysis.")
+        st.error("Need 80+ data points for geometric manifold analysis.")
         return
     
     X, y = data[feature_cols].values, data[active_target].values
     cache_key = f"{active_target}|{'|'.join(sorted(feature_cols))}|{len(data)}"
     
     if 'engine_cache' not in st.session_state or st.session_state.engine_cache != cache_key:
-        with st.spinner("Preparing TDA engine..."):
-            progress_bar = st.progress(0, text="Initializing topological state space...")
+        with st.spinner("Preparing Geometric engine..."):
+            progress_bar = st.progress(0, text="Initializing manifold learning space...")
             
             def update_progress(frac, text):
                 progress_bar.progress(frac, text=text)
             
-            engine = TopologicalPricingEngine()
+            engine = ManifoldPricingEngine()
             engine.fit(X, y, feature_names=feature_cols, progress_callback=update_progress)
             
             st.session_state.engine = engine
@@ -967,18 +911,18 @@ def main():
     else: ts['Date'] = np.arange(len(ts))
     
     # ═══════════════════════════════════════════════════════════════════════
-    # METRIC CARDS (UI UNCHANGED, BACKEND DYNAMICALLY MAPS TDA CONCEPTS)
+    # METRIC CARDS (UI UNCHANGED, BACKEND DYNAMICALLY MAPS GEOMETRIC CONCEPTS)
     # ═══════════════════════════════════════════════════════════════════════
     st.markdown("<br>", unsafe_allow_html=True)
     c1, c2, c3, c4, c5 = st.columns([1, 1, 1, 1, 2])
     
     with c1:
         os_color = "success" if signal['oversold_breadth'] > 60 else "neutral"
-        st.markdown(f'<div class="metric-card {os_color}"><h4>TDA Undervalued</h4><h2>{signal["oversold_breadth"]:.0f}%</h2><div class="sub-metric">Multi-Scale Support</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card {os_color}"><h4>Geom Undervalued</h4><h2>{signal["oversold_breadth"]:.0f}%</h2><div class="sub-metric">Multi-Scale Support</div></div>', unsafe_allow_html=True)
     
     with c2:
         ob_color = "danger" if signal['overbought_breadth'] > 60 else "neutral"
-        st.markdown(f'<div class="metric-card {ob_color}"><h4>TDA Overvalued</h4><h2>{signal["overbought_breadth"]:.0f}%</h2><div class="sub-metric">Multi-Scale Support</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card {ob_color}"><h4>Geom Overvalued</h4><h2>{signal["overbought_breadth"]:.0f}%</h2><div class="sub-metric">Multi-Scale Support</div></div>', unsafe_allow_html=True)
     
     with c3:
         conv_color = "success" if signal['conviction_score'] < -40 else "danger" if signal['conviction_score'] > 40 else "neutral"
@@ -994,24 +938,23 @@ def main():
     
     d1, d2, d3, d4 = st.columns(4)
     with d1:
-        hl = signal['ou_half_life']
-        st.markdown(f'<div class="metric-card primary"><h4>W-Distance (D_t)</h4><h2>{hl:.3f}</h2><div class="sub-metric">Topology Deformation</div></div>', unsafe_allow_html=True)
+        hl = signal['model_spread']
+        st.markdown(f'<div class="metric-card primary"><h4>Manifold Dist (D_t)</h4><h2>{hl:.3f}</h2><div class="sub-metric">Geometric Distance</div></div>', unsafe_allow_html=True)
     
     with d2:
-        h = signal['hurst']
-        h_label = 'Shock' if h > 2.0 else 'Stable' if h < 0.5 else 'Elevated'
-        h_class = 'danger' if h > 2.0 else 'neutral' if h < 0.5 else 'warning'
-        st.markdown(f'<div class="metric-card {h_class}"><h4>Surprise (S_t)</h4><h2>{h:.2f}</h2><div class="sub-metric">{h_label}</div></div>', unsafe_allow_html=True)
+        kappa_val = signal['kappa']
+        k_label = 'Fast' if kappa_val > 0.1 else 'Slow' if kappa_val < 0.02 else 'Moderate'
+        k_class = 'success' if kappa_val > 0.1 else 'warning' if kappa_val < 0.02 else 'neutral'
+        st.markdown(f'<div class="metric-card {k_class}"><h4>Reversion (κ)</h4><h2>{kappa_val:.3f}</h2><div class="sub-metric">{k_label} OU Decay</div></div>', unsafe_allow_html=True)
     
     with d3:
         r2 = model_stats['r2_oos']
         r2_class = 'success' if r2 > 0.7 else 'warning' if r2 > 0.4 else 'danger'
-        st.markdown(f'<div class="metric-card {r2_class}"><h4>OOS R²</h4><h2>{r2:.3f}</h2><div class="sub-metric">Walk-Forward Fit</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card {r2_class}"><h4>Manifold R²</h4><h2>{r2:.3f}</h2><div class="sub-metric">Surface Fit (OOS)</div></div>', unsafe_allow_html=True)
     
     with d4:
-        spread = model_stats['avg_model_spread']
-        sp_class = 'success' if spread < 0.5 else 'warning' if spread < 1.5 else 'danger'
-        st.markdown(f'<div class="metric-card {sp_class}"><h4>Baseline D_t</h4><h2>{spread:.3f}</h2><div class="sub-metric">Mean Structural Dist</div></div>', unsafe_allow_html=True)
+        driver = signal['top_driver']
+        st.markdown(f'<div class="metric-card purple"><h4>Top Driver</h4><h2 style="font-size: 1.25rem;">{driver}</h2><div class="sub-metric">∇f(X) Jacobian Eval</div></div>', unsafe_allow_html=True)
     
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     
@@ -1056,8 +999,8 @@ def main():
         if 'ConvictionRaw' in ts_filtered.columns:
             fig_conv.add_trace(go.Scatter(x=x_axis, y=ts_filtered['ConvictionRaw'], mode='lines', name='Raw Ω_t', line=dict(color='#555', width=1, dash='dot'), opacity=0.5))
         
-        fig_conv.add_hline(y=15, line_dash="dash", line_color="rgba(239,68,68,0.5)")
-        fig_conv.add_hline(y=-15, line_dash="dash", line_color="rgba(16,185,129,0.5)")
+        fig_conv.add_hline(y=40, line_dash="dash", line_color="rgba(239,68,68,0.5)")
+        fig_conv.add_hline(y=-40, line_dash="dash", line_color="rgba(16,185,129,0.5)")
         fig_conv.add_hline(y=0, line_color="rgba(255,255,255,0.3)")
         fig_conv.update_layout(title="Composite Structure Index (Kalman-Filtered)", height=400, xaxis_title=x_title, yaxis_title="Score", yaxis=dict(range=[-100, 100]))
         st.plotly_chart(update_chart_theme(fig_conv), use_container_width=True)
@@ -1071,10 +1014,10 @@ def main():
             fig_raw.add_trace(go.Scatter(x=x_axis, y=ts_filtered['ConvictionRaw'].clip(upper=0), fill='tozeroy', fillcolor='rgba(16,185,129,0.15)', line=dict(width=0), showlegend=False))
             conv_colors = ['#10b981' if c < -40 else '#ef4444' if c > 40 else '#888' for c in ts_filtered['ConvictionRaw']]
             fig_raw.add_trace(go.Scatter(x=x_axis, y=ts_filtered['ConvictionRaw'], mode='lines+markers', name='Raw Ω_t', line=dict(color='#FFC300', width=2), marker=dict(size=4, color=conv_colors)))
-            fig_raw.add_hline(y=15, line_dash="dash", line_color="rgba(239,68,68,0.5)")
-            fig_raw.add_hline(y=-15, line_dash="dash", line_color="rgba(16,185,129,0.5)")
+            fig_raw.add_hline(y=40, line_dash="dash", line_color="rgba(239,68,68,0.5)")
+            fig_raw.add_hline(y=-40, line_dash="dash", line_color="rgba(16,185,129,0.5)")
             fig_raw.add_hline(y=0, line_color="rgba(255,255,255,0.3)")
-            fig_raw.update_layout(title="Base Structural Score", height=400, xaxis_title=x_title, yaxis_title="Score", yaxis=dict(range=[-50, 50]))
+            fig_raw.update_layout(title="Base Structural Score", height=400, xaxis_title=x_title, yaxis_title="Score", yaxis=dict(range=[-100, 100]))
             st.plotly_chart(update_chart_theme(fig_raw), use_container_width=True)
 
         st.markdown("---")
@@ -1095,13 +1038,13 @@ def main():
             st.markdown(f"""
             <div class="guide-box {regime_box_class}">
                 <strong>Current: {curr_regime}</strong><br><br>
-                {'Topological and statistical metrics align on deep undervaluation.' if 'OVERSOLD' in curr_regime else 
-                 'Topological and statistical metrics align on extreme overvaluation.' if 'OVERBOUGHT' in curr_regime else
+                {'Manifold surface and statistical distance align on deep geometric undervaluation.' if 'OVERSOLD' in curr_regime else 
+                 'Manifold surface and statistical distance align on extreme geometric overvaluation.' if 'OVERBOUGHT' in curr_regime else
                  'System remains in structural equilibrium.'}
             </div>
             """, unsafe_allow_html=True)
-            h_label = 'Shock ✅' if signal['hurst'] > 2.0 else 'Stable ⚠️' if signal['hurst'] < 0.5 else 'Elevated'
-            st.markdown(f"OOS R²: **{model_stats['r2_oos']:.4f}** | RMSE: **{model_stats['rmse_oos']:.4f}** | W-Distance: **{signal['ou_half_life']:.3f}** | Surprise Index: **{signal['hurst']:.2f}** ({h_label}) | Baseline D_t: **{model_stats['avg_model_spread']:.3f}**")
+            k_label = 'Fast ✅' if signal['kappa'] > 0.1 else 'Slow ⚠️' if signal['kappa'] < 0.02 else 'Moderate'
+            st.markdown(f"Manifold R²: **{model_stats['r2_oos']:.4f}** | RMSE: **{model_stats['rmse_oos']:.4f}** | Manifold Dist: **{signal['model_spread']:.3f}** | OU Decay (κ): **{signal['kappa']:.3f}** ({k_label}) | Top Driver: **{signal['top_driver']}**")
     
     with tab_signal:
         col_left, col_right = st.columns([2, 1])
@@ -1111,10 +1054,10 @@ def main():
             signal_emoji = "🟢" if signal['signal'] == 'BUY' else "🔴" if signal['signal'] == 'SELL' else "🟡"
             st.markdown(f"""
             <div class="signal-card {signal_class}">
-                <div class="label">TOPOLOGICAL SIGNAL</div>
+                <div class="label">GEOMETRIC SIGNAL</div>
                 <div class="value">{signal_emoji} {signal['signal']}</div>
                 <div class="subtext">{signal['strength']} Strength • {signal['confidence']} Confidence • 
-                W-Distance = {signal['ou_half_life']:.3f}</div>
+                Manifold Dist D_t = {signal['model_spread']:.3f}</div>
             </div>
             """, unsafe_allow_html=True)
             conv_pct, conv_color = (signal['conviction_score'] + 100) / 2, '#10b981' if signal['conviction_score'] < -20 else '#ef4444' if signal['conviction_score'] > 20 else '#FFC300'
@@ -1128,27 +1071,27 @@ def main():
                 <div class="conviction-bar"><div class="conviction-fill" style="width: {conv_pct}%; background: {conv_color};"></div></div>
             </div>
             """, unsafe_allow_html=True)
-            if signal['has_bullish_div']: st.markdown('<span class="status-badge buy">🔔 TOPOLOGICAL BREAK (Bullish Alert)</span>', unsafe_allow_html=True)
-            if signal['has_bearish_div']: st.markdown('<span class="status-badge sell">🔔 TOPOLOGICAL BREAK (Bearish Alert)</span>', unsafe_allow_html=True)
+            if signal['has_bullish_div']: st.markdown('<span class="status-badge buy">🔔 STRUCTURAL BREAK (Bullish Alert)</span>', unsafe_allow_html=True)
+            if signal['has_bearish_div']: st.markdown('<span class="status-badge sell">🔔 STRUCTURAL BREAK (Bearish Alert)</span>', unsafe_allow_html=True)
             if signal['model_spread'] > np.percentile(engine.D_t_series, 90):
                 st.markdown(f"""
                 <div style="background: rgba(245,158,11,0.1); border: 1px solid #f59e0b; border-radius: 8px; padding: 0.5rem 1rem; margin-top: 0.5rem;">
-                    <span style="color: #f59e0b; font-size: 0.8rem;">⚠️ Extreme Structural Deformation ({signal['model_spread']:.2f}) — regime shift in progress.</span>
+                    <span style="color: #f59e0b; font-size: 0.8rem;">⚠️ Extreme Structural Deformation ({signal['model_spread']:.2f}) — regime shift in progress. Phase space geometry highly perturbed.</span>
                 </div>
                 """, unsafe_allow_html=True)
         
         with col_right:
-            st.markdown("##### Multi-Scale TDA Breakdown")
+            st.markdown("##### Multi-Scale Geom Breakdown")
             for lb in engine.LOOKBACKS:
                 if lb not in engine.lookback_data: continue
                 z_stat = engine.lookback_data[lb]['Z_t'][-1]
-                d_topo = engine.lookback_data[lb]['D_t'][-1]
+                d_geom = engine.D_t_series[-1]
                 
-                if z_stat < -1.0 and d_topo > np.percentile(engine.lookback_data[lb]['D_t'], 75):
+                if z_stat < -1.0 and d_geom > np.percentile(engine.D_t_series, 75):
                     zone, zone_color = 'Extreme Under', '#10b981'
                 elif z_stat < -0.5:
                     zone, zone_color = 'Undervalued', '#10b981'
-                elif z_stat > 1.0 and d_topo > np.percentile(engine.lookback_data[lb]['D_t'], 75):
+                elif z_stat > 1.0 and d_geom > np.percentile(engine.D_t_series, 75):
                     zone, zone_color = 'Extreme Over', '#ef4444'
                 elif z_stat > 0.5:
                     zone, zone_color = 'Overvalued', '#ef4444'
@@ -1163,43 +1106,43 @@ def main():
                 """, unsafe_allow_html=True)
         
         st.markdown("---")
-        st.markdown("##### Actual vs Walk-Forward Fair Value")
+        st.markdown("##### Actual vs Equilibrium Manifold Surface")
         fig = make_subplots(rows=2, cols=1, row_heights=[0.6, 0.4], shared_xaxes=True, vertical_spacing=0.05)
         fig.add_trace(go.Scatter(x=x_axis, y=ts_filtered['Actual'], mode='lines', name='Actual', line=dict(color='#FFC300', width=2)), row=1, col=1)
-        fig.add_trace(go.Scatter(x=x_axis, y=ts_filtered['FairValue'], mode='lines', name='Fair Value (OOS)', line=dict(color='#06b6d4', width=2, dash='dash')), row=1, col=1)
+        fig.add_trace(go.Scatter(x=x_axis, y=ts_filtered['FairValue'], mode='lines', name='Equilibrium Surface y_fair', line=dict(color='#06b6d4', width=2, dash='dash')), row=1, col=1)
         
         colors = ['#10b981' if r < 0 else '#ef4444' for r in ts_filtered['Residual']]
-        fig.add_trace(go.Bar(x=x_axis, y=ts_filtered['Residual'], name='Residual (OOS)', marker_color=colors, showlegend=False), row=2, col=1)
+        fig.add_trace(go.Bar(x=x_axis, y=ts_filtered['Residual'], name='Deviation (OOS)', marker_color=colors, showlegend=False), row=2, col=1)
         fig.add_hline(y=0, line_color="#FFC300", line_width=1, row=2, col=1)
         
         if hasattr(engine, 'ou_projection') and pd.api.types.is_datetime64_any_dtype(ts['Date']):
             proj_dates = pd.date_range(start=ts['Date'].iloc[-1], periods=91, freq='D')[1:]
-            fig.add_trace(go.Scatter(x=proj_dates, y=engine.ou_projection, mode='lines', name='Equilibrium Reversion Path', line=dict(color='#FFC300', width=1.5, dash='dot'), opacity=0.5), row=2, col=1)
+            fig.add_trace(go.Scatter(x=proj_dates, y=engine.ou_projection, mode='lines', name='OU Reversion Path', line=dict(color='#FFC300', width=1.5, dash='dot'), opacity=0.5), row=2, col=1)
         
         fig.update_layout(height=500, legend=dict(orientation="h", yanchor="bottom", y=1.02))
         fig.update_yaxes(title_text=active_target, row=1, col=1)
-        fig.update_yaxes(title_text="Residual", row=2, col=1)
+        fig.update_yaxes(title_text="Deviation (Z_t)", row=2, col=1)
         st.plotly_chart(update_chart_theme(fig), use_container_width=True)
     
     with tab_zones:
-        st.markdown("##### TDA Support Over Time")
-        st.markdown('<p style="color: #888;">% of timeframes supporting structural mispricing</p>', unsafe_allow_html=True)
+        st.markdown("##### Geometric Support Over Time")
+        st.markdown('<p style="color: #888;">% of timeframes supporting geometric mispricing</p>', unsafe_allow_html=True)
         fig_zones = go.Figure()
-        fig_zones.add_trace(go.Scatter(x=x_axis, y=ts_filtered['OversoldBreadth'], fill='tozeroy', fillcolor='rgba(16,185,129,0.2)', line=dict(color='#10b981', width=2), name='TDA Undervalued %'))
-        fig_zones.add_trace(go.Scatter(x=x_axis, y=ts_filtered['OverboughtBreadth'], fill='tozeroy', fillcolor='rgba(239,68,68,0.2)', line=dict(color='#ef4444', width=2), name='TDA Overvalued %'))
+        fig_zones.add_trace(go.Scatter(x=x_axis, y=ts_filtered['OversoldBreadth'], fill='tozeroy', fillcolor='rgba(16,185,129,0.2)', line=dict(color='#10b981', width=2), name='Geom Undervalued %'))
+        fig_zones.add_trace(go.Scatter(x=x_axis, y=ts_filtered['OverboughtBreadth'], fill='tozeroy', fillcolor='rgba(239,68,68,0.2)', line=dict(color='#ef4444', width=2), name='Geom Overvalued %'))
         fig_zones.add_hline(y=60, line_dash="dash", line_color="rgba(255,195,0,0.3)")
-        fig_zones.update_layout(title="TDA Multi-Scale Breadth", height=400, xaxis_title=x_title, yaxis_title="% of Timeframes", yaxis=dict(range=[0, 100]))
+        fig_zones.update_layout(title="Geometric Multi-Scale Breadth", height=400, xaxis_title=x_title, yaxis_title="% of Timeframes", yaxis=dict(range=[0, 100]))
         st.plotly_chart(update_chart_theme(fig_zones), use_container_width=True)
         
         st.markdown("---")
-        st.markdown("##### Average TDA Z-Score")
+        st.markdown("##### Average Statistical Deviation (Z_t)")
         fig_z = go.Figure()
         z_colors = ['#10b981' if z < -1 else '#ef4444' if z > 1 else '#888' for z in ts_filtered['AvgZ']]
         fig_z.add_trace(go.Bar(x=x_axis, y=ts_filtered['AvgZ'], marker_color=z_colors, name='Statistical Z'))
         fig_z.add_hline(y=0, line_color="#FFC300", line_width=1)
         fig_z.add_hline(y=2, line_dash="dash", line_color="rgba(239,68,68,0.5)")
         fig_z.add_hline(y=-2, line_dash="dash", line_color="rgba(16,185,129,0.5)")
-        fig_z.update_layout(title="Multi-Scale Average Statistical Mispricing", height=350, xaxis_title=x_title, yaxis_title="Z-Score")
+        fig_z.update_layout(title="Multi-Scale Average Mispricing Deviation", height=350, xaxis_title=x_title, yaxis_title="Z-Score")
         st.plotly_chart(update_chart_theme(fig_z), use_container_width=True)
     
     with tab_signals:
@@ -1229,25 +1172,25 @@ def main():
     
     with tab_data:
         st.markdown(f"##### Time Series Data ({len(ts_filtered)} observations)")
-        display_cols = ['Date', 'Actual', 'FairValue', 'Residual', 'ModelSpread', 'AvgZ', 'Surprise',
+        display_cols = ['Date', 'Actual', 'FairValue', 'Residual', 'ModelSpread', 'AvgZ', 'TopDriver',
                         'OversoldBreadth', 'OverboughtBreadth', 'ConvictionScore', 'Regime',
                         'BullishDiv', 'BearishDiv']
         display_cols = [c for c in display_cols if c in ts_filtered.columns]
         
         display_ts = ts_filtered[display_cols].copy()
         
-        # Rename ModelSpread and AvgZ to reflect TDA context for export clarity
-        display_ts = display_ts.rename(columns={'ModelSpread': 'TopoDist_Dt', 'AvgZ': 'StatScore_Zt'})
+        # Rename ModelSpread and AvgZ to reflect Geometric context for export clarity
+        display_ts = display_ts.rename(columns={'ModelSpread': 'ManifoldDist_Dt', 'AvgZ': 'StatScore_Zt'})
         
-        for col in ['Residual', 'TopoDist_Dt', 'StatScore_Zt', 'Surprise', 'FairValue', 'ConvictionScore', 'OversoldBreadth', 'OverboughtBreadth']:
+        for col in ['Residual', 'ManifoldDist_Dt', 'StatScore_Zt', 'FairValue', 'ConvictionScore', 'OversoldBreadth', 'OverboughtBreadth']:
             if col in display_ts.columns:
-                display_ts[col] = display_ts[col].round(3 if col in ['StatScore_Zt', 'TopoDist_Dt', 'Surprise'] else 2 if col == 'FairValue' else 1)
+                display_ts[col] = display_ts[col].round(3 if col in ['StatScore_Zt', 'ManifoldDist_Dt'] else 2 if col == 'FairValue' else 1)
         
         if 'BullishDiv' in display_ts.columns: display_ts['BullishDiv'] = display_ts['BullishDiv'].apply(lambda x: '🟢' if x else '')
         if 'BearishDiv' in display_ts.columns: display_ts['BearishDiv'] = display_ts['BearishDiv'].apply(lambda x: '🔴' if x else '')
         
         st.dataframe(display_ts, width='stretch', hide_index=True, height=500)
-        st.download_button("📥 Download Full CSV", ts.to_csv(index=False).encode('utf-8'), f"aarambh_tda_{active_target}_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
+        st.download_button("📥 Download Full CSV", ts.to_csv(index=False).encode('utf-8'), f"aarambh_geom_{active_target}_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
     
     render_footer()
 
