@@ -298,71 +298,72 @@ class ManifoldPricingEngine:
         self.top_drivers = np.full(n, "N/A", dtype=object)
         
         refit_step = 5
+        current_scaler = None
+        kpca = None
+        surface_model = None
         
-        # 0. Pre-fill early predictions (Expanding mean)
-        self.predictions[:self.MIN_TRAIN_SIZE] = np.cumsum(y[:self.MIN_TRAIN_SIZE]) / np.arange(1, self.MIN_TRAIN_SIZE + 1)
-        self.D_t_series[:self.MIN_TRAIN_SIZE] = 0.0
-
-        # 1. Block Walk-Forward Process (Vectorized Chunks)
-        for t in range(self.MIN_TRAIN_SIZE, n, refit_step):
+        for t in range(n):
             if progress_callback and t % max(1, n // 10) == 0:
                 progress_callback(t / n * 0.6, f"Learning equilibrium manifold: {t}/{n}...")
                 
-            t_end = min(t + refit_step, n)
-            B = t_end - t
-            M = X.shape[1]
-            
-            X_train = X[:t]
-            y_train = y[:t]
-            
-            if SKLEARN_AVAILABLE:
-                try:
-                    # Fit Models
-                    scaler_t = StandardScaler()
-                    X_train_s = scaler_t.fit_transform(X_train)
-                    
-                    k = min(4, M)
-                    kpca = KernelPCA(n_components=k, kernel='rbf', fit_inverse_transform=True, gamma=1.0/M)
-                    psi_train = kpca.fit_transform(X_train_s)
-                    
-                    surface_model = Ridge(alpha=1.0)
-                    surface_model.fit(psi_train, y_train)
-                    
-                    # Predict Whole Chunk
-                    X_chunk = X[t:t_end]
-                    X_chunk_s = scaler_t.transform(X_chunk)
-                    psi_chunk = kpca.transform(X_chunk_s)
-                    
-                    # Geometric Distance across chunk
-                    X_reconstructed = kpca.inverse_transform(psi_chunk)
-                    self.D_t_series[t:t_end] = np.linalg.norm(X_chunk_s - X_reconstructed, axis=1)
-                    
-                    # Fair Value Surface
-                    y_fair_chunk = surface_model.predict(psi_chunk)
-                    self.predictions[t:t_end] = y_fair_chunk
-                    
-                    # Gradient Attribution (Jacobian Matrix Batching)
-                    epsilon = 0.01
-                    X_batch_chunk = np.repeat(X_chunk_s, M, axis=0)
-                    
-                    indices = np.arange(B * M)
-                    cols = np.tile(np.arange(M), B)
-                    X_batch_chunk[indices, cols] += epsilon
-                    
-                    psi_plus = kpca.transform(X_batch_chunk)
-                    y_plus = surface_model.predict(psi_plus).reshape(B, M)
-                    
-                    delta_y = (y_plus - y_fair_chunk[:, None]) / epsilon
-                    top_idx = np.argmax(np.abs(delta_y), axis=1)
-                    
-                    for i in range(B):
-                        self.top_drivers[t + i] = self.feature_names[top_idx[i]][:12]
-                        
-                except Exception:
-                    # Fallback if manifold matrix becomes highly collinear
-                    self.predictions[t:t_end] = self.predictions[t-1] if t > 0 else y[t]
+            if t < self.MIN_TRAIN_SIZE:
+                self.predictions[t] = np.mean(y[:t + 1])
+                self.D_t_series[t] = 0.0
             else:
-                self.predictions[t:t_end] = np.mean(y[:t + 1])
+                if t == self.MIN_TRAIN_SIZE or t % refit_step == 0:
+                    X_train = X[:t]
+                    y_train = y[:t]
+                    if SKLEARN_AVAILABLE:
+                        scaler_t = StandardScaler()
+                        X_train_s = scaler_t.fit_transform(X_train)
+                        current_scaler = scaler_t
+                        
+                        try:
+                            # 1. Manifold Learning: Φ : X -> R^k
+                            k = min(4, X.shape[1])
+                            kpca = KernelPCA(n_components=k, kernel='rbf', fit_inverse_transform=True, gamma=1.0/X.shape[1])
+                            psi_train = kpca.fit_transform(X_train_s)
+                            
+                            # 2. Equilibrium Surface: y_fair = g(ψ)
+                            surface_model = Ridge(alpha=1.0)
+                            surface_model.fit(psi_train, y_train)
+                        except Exception:
+                            pass
+                
+                # Projection and Prediction for current state t
+                X_pred = X[t:t + 1]
+                if SKLEARN_AVAILABLE and current_scaler is not None and kpca is not None and surface_model is not None:
+                    try:
+                        X_pred_s = current_scaler.transform(X_pred)
+                        
+                        # Project onto manifold
+                        psi_test = kpca.transform(X_pred_s)
+                        
+                        # Geometric Distance D_t = | X_t - Π_M(X_t) |
+                        X_reconstructed = kpca.inverse_transform(psi_test)
+                        self.D_t_series[t] = np.linalg.norm(X_pred_s - X_reconstructed)
+                        
+                        # Predict Fair Value
+                        y_fair = surface_model.predict(psi_test)[0]
+                        self.predictions[t] = y_fair
+                        
+                        # 5. Multi-Metric Contribution Attribution ∇f(X_t)
+                        # Numerical Jacobian approximation
+                        delta_y = np.zeros(X.shape[1])
+                        epsilon = 0.01
+                        for i in range(X.shape[1]):
+                            X_plus = X_pred_s.copy()
+                            X_plus[0, i] += epsilon
+                            y_plus = surface_model.predict(kpca.transform(X_plus))[0]
+                            delta_y[i] = (y_plus - y_fair) / epsilon
+                            
+                        top_idx = np.argmax(np.abs(delta_y))
+                        self.top_drivers[t] = self.feature_names[top_idx][:12] # Limit length for UI
+                        
+                    except Exception:
+                        self.predictions[t] = self.predictions[t-1] if t > 0 else y[t]
+                else:
+                    self.predictions[t] = np.mean(y[:t + 1])
         
         # Deviation Δ_t = y_t - y_fair
         self.residuals = y - self.predictions
@@ -371,18 +372,12 @@ class ManifoldPricingEngine:
             progress_callback(0.7, "Estimating OU Manifold Dynamics...")
             
         self.lookback_data = {lb: {'Z_t': np.zeros(n)} for lb in self.LOOKBACKS}
-        res_series = pd.Series(self.residuals)
-        
-        # Cython Rolling Windows for instant Z-Scores
-        for lb in self.LOOKBACKS:
-            rmean = res_series.rolling(window=lb, closed='left').mean().values
-            rstd = res_series.rolling(window=lb, closed='left').std(ddof=0).values + 1e-8
-            
-            z_t = (self.residuals - rmean) / rstd
-            z_t = np.nan_to_num(z_t, nan=0.0, posinf=0.0, neginf=0.0)
-            
-            mask = (np.arange(n) >= self.MIN_TRAIN_SIZE) & (np.arange(n) >= lb)
-            self.lookback_data[lb]['Z_t'] = np.where(mask, z_t, 0.0)
+        for t in range(self.MIN_TRAIN_SIZE, n):
+            for lb in self.LOOKBACKS:
+                if t >= lb:
+                    rmean = np.mean(self.residuals[t-lb:t])
+                    rstd = np.std(self.residuals[t-lb:t]) + 1e-8
+                    self.lookback_data[lb]['Z_t'][t] = (self.residuals[t] - rmean) / rstd
         
         # 4. OU Mean Reversion Speed (κ) estimation
         oos_resid = self.residuals[self.MIN_TRAIN_SIZE:]
@@ -419,59 +414,67 @@ class ManifoldPricingEngine:
             self.model_stats = {
                 'r2_oos': r2_score(y_valid, p_valid),
                 'rmse_oos': np.sqrt(mean_squared_error(y_valid, p_valid)),
-                'avg_model_spread': np.mean(self.D_t_series[oos_mask]),
+                'avg_model_spread': np.mean(self.D_t_series[oos_mask]), # Mean D_t distance
             }
         else:
             self.model_stats = {'r2_oos': 0.0, 'rmse_oos': 0.0, 'avg_model_spread': 0.0}
     
     def _compute_composite_mispricing(self):
+        """
+        Calculates geometric conviction: Ω_t = αZ_t + βD_t * sign(Z_t)
+        Distance from manifold amplifies the standard mispricing score.
+        """
         D_z = (self.D_t_series - np.mean(self.D_t_series)) / (np.std(self.D_t_series) + 1e-8)
         Z_stat = (self.residuals - np.mean(self.residuals)) / (np.std(self.residuals) + 1e-8)
         
         alpha, beta = 20.0, 15.0
+        
         Omega_raw = (alpha * Z_stat) + (beta * D_z * np.sign(Z_stat))
         
         filtered_omega, _, variances = kalman_filter_1d(Omega_raw)
         kalman_std = np.sqrt(np.maximum(variances, 0))
-        scores = np.clip(filtered_omega, -100, 100)
         
         self.ts_data = pd.DataFrame({
             'Actual': self.y,
             'FairValue': self.predictions,
             'Residual': self.residuals,
-            'ModelSpread': self.D_t_series, 
+            'ModelSpread': self.D_t_series, # Map to Dist for UI
             'AvgZ': Z_stat,
             'TopDriver': self.top_drivers,
             'ConvictionRaw': Omega_raw,
-            'ConvictionScore': scores,
+            'ConvictionScore': np.clip(filtered_omega, -100, 100),
             'ConvictionUpper': np.clip(filtered_omega + 1.96 * kalman_std, -100, 100),
             'ConvictionLower': np.clip(filtered_omega - 1.96 * kalman_std, -100, 100)
         })
         
-        # Vectorized string assignment
-        conds = [scores < -40, scores < -20, scores > 40, scores > 20]
-        choices = ['STRONGLY OVERSOLD', 'OVERSOLD', 'STRONGLY OVERBOUGHT', 'OVERBOUGHT']
-        self.ts_data['Regime'] = np.select(conds, choices, default='NEUTRAL')
+        regimes = []
+        for score in self.ts_data['ConvictionScore']:
+            if score < -40: regimes.append('STRONGLY OVERSOLD')
+            elif score < -20: regimes.append('OVERSOLD')
+            elif score > 40: regimes.append('STRONGLY OVERBOUGHT')
+            elif score > 20: regimes.append('OVERBOUGHT')
+            else: regimes.append('NEUTRAL')
+        self.ts_data['Regime'] = regimes
 
     def _compute_manifold_breadth(self):
+        """Multi-Scale Structure tracking combining Z_t and Manifold D_t"""
         n = len(self.y)
         oversold_count = np.zeros(n)
         overbought_count = np.zeros(n)
         
         D_threshold = np.percentile(self.D_t_series[self.MIN_TRAIN_SIZE:], 75)
-        d_is_high = self.D_t_series > D_threshold
         
-        # Boolean Masking multi-scale logic
-        for lb in self.LOOKBACKS:
-            z = self.lookback_data[lb]['Z_t']
-            
-            os_ext = (z < -1.5) & d_is_high
-            os_norm = (z < -0.5)
-            oversold_count += np.where(os_ext, 1, np.where(os_norm, 1, 0))
-            
-            ob_ext = (z > 1.5) & d_is_high
-            ob_norm = (z > 0.5)
-            overbought_count += np.where(ob_ext, 1, np.where(ob_norm, 1, 0))
+        for i in range(n):
+            for lb in self.LOOKBACKS:
+                z = self.lookback_data[lb]['Z_t'][i]
+                d = self.D_t_series[i]
+                d_is_high = d > D_threshold
+                
+                if z < -1.5 and d_is_high: oversold_count[i] += 1
+                elif z < -0.5: oversold_count[i] += 1
+                    
+                if z > 1.5 and d_is_high: overbought_count[i] += 1
+                elif z > 0.5: overbought_count[i] += 1
 
         num_lb = len(self.LOOKBACKS)
         self.ts_data['OversoldBreadth'] = oversold_count / num_lb * 100
@@ -483,14 +486,20 @@ class ManifoldPricingEngine:
         self.ts_data['IsPivotBottom'] = False
 
     def _detect_regime_shifts(self):
-        # Top-level array thresholding rather than looping
-        D_thresh = np.percentile(self.D_t_series[self.MIN_TRAIN_SIZE:], 90)
-        d_mask = self.D_t_series > D_thresh
-        d_mask[:self.MIN_TRAIN_SIZE] = False
+        """Regime shifts correspond to topological changes in manifold distances."""
+        n = len(self.y)
+        bull_div = np.zeros(n, dtype=bool)
+        bear_div = np.zeros(n, dtype=bool)
         
-        avg_z = self.ts_data['AvgZ'].values
-        self.ts_data['BullishDiv'] = d_mask & (avg_z < -1.0)
-        self.ts_data['BearishDiv'] = d_mask & (avg_z > 1.0)
+        D_thresh = np.percentile(self.D_t_series[self.MIN_TRAIN_SIZE:], 90)
+        
+        for i in range(self.MIN_TRAIN_SIZE, n):
+            if self.D_t_series[i] > D_thresh:
+                if self.ts_data['AvgZ'].iloc[i] < -1.0: bull_div[i] = True
+                elif self.ts_data['AvgZ'].iloc[i] > 1.0: bear_div[i] = True
+                    
+        self.ts_data['BullishDiv'] = bull_div
+        self.ts_data['BearishDiv'] = bear_div
         
         # OU Decay Path Projection
         current_r = self.residuals[-1]
@@ -500,11 +509,9 @@ class ManifoldPricingEngine:
         n = len(self.y)
         for period in [5, 10, 20]:
             fwd_ret = np.full(n, np.nan)
-            if n > period:
-                y_curr = self.y[:-period]
-                y_fwd = self.y[period:]
-                mask = y_curr > 0
-                fwd_ret[:-period][mask] = (y_fwd[mask] - y_curr[mask]) / y_curr[mask] * 100
+            for i in range(n - period):
+                if self.y[i] > 0:
+                    fwd_ret[i] = (self.y[i + period] - self.y[i]) / self.y[i] * 100
             self.ts_data[f'FwdRet_{period}'] = fwd_ret
 
     def get_current_signal(self):
