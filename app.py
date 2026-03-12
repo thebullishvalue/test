@@ -348,15 +348,19 @@ class ManifoldPricingEngine:
                         self.predictions[t] = y_fair
                         
                         # 5. Multi-Metric Contribution Attribution ∇f(X_t)
-                        # Numerical Jacobian approximation
-                        delta_y = np.zeros(X.shape[1])
+                        # Vectorized Numerical Jacobian approximation
                         epsilon = 0.01
-                        for i in range(X.shape[1]):
-                            X_plus = X_pred_s.copy()
-                            X_plus[0, i] += epsilon
-                            y_plus = surface_model.predict(kpca.transform(X_plus))[0]
-                            delta_y[i] = (y_plus - y_fair) / epsilon
-                            
+                        M = X.shape[1]
+                        
+                        # Create batch of perturbed inputs
+                        X_batch = np.repeat(X_pred_s, M, axis=0)
+                        np.fill_diagonal(X_batch, X_batch.diagonal() + epsilon)
+                        
+                        # Transform and predict all perturbations simultaneously
+                        psi_plus = kpca.transform(X_batch)
+                        y_plus = surface_model.predict(psi_plus)
+                        
+                        delta_y = (y_plus - y_fair) / epsilon
                         top_idx = np.argmax(np.abs(delta_y))
                         self.top_drivers[t] = self.feature_names[top_idx][:12] # Limit length for UI
                         
@@ -372,12 +376,18 @@ class ManifoldPricingEngine:
             progress_callback(0.7, "Estimating OU Manifold Dynamics...")
             
         self.lookback_data = {lb: {'Z_t': np.zeros(n)} for lb in self.LOOKBACKS}
-        for t in range(self.MIN_TRAIN_SIZE, n):
-            for lb in self.LOOKBACKS:
-                if t >= lb:
-                    rmean = np.mean(self.residuals[t-lb:t])
-                    rstd = np.std(self.residuals[t-lb:t]) + 1e-8
-                    self.lookback_data[lb]['Z_t'][t] = (self.residuals[t] - rmean) / rstd
+        res_series = pd.Series(self.residuals)
+        
+        for lb in self.LOOKBACKS:
+            rmean = res_series.rolling(window=lb, closed='left').mean().values
+            rstd = res_series.rolling(window=lb, closed='left').std(ddof=0).values + 1e-8
+            
+            z_t = (self.residuals - rmean) / rstd
+            z_t = np.nan_to_num(z_t, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            # Enforce exact bounds from original logic: t >= MIN_TRAIN_SIZE and t >= lb
+            mask = (np.arange(n) >= self.MIN_TRAIN_SIZE) & (np.arange(n) >= lb)
+            self.lookback_data[lb]['Z_t'] = np.where(mask, z_t, 0.0)
         
         # 4. OU Mean Reversion Speed (κ) estimation
         oos_resid = self.residuals[self.MIN_TRAIN_SIZE:]
@@ -463,18 +473,19 @@ class ManifoldPricingEngine:
         overbought_count = np.zeros(n)
         
         D_threshold = np.percentile(self.D_t_series[self.MIN_TRAIN_SIZE:], 75)
+        d_is_high = self.D_t_series > D_threshold
         
-        for i in range(n):
-            for lb in self.LOOKBACKS:
-                z = self.lookback_data[lb]['Z_t'][i]
-                d = self.D_t_series[i]
-                d_is_high = d > D_threshold
-                
-                if z < -1.5 and d_is_high: oversold_count[i] += 1
-                elif z < -0.5: oversold_count[i] += 1
-                    
-                if z > 1.5 and d_is_high: overbought_count[i] += 1
-                elif z > 0.5: overbought_count[i] += 1
+        for lb in self.LOOKBACKS:
+            z = self.lookback_data[lb]['Z_t']
+            
+            # Vectorized multi-scale logic (replaces inner for-loop)
+            os_ext = (z < -1.5) & d_is_high
+            os_norm = (z < -0.5)
+            oversold_count += np.where(os_ext, 1, np.where(os_norm, 1, 0))
+            
+            ob_ext = (z > 1.5) & d_is_high
+            ob_norm = (z > 0.5)
+            overbought_count += np.where(ob_ext, 1, np.where(ob_norm, 1, 0))
 
         num_lb = len(self.LOOKBACKS)
         self.ts_data['OversoldBreadth'] = oversold_count / num_lb * 100
@@ -509,9 +520,11 @@ class ManifoldPricingEngine:
         n = len(self.y)
         for period in [5, 10, 20]:
             fwd_ret = np.full(n, np.nan)
-            for i in range(n - period):
-                if self.y[i] > 0:
-                    fwd_ret[i] = (self.y[i + period] - self.y[i]) / self.y[i] * 100
+            if n > period:
+                y_curr = self.y[:-period]
+                y_fwd = self.y[period:]
+                mask = y_curr > 0
+                fwd_ret[:-period][mask] = (y_fwd[mask] - y_curr[mask]) / y_curr[mask] * 100
             self.ts_data[f'FwdRet_{period}'] = fwd_ret
 
     def get_current_signal(self):
@@ -884,7 +897,7 @@ def main():
         return
     
     X, y = data[feature_cols].values, data[active_target].values
-    cache_key = f"{active_target}|{'|'.join(sorted(feature_cols))}|{len(data)}"
+    cache_key = f"{VERSION}|{active_target}|{'|'.join(sorted(feature_cols))}|{len(data)}"
     
     if 'engine_cache' not in st.session_state or st.session_state.engine_cache != cache_key:
         with st.spinner("Preparing Geometric engine..."):
