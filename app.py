@@ -1074,7 +1074,7 @@ def main():
             fig_raw.add_hline(y=15, line_dash="dash", line_color="rgba(239,68,68,0.5)")
             fig_raw.add_hline(y=-15, line_dash="dash", line_color="rgba(16,185,129,0.5)")
             fig_raw.add_hline(y=0, line_color="rgba(255,255,255,0.3)")
-            fig_raw.update_layout(title="Base Structural Score", height=400, xaxis_title=x_title, yaxis_title="Score", yaxis=dict(range=[-100, 100]))
+            fig_raw.update_layout(title="Base Structural Score", height=400, xaxis_title=x_title, yaxis_title="Score", yaxis=dict(range=[-50, 50]))
             st.plotly_chart(update_chart_theme(fig_raw), use_container_width=True)
 
         st.markdown("---")
