@@ -1056,8 +1056,8 @@ def main():
         if 'ConvictionRaw' in ts_filtered.columns:
             fig_conv.add_trace(go.Scatter(x=x_axis, y=ts_filtered['ConvictionRaw'], mode='lines', name='Raw Ω_t', line=dict(color='#555', width=1, dash='dot'), opacity=0.5))
         
-        fig_conv.add_hline(y=40, line_dash="dash", line_color="rgba(239,68,68,0.5)")
-        fig_conv.add_hline(y=-40, line_dash="dash", line_color="rgba(16,185,129,0.5)")
+        fig_conv.add_hline(y=15, line_dash="dash", line_color="rgba(239,68,68,0.5)")
+        fig_conv.add_hline(y=-15, line_dash="dash", line_color="rgba(16,185,129,0.5)")
         fig_conv.add_hline(y=0, line_color="rgba(255,255,255,0.3)")
         fig_conv.update_layout(title="Composite Structure Index (Kalman-Filtered)", height=400, xaxis_title=x_title, yaxis_title="Score", yaxis=dict(range=[-100, 100]))
         st.plotly_chart(update_chart_theme(fig_conv), use_container_width=True)
