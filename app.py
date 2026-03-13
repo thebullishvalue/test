@@ -931,7 +931,7 @@ def main():
     else: ts['Date'] = np.arange(len(ts))
     
     # ═══════════════════════════════════════════════════════════════════════
-    # METRIC CARDS (UI UNCHANGED, BACKEND DYNAMICALLY MAPS GEOMETRIC CONCEPTS)
+    # METRIC CARDS
     # ═══════════════════════════════════════════════════════════════════════
     st.markdown("<br>", unsafe_allow_html=True)
     c1, c2, c3, c4, c5 = st.columns([1, 1, 1, 1, 2])
@@ -998,15 +998,15 @@ def main():
     x_axis, x_title = ts_filtered['Date'], "Date" if active_date != "None" else "Index"
     
     # ═══════════════════════════════════════════════════════════════════════
-    # TABS
+    # TABS (OVERHAULED FOR GEOMETRIC ENGINE)
     # ═══════════════════════════════════════════════════════════════════════
-    tab_regime, tab_signal, tab_zones, tab_signals, tab_data = st.tabs([
-        "**🎯 Regime Analysis**", "**📊 Signal Dashboard**", "**📈 Zone Trends**", "**📉 Signal Trends**", "**📋 Data Table**"
+    tab_regime, tab_signal, tab_zones, tab_drivers, tab_data = st.tabs([
+        "**🎯 Phase Space & Regime**", "**📊 Surface Dashboard**", "**📐 Manifold Distance**", "**🧬 Jacobian Drivers & Stats**", "**📋 Data Table**"
     ])
     
     with tab_regime:
         st.markdown("##### Kalman Conviction Score (Composite Ω_t)")
-        st.markdown('<p style="color: #888;">Negative = Undervalued | Positive = Overvalued · Shaded = 95% Kalman confidence band</p>', unsafe_allow_html=True)
+        st.markdown('<p style="color: #888;">Combines Manifold Distance (D_t) + Statistical Deviation (Z_t). Shaded = 95% Kalman band.</p>', unsafe_allow_html=True)
         
         fig_conv = go.Figure()
         if 'ConvictionUpper' in ts_filtered.columns:
@@ -1016,29 +1016,44 @@ def main():
         fig_conv.add_trace(go.Scatter(x=x_axis, y=ts_filtered['ConvictionScore'].clip(upper=0), fill='tozeroy', fillcolor='rgba(16,185,129,0.15)', line=dict(width=0), showlegend=False))
         fig_conv.add_trace(go.Scatter(x=x_axis, y=ts_filtered['ConvictionScore'], mode='lines', name='Composite Ω_t', line=dict(color='#FFC300', width=2)))
         
-        if 'ConvictionRaw' in ts_filtered.columns:
-            fig_conv.add_trace(go.Scatter(x=x_axis, y=ts_filtered['ConvictionRaw'], mode='lines', name='Raw Ω_t', line=dict(color='#555', width=1, dash='dot'), opacity=0.5))
-        
         fig_conv.add_hline(y=40, line_dash="dash", line_color="rgba(239,68,68,0.5)")
         fig_conv.add_hline(y=-40, line_dash="dash", line_color="rgba(16,185,129,0.5)")
         fig_conv.add_hline(y=0, line_color="rgba(255,255,255,0.3)")
-        fig_conv.update_layout(title="Composite Structure Index (Kalman-Filtered)", height=400, xaxis_title=x_title, yaxis_title="Score", yaxis=dict(range=[-100, 100]))
+        fig_conv.update_layout(title="Composite Structure Index (Ω_t)", height=350, xaxis_title=x_title, yaxis_title="Score", yaxis=dict(range=[-100, 100]))
         st.plotly_chart(update_chart_theme(fig_conv), use_container_width=True)
         
         st.markdown("---")
-        st.markdown("##### Base Conviction Score (Raw Ω_t)")
         
-        if 'ConvictionRaw' in ts_filtered.columns:
-            fig_raw = go.Figure()
-            fig_raw.add_trace(go.Scatter(x=x_axis, y=ts_filtered['ConvictionRaw'].clip(lower=0), fill='tozeroy', fillcolor='rgba(239,68,68,0.15)', line=dict(width=0), showlegend=False))
-            fig_raw.add_trace(go.Scatter(x=x_axis, y=ts_filtered['ConvictionRaw'].clip(upper=0), fill='tozeroy', fillcolor='rgba(16,185,129,0.15)', line=dict(width=0), showlegend=False))
-            conv_colors = ['#10b981' if c < -40 else '#ef4444' if c > 40 else '#888' for c in ts_filtered['ConvictionRaw']]
-            fig_raw.add_trace(go.Scatter(x=x_axis, y=ts_filtered['ConvictionRaw'], mode='lines+markers', name='Raw Ω_t', line=dict(color='#FFC300', width=2), marker=dict(size=4, color=conv_colors)))
-            fig_raw.add_hline(y=40, line_dash="dash", line_color="rgba(239,68,68,0.5)")
-            fig_raw.add_hline(y=-40, line_dash="dash", line_color="rgba(16,185,129,0.5)")
-            fig_raw.add_hline(y=0, line_color="rgba(255,255,255,0.3)")
-            fig_raw.update_layout(title="Base Structural Score", height=400, xaxis_title=x_title, yaxis_title="Score", yaxis=dict(range=[-100, 100]))
-            st.plotly_chart(update_chart_theme(fig_raw), use_container_width=True)
+        # --- NEW PLOT: PHASE SPACE DEFORMATION MAP ---
+        st.markdown("##### Phase Space Deformation Map (Z_t vs D_t)")
+        st.markdown('<p style="color: #888;">Points high on the Y-axis indicate extreme structural breaks in the manifold.</p>', unsafe_allow_html=True)
+        
+        fig_scatter = go.Figure()
+        colors = ts_filtered['ConvictionScore']
+        
+        fig_scatter.add_trace(go.Scatter(
+            x=ts_filtered['AvgZ'], y=ts_filtered['ModelSpread'],
+            mode='markers',
+            marker=dict(
+                color=colors,
+                colorscale='RdYlGn', reversescale=True,
+                size=8, opacity=0.8,
+                showscale=True, colorbar=dict(title="Conviction Ω_t", tickfont=dict(color='#EAEAEA'))
+            ),
+            text=ts_filtered['Date'].dt.strftime('%Y-%m-%d') if pd.api.types.is_datetime64_any_dtype(ts_filtered['Date']) else ts_filtered.index,
+            hovertemplate="<b>%{text}</b><br>Stat Z-Score (X): %{x:.2f}<br>Manifold Dist (Y): %{y:.3f}<br>Conviction: %{marker.color:+.0f}<extra></extra>"
+        ))
+        
+        p75_d = np.percentile(engine.D_t_series[engine.MIN_TRAIN_SIZE:], 75)
+        fig_scatter.add_hline(y=p75_d, line_dash="dot", line_color="#ef4444", annotation_text="Danger: High Deformation", annotation_position="top right", annotation_font_color="#ef4444")
+        fig_scatter.add_vline(x=0, line_color="rgba(255,255,255,0.3)", line_width=1)
+        
+        fig_scatter.update_layout(
+            title="Geometric Phase Space Scatter", height=450,
+            xaxis_title="Statistical Mispricing (Z_t)",
+            yaxis_title="Manifold Distance (D_t)"
+        )
+        st.plotly_chart(update_chart_theme(fig_scatter), use_container_width=True)
 
         st.markdown("---")
         col1, col2 = st.columns(2)
@@ -1126,55 +1141,85 @@ def main():
                 """, unsafe_allow_html=True)
         
         st.markdown("---")
-        st.markdown("##### Actual vs Equilibrium Manifold Surface")
+        st.markdown("##### Phase Space vs Equilibrium Surface")
         fig = make_subplots(rows=2, cols=1, row_heights=[0.6, 0.4], shared_xaxes=True, vertical_spacing=0.05)
+        
+        # --- NEW VISUAL FEATURE: Highlight high D_t regions on price chart ---
+        p75_d = np.percentile(engine.D_t_series[engine.MIN_TRAIN_SIZE:], 75)
+        high_stress = ts_filtered['ModelSpread'] > p75_d
+        
         fig.add_trace(go.Scatter(x=x_axis, y=ts_filtered['Actual'], mode='lines', name='Actual', line=dict(color='#FFC300', width=2)), row=1, col=1)
-        fig.add_trace(go.Scatter(x=x_axis, y=ts_filtered['FairValue'], mode='lines', name='Equilibrium Surface y_fair', line=dict(color='#06b6d4', width=2, dash='dash')), row=1, col=1)
+        fig.add_trace(go.Scatter(x=x_axis, y=ts_filtered['FairValue'], mode='lines', name='Equilibrium Surface g(ψ_t)', line=dict(color='#06b6d4', width=2, dash='dash')), row=1, col=1)
         
         colors = ['#10b981' if r < 0 else '#ef4444' for r in ts_filtered['Residual']]
-        fig.add_trace(go.Bar(x=x_axis, y=ts_filtered['Residual'], name='Deviation (OOS)', marker_color=colors, showlegend=False), row=2, col=1)
+        fig.add_trace(go.Bar(x=x_axis, y=ts_filtered['Residual'], name='Surface Deviation (Z_t)', marker_color=colors, showlegend=False), row=2, col=1)
         fig.add_hline(y=0, line_color="#FFC300", line_width=1, row=2, col=1)
         
         if hasattr(engine, 'ou_projection') and pd.api.types.is_datetime64_any_dtype(ts['Date']):
             proj_dates = pd.date_range(start=ts['Date'].iloc[-1], periods=91, freq='D')[1:]
-            fig.add_trace(go.Scatter(x=proj_dates, y=engine.ou_projection, mode='lines', name='OU Reversion Path', line=dict(color='#FFC300', width=1.5, dash='dot'), opacity=0.5), row=2, col=1)
+            fig.add_trace(go.Scatter(x=proj_dates, y=engine.ou_projection, mode='lines', name='OU Reversion Path (e^(-κt))', line=dict(color='#FFC300', width=1.5, dash='dot'), opacity=0.5), row=2, col=1)
         
         fig.update_layout(height=500, legend=dict(orientation="h", yanchor="bottom", y=1.02))
         fig.update_yaxes(title_text=active_target, row=1, col=1)
-        fig.update_yaxes(title_text="Deviation (Z_t)", row=2, col=1)
+        fig.update_yaxes(title_text="Deviation", row=2, col=1)
         st.plotly_chart(update_chart_theme(fig), use_container_width=True)
     
     with tab_zones:
-        st.markdown("##### Geometric Support Over Time")
-        st.markdown('<p style="color: #888;">% of timeframes supporting geometric mispricing</p>', unsafe_allow_html=True)
+        # --- NEW PLOT: MANIFOLD DISTANCE OVER TIME ---
+        st.markdown("##### Manifold Distance Trajectory (D_t)")
+        st.markdown('<p style="color: #888;">Measures the magnitude of projection loss ||X_t - Π_M(X_t)||. High spikes mean the current phase space structure contradicts historical equilibrium.</p>', unsafe_allow_html=True)
+        
+        fig_dist = go.Figure()
+        fig_dist.add_trace(go.Scatter(x=x_axis, y=ts_filtered['ModelSpread'], fill='tozeroy', fillcolor='rgba(139, 92, 246, 0.1)', line=dict(color='#8b5cf6', width=2), name='Distance (D_t)'))
+        
+        p75 = np.percentile(engine.D_t_series[engine.MIN_TRAIN_SIZE:], 75)
+        p90 = np.percentile(engine.D_t_series[engine.MIN_TRAIN_SIZE:], 90)
+        
+        fig_dist.add_hline(y=p75, line_dash="dash", line_color="#f59e0b", annotation_text="75th Pct (Deformed)", annotation_position="top left")
+        fig_dist.add_hline(y=p90, line_dash="dash", line_color="#ef4444", annotation_text="90th Pct (Severe)", annotation_position="top left")
+        
+        fig_dist.update_layout(title="Latent Space Structural Distance", height=400, xaxis_title=x_title, yaxis_title="D_t (Euclidean Loss)")
+        st.plotly_chart(update_chart_theme(fig_dist), use_container_width=True)
+        
+        st.markdown("---")
+        st.markdown("##### Geometric Support Breadth Over Time")
         fig_zones = go.Figure()
         fig_zones.add_trace(go.Scatter(x=x_axis, y=ts_filtered['OversoldBreadth'], fill='tozeroy', fillcolor='rgba(16,185,129,0.2)', line=dict(color='#10b981', width=2), name='Geom Undervalued %'))
         fig_zones.add_trace(go.Scatter(x=x_axis, y=ts_filtered['OverboughtBreadth'], fill='tozeroy', fillcolor='rgba(239,68,68,0.2)', line=dict(color='#ef4444', width=2), name='Geom Overvalued %'))
         fig_zones.add_hline(y=60, line_dash="dash", line_color="rgba(255,195,0,0.3)")
-        fig_zones.update_layout(title="Geometric Multi-Scale Breadth", height=400, xaxis_title=x_title, yaxis_title="% of Timeframes", yaxis=dict(range=[0, 100]))
+        fig_zones.update_layout(title="Multi-Scale Manifold Breadth", height=350, xaxis_title=x_title, yaxis_title="% of Timeframes", yaxis=dict(range=[0, 100]))
         st.plotly_chart(update_chart_theme(fig_zones), use_container_width=True)
-        
-        st.markdown("---")
-        st.markdown("##### Average Statistical Deviation (Z_t)")
-        fig_z = go.Figure()
-        z_colors = ['#10b981' if z < -1 else '#ef4444' if z > 1 else '#888' for z in ts_filtered['AvgZ']]
-        fig_z.add_trace(go.Bar(x=x_axis, y=ts_filtered['AvgZ'], marker_color=z_colors, name='Statistical Z'))
-        fig_z.add_hline(y=0, line_color="#FFC300", line_width=1)
-        fig_z.add_hline(y=2, line_dash="dash", line_color="rgba(239,68,68,0.5)")
-        fig_z.add_hline(y=-2, line_dash="dash", line_color="rgba(16,185,129,0.5)")
-        fig_z.update_layout(title="Multi-Scale Average Mispricing Deviation", height=350, xaxis_title=x_title, yaxis_title="Z-Score")
-        st.plotly_chart(update_chart_theme(fig_z), use_container_width=True)
     
-    with tab_signals:
-        st.markdown("##### Buy/Sell Signal Count by Period")
+    with tab_drivers:
+        # --- NEW PLOT: JACOBIAN DRIVER ATTRIBUTION ---
+        st.markdown("##### Latent Gradient Attribution (∇f(X) Max Element)")
+        st.markdown('<p style="color: #888;">Shows which predictor feature had the highest mathematical influence on the equilibrium surface mapping at time <i>t</i>.</p>', unsafe_allow_html=True)
+        
+        fig_driver = go.Figure()
+        
+        # We scatter the drivers. Y axis is categorical driver names
+        fig_driver.add_trace(go.Scatter(
+            x=x_axis, y=ts_filtered['TopDriver'],
+            mode='markers', 
+            marker=dict(size=8, color='#06b6d4', opacity=0.7, line=dict(width=1, color='#1A1A1A')),
+            name="Primary Jacobian Driver"
+        ))
+        fig_driver.update_layout(
+            title="Dominant Phase Space Driver Evolution", 
+            height=400, xaxis_title=x_title, 
+            yaxis=dict(type='category', gridcolor="#2A2A2A"),
+            hovermode="x unified"
+        )
+        st.plotly_chart(update_chart_theme(fig_driver), use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("##### Signal Count & Performance Statistics")
         fig_signals = go.Figure()
         fig_signals.add_trace(go.Bar(x=x_axis, y=ts_filtered['BuySignalBreadth'], name='Buy Signals', marker=dict(color='#10b981')))
         fig_signals.add_trace(go.Bar(x=x_axis, y=-ts_filtered['SellSignalBreadth'], name='Sell Signals', marker=dict(color='#ef4444')))
-        fig_signals.update_layout(title="Signal Count by Period", height=350, xaxis_title=x_title, yaxis_title="Signal Count", barmode='relative')
+        fig_signals.update_layout(height=250, xaxis_title=x_title, yaxis_title="Signal Count", barmode='relative', margin=dict(t=10,b=10))
         st.plotly_chart(update_chart_theme(fig_signals), use_container_width=True)
         
-        st.markdown("---")
-        st.markdown("##### Signal Statistics")
         perf = engine.get_signal_performance()
         perf_data = []
         for period in [5, 10, 20]:
