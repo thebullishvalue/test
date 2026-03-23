@@ -969,6 +969,138 @@ def create_spectral_risk_dashboard(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# MASTER ATTENTION CHARTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def create_attention_heatmap(
+    attention_matrix: np.ndarray,
+    labels: List[str],
+    title: str = "",
+) -> go.Figure:
+    """Inter-stock attention heatmap (neural correlation analog).
+
+    Args:
+        attention_matrix: shape (n_stocks, n_stocks), mean over timesteps.
+        labels: Stock/ETF ticker labels.
+        title: Optional chart title.
+
+    Returns:
+        Plotly Figure.
+    """
+    fig = go.Figure(data=go.Heatmap(
+        z=attention_matrix,
+        x=labels,
+        y=labels,
+        colorscale=[
+            [0, COLORS['background']],
+            [0.3, _hex_to_rgba(COLORS['info'], 0.5)],
+            [0.6, _hex_to_rgba(COLORS['primary'], 0.7)],
+            [1.0, COLORS['primary']],
+        ],
+        colorbar=dict(
+            title=dict(text='Attention', font=dict(color=_LABEL, size=10)),
+            tickfont=dict(color=_TICK, size=9),
+        ),
+        hovertemplate='%{y} → %{x}: %{z:.3f}<extra></extra>',
+    ))
+
+    layout = get_chart_layout(title=title, height=500, show_legend=False)
+    layout['xaxis'] = _axis(tickangle=-45, tickfont=dict(color=_TICK, size=8))
+    layout['yaxis'] = _axis(tickfont=dict(color=_TICK, size=8), autorange='reversed')
+    fig.update_layout(**layout)
+
+    return fig
+
+
+def create_cross_time_correlation_chart(
+    cross_time_matrix: np.ndarray,
+    source_label: str = "Source",
+    target_label: str = "Target",
+    title: str = "",
+) -> go.Figure:
+    """Cross-time correlation heatmap between two stocks.
+
+    Args:
+        cross_time_matrix: shape (tau, tau).
+        source_label: Source stock ticker.
+        target_label: Target stock ticker.
+        title: Optional chart title.
+
+    Returns:
+        Plotly Figure.
+    """
+    tau = cross_time_matrix.shape[0]
+    time_labels = [f"t-{tau - 1 - i}" for i in range(tau)]
+
+    fig = go.Figure(data=go.Heatmap(
+        z=cross_time_matrix,
+        x=time_labels,
+        y=time_labels,
+        colorscale=[
+            [0, COLORS['background']],
+            [0.5, _hex_to_rgba(COLORS['info'], 0.4)],
+            [1.0, COLORS['primary']],
+        ],
+        colorbar=dict(
+            title=dict(text='Correlation', font=dict(color=_LABEL, size=10)),
+            tickfont=dict(color=_TICK, size=9),
+        ),
+        hovertemplate=f'{target_label}[%{{y}}] ← {source_label}[%{{x}}]: %{{z:.4f}}<extra></extra>',
+    ))
+
+    layout = get_chart_layout(title=title, height=400, show_legend=False)
+    layout['xaxis'] = _axis(title=f'{source_label} (time)', tickfont=dict(color=_TICK, size=9))
+    layout['yaxis'] = _axis(title=f'{target_label} (time)', tickfont=dict(color=_TICK, size=9), autorange='reversed')
+    fig.update_layout(**layout)
+
+    return fig
+
+
+def create_attention_entropy_chart(
+    entropy_values: List[float],
+    dates: List[str],
+    title: str = "",
+) -> go.Figure:
+    """Time series of inter-stock attention entropy.
+
+    Args:
+        entropy_values: Normalized entropy [0, 1] per snapshot.
+        dates: Date labels.
+        title: Optional chart title.
+
+    Returns:
+        Plotly Figure.
+    """
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=dates,
+        y=entropy_values,
+        mode='lines',
+        line=dict(color=COLORS['primary'], width=1.5),
+        fill='tozeroy',
+        fillcolor=_hex_to_rgba(COLORS['primary'], 0.08),
+        name='Attention Entropy',
+    ))
+
+    # Threshold lines
+    fig.add_hline(y=0.80, line_color=_hex_to_rgba(COLORS['success'], 0.4),
+                  line_width=1, line_dash='dot',
+                  annotation_text='Healthy', annotation_position='top left',
+                  annotation_font=dict(color=COLORS['success'], size=9))
+    fig.add_hline(y=0.50, line_color=_hex_to_rgba(COLORS['danger'], 0.4),
+                  line_width=1, line_dash='dot',
+                  annotation_text='Crisis', annotation_position='bottom left',
+                  annotation_font=dict(color=COLORS['danger'], size=9))
+
+    layout = get_chart_layout(title=title, height=350, show_legend=False)
+    layout['yaxis'] = _axis(title='Normalized Entropy', range=[0, 1.05])
+    fig.update_layout(**layout)
+
+    return fig
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # EXPORTS
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -989,4 +1121,7 @@ __all__ = [
     'create_absorption_ratio_chart',
     'create_factor_loading_heatmap',
     'create_spectral_risk_dashboard',
+    'create_attention_heatmap',
+    'create_cross_time_correlation_chart',
+    'create_attention_entropy_chart',
 ]

@@ -316,11 +316,14 @@ def generate_historical_data(
     # 2b. --- MASTER: Initialize gating if requested ---
     gating_model = None
     market_vector = None
+    temporal_buffer = None
     if use_market_gating:
         try:
             from master_gating import load_gating_model
             from master_market import MarketStatusVector
+            from master_temporal import TemporalBuffer
             gating_model = load_gating_model()
+            temporal_buffer = TemporalBuffer(tau=10, feature_cols=NUMERIC_INDICATOR_COLS)
             if gating_model is not None:
                 market_vector = MarketStatusVector()
                 market_vector.fit(all_data)
@@ -385,6 +388,21 @@ def generate_historical_data(
                     final_df = gating_model.gate_features(
                         m_tau, final_df, NUMERIC_INDICATOR_COLS
                     )
+
+            # --- MASTER: Populate temporal buffer for lookback windows ---
+            if temporal_buffer is not None:
+                import numpy as _np
+                for _, row in final_df.iterrows():
+                    sym = str(row.get('symbol', ''))
+                    if sym:
+                        feat_vals = []
+                        for col in NUMERIC_INDICATOR_COLS:
+                            v = row.get(col, 0)
+                            try:
+                                feat_vals.append(float(v) if v == v else 0.0)
+                            except (ValueError, TypeError):
+                                feat_vals.append(0.0)
+                        temporal_buffer.update(sym, _np.array(feat_vals, dtype=_np.float64))
 
             pragati_data_list.append((snapshot_date, final_df))
 

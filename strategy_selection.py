@@ -959,6 +959,46 @@ class StrategySelectionEngine:
             'swing_sell': SWING_SELL_TRIGGER
         }
     
+    def get_master_confidence(self) -> Dict:
+        """Get MASTER-informed confidence overlay on current trigger logic.
+
+        Returns a dict with:
+            'available': bool — whether MASTER signal was computed
+            'regime_score': float — MASTER composite regime score
+            'confidence_modifier': float — suggested adjustment to trigger confidence
+            'recommendation': str — human-readable recommendation
+        """
+        result = {'available': False, 'regime_score': 0.0, 'confidence_modifier': 0.0, 'recommendation': ''}
+        try:
+            from master_regime import get_master_regime_signal
+            signal = get_master_regime_signal()
+            score = signal['score']
+            result['available'] = score != 0.0
+            result['regime_score'] = score
+
+            # Confidence modifier: positive MASTER score → higher confidence in bullish triggers
+            # Negative score → higher confidence in bearish/defensive triggers
+            if score > 0.3:
+                result['confidence_modifier'] = 0.10
+                result['recommendation'] = "MASTER signals healthy regime — favor aggressive triggers"
+            elif score > 0.0:
+                result['confidence_modifier'] = 0.05
+                result['recommendation'] = "MASTER signals mildly positive regime"
+            elif score > -0.3:
+                result['confidence_modifier'] = -0.05
+                result['recommendation'] = "MASTER signals mildly stressed regime — favor defensive"
+            else:
+                result['confidence_modifier'] = -0.10
+                result['recommendation'] = "MASTER signals stressed regime — favor capital preservation"
+
+        except ImportError:
+            result['recommendation'] = "MASTER modules not available"
+        except Exception as e:
+            logger.debug("MASTER confidence overlay failed: %s", e)
+            result['recommendation'] = "MASTER signal computation failed"
+
+        return result
+
     def _check_ready(self) -> bool:
         """Check if engine is ready to run."""
         if self.breadth_data is None or self.breadth_data.empty:

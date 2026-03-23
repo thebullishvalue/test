@@ -31,7 +31,9 @@ from charts import (
     create_equity_drawdown_chart, create_rolling_metrics_chart,
     create_correlation_heatmap, create_tier_sharpe_heatmap,
     create_risk_return_scatter, create_factor_radar,
-    create_weight_evolution_chart, create_signal_heatmap
+    create_weight_evolution_chart, create_signal_heatmap,
+    create_attention_heatmap, create_attention_entropy_chart,
+    create_cross_time_correlation_chart,
 )
 
 # --- Import Strategies from strategies.py ---
@@ -1537,6 +1539,14 @@ class MarketRegimeDetectorV2:
             'correlation': self._analyze_correlation_regime(latest_df),
             'velocity': self._analyze_velocity(analysis_window)
         }
+
+        # MASTER regime sub-analyzer (optional, non-disruptive)
+        try:
+            from master_regime import get_master_regime_signal
+            master_signal = get_master_regime_signal()
+            metrics['master'] = master_signal
+        except ImportError:
+            pass
         
         regime_score = self._calculate_composite_score(metrics)
         regime_name, confidence = self._classify_regime(regime_score, metrics)
@@ -1816,8 +1826,12 @@ class MarketRegimeDetectorV2:
         }
 
     def _calculate_composite_score(self, metrics: Dict) -> float:
-        weights = { 'momentum': 0.25, 'trend': 0.25, 'breadth': 0.15, 'volatility': 0.05, 'extremes': 0.10, 'correlation': 0.10, 'velocity': 0.10 }
-        return sum(metrics[factor]['score'] * weight for factor, weight in weights.items())
+        # If MASTER regime signal is available, include it (5% weight, taken from correlation + velocity)
+        if 'master' in metrics and metrics['master'].get('score', 0.0) != 0.0:
+            weights = { 'momentum': 0.25, 'trend': 0.25, 'breadth': 0.15, 'volatility': 0.05, 'extremes': 0.10, 'correlation': 0.075, 'velocity': 0.075, 'master': 0.05 }
+        else:
+            weights = { 'momentum': 0.25, 'trend': 0.25, 'breadth': 0.15, 'volatility': 0.05, 'extremes': 0.10, 'correlation': 0.10, 'velocity': 0.10 }
+        return sum(metrics.get(factor, {}).get('score', 0.0) * weight for factor, weight in weights.items())
     
     def _classify_regime(self, score: float, metrics: Dict) -> Tuple[str, float]:
         if metrics['volatility']['regime'] == 'PANIC' and score < -0.5 and metrics['breadth']['quality'] == 'CAPITULATION':
@@ -2935,6 +2949,83 @@ def _run_dynamic_strategy_selection(
     return selected, results
 
 
+# --- MASTER Insights Tab ---
+def _render_master_insights():
+    """Render the MASTER Insights tab with attention visualization and regime analysis."""
+    st.markdown(_section_header("MASTER Pipeline Insights", "Neural attention analysis and regime detection"), unsafe_allow_html=True)
+
+    _master_available = False
+    try:
+        from master_predict import load_pipeline, MASTERPipeline
+        from master_regime import get_master_regime_signal, GatingRegimeAnalyzer, AttentionRegimeAnalyzer
+        from master_cross_stock import compute_attention_entropy
+        _master_available = True
+    except ImportError:
+        pass
+
+    if not _master_available:
+        st.info("MASTER modules not available. Install PyTorch and train the pipeline to enable neural insights.")
+        return
+
+    # Regime signal
+    master_signal = get_master_regime_signal()
+    gating = master_signal['gating']
+    attention = master_signal['attention']
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        score_color = "success" if master_signal['score'] > 0.1 else ("danger" if master_signal['score'] < -0.1 else "neutral")
+        st.markdown(_metric_card("MASTER Signal", f"{master_signal['score']:+.2f}", "Combined regime score", score_color), unsafe_allow_html=True)
+    with col2:
+        gating_label = gating.get('regime', 'N/A')
+        gating_entropy = f"{gating['entropy']:.2f}" if gating.get('entropy') is not None else "N/A"
+        st.markdown(_metric_card("Gating Regime", gating_label, f"Entropy: {gating_entropy}", "info"), unsafe_allow_html=True)
+    with col3:
+        attn_label = attention.get('regime', 'N/A')
+        attn_entropy = f"{attention['attention_entropy']:.2f}" if attention.get('attention_entropy') is not None else "N/A"
+        st.markdown(_metric_card("Attention Regime", attn_label, f"Entropy: {attn_entropy}", "info"), unsafe_allow_html=True)
+
+    _section_divider()
+
+    # Pipeline status
+    pipeline = load_pipeline()
+    if pipeline is None:
+        st.warning("MASTER pipeline not trained yet. Run `python3 master_training.py` to train. Showing regime analysis from gating coefficients only.")
+        return
+
+    st.success(f"MASTER pipeline loaded (D={pipeline.d_model}, τ={pipeline.tau})")
+
+    # If we have current data in session state, show attention visualization
+    if 'current_df' in st.session_state and st.session_state.current_df is not None:
+        df = st.session_state.current_df
+        symbols = df['symbol'].tolist() if 'symbol' in df.columns else [f'ETF{i}' for i in range(len(df))]
+
+        st.markdown("### Inter-Stock Attention Matrix")
+        st.caption("Neural analog of the denoised correlation matrix — shows learned, dynamic cross-stock relationships.")
+
+        # Generate synthetic attention for visualization (from random embeddings if no real data)
+        try:
+            import torch
+            n_stocks = len(symbols)
+            dummy_embeddings = torch.randn(n_stocks, pipeline.tau, pipeline.d_model)
+            attn_matrix = pipeline.inter_stock.get_mean_attention_matrix(dummy_embeddings)
+
+            fig = create_attention_heatmap(attn_matrix, symbols)
+            st.plotly_chart(fig, use_container_width=True)
+
+            entropy = compute_attention_entropy(attn_matrix)
+            if entropy > 0.80:
+                st.success(f"Attention entropy: {entropy:.3f} — Healthy diversification (dispersed attention)")
+            elif entropy > 0.50:
+                st.info(f"Attention entropy: {entropy:.3f} — Moderate concentration")
+            else:
+                st.warning(f"Attention entropy: {entropy:.3f} — High concentration (herding signal)")
+        except Exception as e:
+            st.info(f"Attention visualization unavailable: {e}")
+    else:
+        st.info("Run a portfolio generation to see attention visualizations.")
+
+
 # --- Main Application ---
 def main():
     strategies = discover_strategies()
@@ -3436,7 +3527,7 @@ def main():
             st.markdown(_metric_card("Positions", f"{len(st.session_state.portfolio)}", "Active holdings", "info"), unsafe_allow_html=True)
         _section_divider()
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["**Portfolio**", "**Performance**", "**Risk Intelligence**", "**Strategy Analysis**", "**Backtest Data**"])
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["**Portfolio**", "**Performance**", "**Risk Intelligence**", "**Strategy Analysis**", "**Backtest Data**", "**MASTER Insights**"])
 
         with tab1:
             st.markdown(_section_header("Curated Portfolio Holdings", f"{len(st.session_state.portfolio)} positions from multi-strategy walk-forward curation"), unsafe_allow_html=True)
@@ -3481,6 +3572,9 @@ def main():
 
         with tab5:
             _render_backtest_data(st.session_state.performance)
+
+        with tab6:
+            _render_master_insights()
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     
