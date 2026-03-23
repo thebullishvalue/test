@@ -83,7 +83,7 @@ except ImportError:
 st.set_page_config(page_title="PRAGYAM | Portfolio Intelligence", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
 
 # --- Constants ---
-VERSION = "v3.5.0"  # Adversarial audit: metric fixes, transaction costs, robust estimation
+VERSION = "v3.6.0"  # Quantitative hardening: HRP allocation, SPRT triggers, conformal intervals, RMT factor decomposition
 PRODUCT_NAME = "Pragyam"
 COMPANY = "Hemrek Capital"
 
@@ -2160,7 +2160,7 @@ def _render_risk_intelligence(performance: Dict):
                 'Width': f"{upper - lower:.4f}",
             })
         if ci_rows:
-            st.dataframe(pd.DataFrame(ci_rows).set_index('Strategy'), use_container_width=True)
+            st.dataframe(pd.DataFrame(ci_rows).set_index('Strategy'), width='stretch')
 
     # ── REC-1: Strategy Dimensionality Reduction ──
     sf = performance.get('strategy_factors', {})

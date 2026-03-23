@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-3.5.0-gold)
+![Version](https://img.shields.io/badge/version-3.6.0-gold)
 ![Python](https://img.shields.io/badge/python-3.10+-blue)
 ![License](https://img.shields.io/badge/license-Proprietary-red)
 ![Status](https://img.shields.io/badge/status-Production-green)
@@ -23,7 +23,7 @@
 
 ## Overview
 
-**Pragyam** (Sanskrit: प्रज्ञम् - "Wisdom/Intelligence") is a hedge fund-grade portfolio intelligence platform designed for systematic equity investing in Indian markets. It combines 80+ quantitative strategies with advanced regime detection and dynamic allocation to deliver institutional-quality portfolio construction.
+**Pragyam** (Sanskrit: प्रज्ञम् - "Wisdom/Intelligence") is a hedge fund-grade portfolio intelligence platform designed for systematic equity investing in Indian markets. It combines 96 quantitative strategies with RMT-based spectral analysis, regime detection, and dynamic allocation to deliver institutional-quality portfolio construction.
 
 ### Key Differentiators
 
@@ -31,17 +31,22 @@
 |---------|-------------|
 | **Multi-Strategy Engine** | 96 unique alpha-generating strategies spanning momentum, mean-reversion, volatility, and factor-based approaches |
 | **Spectral Signal-Noise Separation** | Random Matrix Theory (Marchenko-Pastur) identifies which correlations are real signal vs statistical noise — the system knows its own noise floor |
+| **Strategy Factor Decomposition** | RMT-based dimensionality reduction projects 60+ correlated strategies onto their true independent factors above the Marchenko-Pastur threshold |
+| **Hierarchical Risk Parity** | Default allocation via Lopez de Prado (2016) dendrogram-based HRP — avoids covariance inversion, robust to estimation error |
 | **Regime-Aware Allocation** | Real-time market regime detection adjusts strategy weights based on momentum, trend, breadth, volatility, and spectral correlation structure |
-| **RMT-Optimized Construction** | Minimum-variance and risk-parity portfolio optimization using eigenvalue-cleaned covariance matrices; redundancy-aware strategy selection ensures spectral independence |
+| **SPRT Regime Triggers** | Optional Sequential Probability Ratio Test (Wald, 1945) for evidence-accumulating regime change detection — replaces fixed-threshold triggers |
+| **Conformal Prediction Intervals** | Distribution-free 90% coverage guarantee on next-period strategy returns (Vovk et al., 2005) |
 | **Hedge Fund Analytics** | Institutional metrics including Sharpe, Sortino, Calmar, Omega, CVaR, absorption ratio, effective rank, and diversification ratio |
-| **Tier-Based Construction** | Position sizing via conviction tiers with risk parity optimization |
+| **Tier-Based Construction** | Position sizing via conviction tiers with turnover-proportional transaction cost modeling |
 
 ---
 
 ## Features
 
 ### 📊 Portfolio Intelligence
-- **Walk-Forward Backtesting**: Out-of-sample validation with realistic transaction modeling
+- **Walk-Forward Backtesting**: Out-of-sample validation with embargo gaps, turnover-proportional transaction costs, and Modified Dietz TWR
+- **Strategy Factor Decomposition**: RMT projects 60+ strategies onto true independent factors — reveals how many bets you actually have
+- **Conformal Prediction Intervals**: Distribution-free 90% coverage bounds on next-period returns (no normality assumption)
 - **Strategy Attribution**: Decompose returns by strategy, tier, and time period
 - **Correlation Analysis**: Inter-strategy correlation monitoring with RMT-cleaned matrices
 - **Weight Evolution**: Track how strategy allocations change through market regimes
@@ -62,10 +67,11 @@
 
 ### 🔄 Regime Detection
 - **Momentum Regime**: RSI breadth, momentum persistence scoring
-- **Trend Regime**: 200-DMA positioning, trend quality metrics
-- **Volatility Regime**: Bollinger Band Width, ATR percentile ranking
-- **Breadth Regime**: Advance-decline analysis, sector rotation signals
+- **Trend Regime**: 200-DMA positioning, trend quality metrics (Theil-Sen robust estimation)
+- **Volatility Regime**: Bollinger Band Width (with near-zero guard), ATR percentile ranking
+- **Breadth Regime**: Advance-decline analysis, sector rotation signals (separated from momentum)
 - **Correlation Regime**: Spectral absorption ratio from eigendecomposition — detects systemic herding vs healthy dispersion
+- **SPRT Triggers**: Optional evidence-accumulating regime detection via Sequential Probability Ratio Test (Wald, 1945)
 
 ---
 
@@ -154,31 +160,37 @@ pragyam/
 ### Data Flow
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                        PRAGYAM DATA FLOW                             │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐       │
-│  │  Yahoo   │───▶│ Indicator│───▶│  Regime  │───▶│ Strategy │       │
-│  │ Finance  │    │  Engine  │    │ Detector │    │ Universe │       │
-│  └──────────┘    └──────────┘    └──────────┘    └──────────┘       │
-│                                       ▲               │              │
-│                                       │               ▼              │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐       │
-│  │Dashboard │◀───│ Backtest │◀───│ Portfolio│◀───│Redundancy│       │
-│  │ & Spec.  │    │  Engine  │    │  Builder │    │  Filter  │       │
-│  │ Analysis │    │          │    │(RMT Wts) │    │  (RMT)   │       │
-│  └──────────┘    └──────────┘    └──────────┘    └──────────┘       │
-│       ▲                                               ▲              │
-│       │          ┌──────────────────────────┐         │              │
-│       └──────────│  RMT SPECTRAL ENGINE     │─────────┘              │
-│                  │  (Marchenko-Pastur)      │                        │
-│                  │  Eigenvalue denoising,   │                        │
-│                  │  Absorption ratio,       │                        │
-│                  │  Cleaned covariance      │                        │
-│                  └──────────────────────────┘                        │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────┐
+│                          PRAGYAM DATA FLOW                                │
+├───────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐            │
+│  │  Yahoo   │───▶│ Indicator│───▶│  Regime  │───▶│ Strategy │            │
+│  │ Finance  │    │  Engine  │    │ Detector │    │ Universe │            │
+│  └──────────┘    └──────────┘    └──────────┘    └──────────┘            │
+│                                  ▲    ▲               │                   │
+│                           SPRT ──┘    │               ▼                   │
+│                         Triggers      │         ┌──────────┐              │
+│                                       │         │  Factor  │              │
+│                                       │         │Reduction │              │
+│                                       │         │  (RMT)   │              │
+│                                       │         └────┬─────┘              │
+│                                       │              ▼                    │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐            │
+│  │Dashboard │◀───│ Backtest │◀───│ Portfolio│◀───│Redundancy│            │
+│  │Conformal │    │  Engine  │    │  Builder │    │  Filter  │            │
+│  │Intervals │    │(Embargo) │    │  (HRP)   │    │  (RMT)   │            │
+│  └──────────┘    └──────────┘    └──────────┘    └──────────┘            │
+│       ▲                                               ▲                   │
+│       │          ┌──────────────────────────┐         │                   │
+│       └──────────│  RMT SPECTRAL ENGINE     │─────────┘                   │
+│                  │  Marchenko-Pastur,       │                             │
+│                  │  Eigenvalue denoising,   │                             │
+│                  │  HRP, Conformal PI,      │                             │
+│                  │  Factor decomposition    │                             │
+│                  └──────────────────────────┘                             │
+│                                                                           │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -265,6 +277,9 @@ from rmt_core import (
     detect_redundant_strategies,
     rmt_minimum_variance_weights,
     rmt_risk_parity_weights,
+    hrp_weights,
+    reduce_strategy_space,
+    conformal_strategy_intervals,
 )
 
 # Full spectral analysis of a returns matrix
@@ -277,8 +292,26 @@ print(f"Effective rank:     {diagnostics.effective_rank:.1f}")
 # RMT-cleaned correlation matrix (noise eigenvalues clipped)
 cleaned_corr = diagnostics.cleaned_corr
 
-# Minimum-variance weights using cleaned covariance
-weights = rmt_minimum_variance_weights(returns_matrix, strategy_names)
+# Hierarchical Risk Parity weights (default allocation method)
+weights = hrp_weights(returns_matrix, strategy_names)
+
+# Strategy dimensionality reduction
+factors = reduce_strategy_space(strategy_returns_dict)
+print(f"True factors: {factors['n_factors']} / {len(strategy_returns_dict)} strategies")
+
+# Conformal prediction intervals (90% coverage)
+intervals = conformal_strategy_intervals(strategy_returns_dict, alpha=0.10)
+for name, (lower, point, upper) in intervals.items():
+    print(f"{name}: [{lower:.4f}, {upper:.4f}]")
+```
+
+### SPRT Triggers
+
+```python
+from strategy_selection import SPRTRegimeTrigger, get_sprt_trigger_dates
+
+# Evidence-accumulating regime detection
+buy_dates, sell_dates = get_sprt_trigger_dates(breadth_df, alpha=0.05, beta=0.10)
 ```
 
 ---
@@ -310,6 +343,16 @@ This software is licensed exclusively to authorized users. Redistribution, modif
 ---
 
 ## Changelog
+
+### v3.6.0 (March 2026)
+- Quantitative hardening: 12 mathematical/architectural fixes (CRITICAL-1 through MEDIUM-3)
+- Hierarchical Risk Parity (Lopez de Prado, 2016) as default allocation method
+- SPRT regime triggers (Wald, 1945) — evidence-accumulating alternative to fixed thresholds
+- Conformal prediction intervals (Vovk et al., 2005) — distribution-free 90% coverage
+- Strategy factor decomposition — RMT spectral projection reveals true independent bets
+- Walk-forward embargo (Lopez de Prado, 2018) prevents indicator serial correlation leakage
+- Turnover-proportional transaction costs with proper `prev_portfolio` tracking
+- Continuous Kelly criterion, adaptive softmax temperature, iterative MP sigma estimation
 
 ### v3.5.0 (March 2026)
 - Adversarial audit: 15 metric/formula fixes (Sortino RMS, SIP TWR, tier Sharpe, spectral matrix)

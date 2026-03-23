@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.6.0] - 2026-03-23
+
+### Fixed
+- **[CRITICAL-1] Strategy space not reduced** — 60+ correlated strategies now decomposed into true independent factors via RMT spectral analysis (`reduce_strategy_space` in `rmt_core.py`); UI shows factor groupings and variance explained
+- **[CRITICAL-2] Look-ahead bias in tier Sharpe** — `_calculate_performance_on_window` was called with full `historical_data` instead of `historical_data[:train_cutoff]`, leaking OOS data into tier Sharpe computation
+- **[CRITICAL-3] Flat transaction costs** — replaced per-rebalance flat deduction with turnover-proportional model; `compute_portfolio_return` now accepts `prev_portfolio` and computes half-sum-of-absolute-weight-changes turnover; all walk-forward loops updated to pass previous portfolio
+- **[CRITICAL-4] Periods-per-year estimation** — replaced fragile `365.25/avg_period_days` with robust observation-count method: `len(dates) × 365.25 / calendar_span`, clamped to [12, 365]
+- **[CRITICAL-5] SIP TWR cash-flow leakage** — TWR now uses Modified Dietz: `r = (V_t − (V_{t-1} + CF)) / (V_{t-1} + CF)`, isolating market return from capital injection
+- **[HIGH-1] Regime detector conflating breadth and momentum** — separated `breadth_values` (RSI > 50 fraction) from `pct_change_medians`; classification now uses both dimensions independently
+- **[HIGH-2] Fixed softmax temperature** — replaced hardcoded temperature with adaptive `κ = c / σ_Sharpe` (c=1.5), clamped to [1, 20]; allocation now scale-invariant to Sharpe spread
+- **[HIGH-3] Ledoit-Wolf O(N²) loop** — vectorized off-diagonal shrinkage computation using outer-product formulation; eliminates Python loop over N×N matrix
+- **[HIGH-4] BBW division by zero** — Bollinger Band Width now guards against near-zero MA20 using `np.where(|ma20| > 1.0, ma20, np.nan)` with `np.nanmean`
+- **[MEDIUM-1] MP sigma estimation** — replaced single-pass `eigenvalues.mean()` with iterative (up to 10 rounds) noise-eigenvalue re-estimation that converges to self-consistent σ²
+- **[MEDIUM-2] Survivorship bias** — `load_symbols_from_file()` now emits explicit logger warning about static `symbols.txt` universe excluding delisted stocks
+- **[MEDIUM-3] Kelly criterion** — replaced binary Kelly `(2p − 1)` with continuous Kelly `f* = μ/σ²` (Thorp, 2006) for correlated, non-binary returns
+
+### Added
+- **[REC-1] Strategy dimensionality reduction** (`reduce_strategy_space` in `rmt_core.py`) — PCA projection onto signal eigenvectors above Marchenko-Pastur threshold; returns factor portfolios, labels, strategy-to-factor mapping, explained variance
+- **[REC-2] Walk-forward embargo** — 1-day embargo gap between training and test windows in both walk-forward functions; prevents indicator serial correlation leakage (Lopez de Prado, 2018, Ch. 7)
+- **[REC-3] SPRT trigger system** (`SPRTRegimeTrigger` in `strategy_selection.py`) — Sequential Probability Ratio Test (Wald, 1945) for evidence-accumulating regime change detection; `get_sprt_trigger_dates()` as drop-in alternative to fixed-threshold triggers; configurable via `use_sprt` flag in `TRIGGER_CONFIG`
+- **[REC-4] Conformal prediction intervals** (`conformal_prediction_interval`, `conformal_strategy_intervals` in `rmt_core.py`) — split conformal method with finite-sample valid 90% coverage guarantee (Vovk et al., 2005); displayed in Risk Intelligence tab as strategy-level interval table
+- **[REC-5] Hierarchical Risk Parity** (`hrp_weights` in `rmt_core.py`) — Lopez de Prado (2016) dendrogram-based allocation; avoids covariance matrix inversion; now the **default allocation method** when sufficient return data exists (replaces `rmt_risk_parity`)
+- **Strategy Factor Decomposition UI** — Risk Intelligence tab now shows signal factor count, variance explained, redundancy count, and strategy-to-factor groupings
+- **Conformal Prediction Intervals UI** — Risk Intelligence tab shows 90% prediction intervals (lower, point estimate, upper, width) per strategy
+
+### Changed
+- `curate_final_portfolio` default method changed from `'rmt_risk_parity'` to `'hrp'`
+- `compute_portfolio_return` signature extended with `prev_portfolio` parameter for turnover calculation
+- Both walk-forward functions now track and pass `prev_portfolio` state for accurate turnover-proportional costs
+- Both walk-forward functions return `conformal_intervals` and `strategy_factors` in results dict
+- `get_sprt_trigger_dates` handles both `DATE` column and datetime index formats
+- `TRIGGER_CONFIG` entries now include `use_sprt` flag (default: `False`)
+
+---
+
 ## [3.5.0] - 2026-03-23
 
 ### Fixed
