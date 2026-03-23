@@ -124,6 +124,77 @@ def compute_risk_metrics(
 
 
 # ============================================================================
+# MASTER Phase 0: IC / RankIC / ICIR — cross-sectional forecasting metrics
+# ============================================================================
+
+def ic(predicted: np.ndarray, actual: np.ndarray) -> float:
+    """Information Coefficient: Pearson correlation between predicted and actual.
+
+    Args:
+        predicted: 1-D array of predicted values (e.g. return forecasts).
+        actual: 1-D array of realized values (e.g. actual returns).
+
+    Returns:
+        Pearson correlation coefficient, or 0.0 if computation fails.
+    """
+    p = np.asarray(predicted, dtype=np.float64).ravel()
+    a = np.asarray(actual, dtype=np.float64).ravel()
+    mask = np.isfinite(p) & np.isfinite(a)
+    p, a = p[mask], a[mask]
+    if len(p) < 3:
+        return 0.0
+    std_p, std_a = np.std(p, ddof=1), np.std(a, ddof=1)
+    if std_p < 1e-12 or std_a < 1e-12:
+        return 0.0
+    return float(np.corrcoef(p, a)[0, 1])
+
+
+def rank_ic(predicted: np.ndarray, actual: np.ndarray) -> float:
+    """Rank Information Coefficient: Spearman rank correlation.
+
+    More robust to outliers than IC and directly measures ranking quality.
+
+    Args:
+        predicted: 1-D array of predicted values.
+        actual: 1-D array of realized values.
+
+    Returns:
+        Spearman rank correlation coefficient, or 0.0 if computation fails.
+    """
+    from scipy.stats import spearmanr
+
+    p = np.asarray(predicted, dtype=np.float64).ravel()
+    a = np.asarray(actual, dtype=np.float64).ravel()
+    mask = np.isfinite(p) & np.isfinite(a)
+    p, a = p[mask], a[mask]
+    if len(p) < 3:
+        return 0.0
+    corr, _ = spearmanr(p, a)
+    return float(corr) if np.isfinite(corr) else 0.0
+
+
+def icir(ic_series: np.ndarray) -> float:
+    """Information Ratio of IC: mean(IC) / std(IC).
+
+    Measures the consistency of predictive power across time periods.
+
+    Args:
+        ic_series: 1-D array of daily IC values over a backtest period.
+
+    Returns:
+        ICIR value, or 0.0 if computation fails.
+    """
+    s = np.asarray(ic_series, dtype=np.float64).ravel()
+    s = s[np.isfinite(s)]
+    if len(s) < 3:
+        return 0.0
+    std = np.std(s, ddof=1)
+    if std < 1e-12:
+        return 0.0
+    return float(np.mean(s) / std)
+
+
+# ============================================================================
 # PERFORMANCE METRICS CALCULATOR (legacy class — delegates to canonical)
 # ============================================================================
 
