@@ -94,18 +94,21 @@ TRIGGER_CONFIG = {
         'buy_threshold': 0.42,   # Buy when REL_BREADTH < 0.42
         'sell_threshold': 0.50,  # Sell when REL_BREADTH >= 0.50
         'sell_enabled': False,   # SIP accumulates, no sell
+        'use_sprt': False,       # REC-3: set True to use SPRT evidence accumulation
         'description': 'Systematic accumulation on regime dips'
     },
     'Swing Trading': {
-        'buy_threshold': 0.42,   # Buy when REL_BREADTH < 0.42  
+        'buy_threshold': 0.42,   # Buy when REL_BREADTH < 0.42
         'sell_threshold': 0.50,  # Sell when REL_BREADTH >= 0.50
         'sell_enabled': True,
+        'use_sprt': False,       # REC-3: set True to use SPRT evidence accumulation
         'description': 'Tactical entry/exit on regime signals'
     },
     'All Weather': {
         'buy_threshold': 0.42,   # Same research-backed threshold
         'sell_threshold': 0.50,
         'sell_enabled': False,
+        'use_sprt': False,       # REC-3: set True to use SPRT evidence accumulation
         'description': 'Balanced regime-aware allocation'
     }
 }
@@ -176,17 +179,56 @@ def load_historical_data(end_date: datetime, lookback_files: int) -> List[Tuple[
 TRANSACTION_COST_BPS = 20  # basis points per round-trip trade
 
 
-def compute_portfolio_return(portfolio: pd.DataFrame, next_prices: pd.DataFrame, is_rebalance: bool = False) -> float:
-    if portfolio.empty or 'value' not in portfolio.columns or portfolio['value'].sum() == 0: return 0.0
+def compute_portfolio_return(
+    portfolio: pd.DataFrame,
+    next_prices: pd.DataFrame,
+    is_rebalance: bool = False,
+    prev_portfolio: Optional[pd.DataFrame] = None,
+) -> float:
+    """Compute single-period portfolio return with turnover-proportional costs.
+
+    CRITICAL-3 fix: transaction costs are now proportional to actual portfolio
+    turnover rather than a flat per-rebalance deduction.  Turnover is measured
+    as the fraction of portfolio value that changed hands (sum of absolute
+    weight changes / 2).  Cost = turnover × round-trip bps.
+
+    Args:
+        portfolio: Current portfolio with ['symbol', 'price', 'value'].
+        next_prices: Next-period prices with ['symbol', 'price'].
+        is_rebalance: Whether this is a rebalance day.
+        prev_portfolio: Previous portfolio (for turnover calculation).
+            If None on a rebalance day, assumes 100% turnover (full entry).
+    """
+    if portfolio.empty or 'value' not in portfolio.columns or portfolio['value'].sum() == 0:
+        return 0.0
     merged = portfolio.merge(next_prices[['symbol', 'price']], on='symbol', how='left', suffixes=('_prev', '_next'))
-    if merged.empty: return 0.0
+    if merged.empty:
+        return 0.0
     # Missing symbols (delisted/halted) get 0 return instead of being silently dropped
     merged['price_next'] = merged['price_next'].fillna(merged['price_prev'])
     returns = (merged['price_next'] - merged['price_prev']) / merged['price_prev']
     gross_return = np.average(returns, weights=merged['value'])
-    # Deduct one-way cost on rebalance days (half of round-trip)
+
+    # Turnover-proportional transaction costs
     if is_rebalance and TRANSACTION_COST_BPS > 0:
-        gross_return -= TRANSACTION_COST_BPS / 10000 / 2
+        if prev_portfolio is not None and not prev_portfolio.empty and 'value' in prev_portfolio.columns:
+            # Compute turnover as half the sum of absolute weight changes
+            curr_total = portfolio['value'].sum()
+            prev_total = prev_portfolio['value'].sum()
+            if curr_total > 0 and prev_total > 0:
+                curr_weights = portfolio.set_index('symbol')['value'] / curr_total
+                prev_weights = prev_portfolio.set_index('symbol')['value'] / prev_total
+                all_symbols = curr_weights.index.union(prev_weights.index)
+                curr_w = curr_weights.reindex(all_symbols, fill_value=0.0)
+                prev_w = prev_weights.reindex(all_symbols, fill_value=0.0)
+                turnover = float(np.abs(curr_w - prev_w).sum()) / 2.0
+            else:
+                turnover = 1.0  # full entry
+        else:
+            turnover = 1.0  # no previous portfolio → full entry
+
+        # Cost = turnover fraction × round-trip cost in decimal
+        gross_return -= turnover * TRANSACTION_COST_BPS / 10000
     return gross_return
 
 def calculate_advanced_metrics(returns_with_dates: List[Dict]) -> Tuple[Dict, float]:
@@ -206,9 +248,20 @@ def calculate_advanced_metrics(returns_with_dates: List[Dict]) -> Tuple[Dict, fl
         return default_metrics, 52
 
     returns_df = pd.DataFrame(returns_with_dates).sort_values('date').set_index('date')
-    time_deltas = returns_df.index.to_series().diff().dt.days
-    avg_period_days = time_deltas.mean()
-    periods_per_year = 365.25 / avg_period_days if pd.notna(avg_period_days) and avg_period_days > 0 else 52
+    # Robust periods_per_year: count actual observations per calendar year
+    # instead of the fragile 365.25/avg_gap which is unstable for irregular
+    # trigger-based observations (CRITICAL-4 fix).
+    date_range = returns_df.index
+    if hasattr(date_range, 'min') and hasattr(date_range, 'max'):
+        total_calendar_days = (date_range.max() - date_range.min()).days
+        if total_calendar_days > 0:
+            periods_per_year = len(date_range) * 365.25 / total_calendar_days
+        else:
+            periods_per_year = 52.0
+    else:
+        periods_per_year = 52.0
+    # Clamp to reasonable bounds (at least weekly, at most sub-daily)
+    periods_per_year = float(np.clip(periods_per_year, 12, 365))
 
     returns = returns_df['return'].values
 
@@ -224,9 +277,16 @@ def calculate_advanced_metrics(returns_with_dates: List[Dict]) -> Tuple[Dict, fl
     total_gains = gains.sum() if len(gains) > 0 else 0
     total_losses = abs(losses.sum()) if len(losses) > 0 else 0
 
-    # Kelly Criterion
-    win_loss_ratio = avg_win / avg_loss if avg_loss > 0.0001 else 0
-    kelly = (core['win_rate'] - ((1 - core['win_rate']) / win_loss_ratio)) if win_loss_ratio > 0 else 0
+    # Kelly Criterion — continuous approximation (MEDIUM-3 fix)
+    # The classic f* = p - (1-p)/R assumes independent binary bets, which
+    # is invalid for correlated portfolio returns.  The continuous Kelly
+    # fraction f* = μ/σ² (mean/variance of arithmetic returns) is valid
+    # for serially correlated, non-binary return streams.
+    # Reference: Thorp (2006), "The Kelly Criterion in Blackjack, Sports
+    # Betting and the Stock Market".
+    mu = r.mean()
+    var = r.var()
+    kelly = mu / var if var > 1e-8 else 0.0
     kelly = float(np.clip(kelly, -1, 1))
 
     # Omega Ratio
@@ -277,6 +337,7 @@ def calculate_strategy_weights(
         'softmax_sharpe': Original Sharpe-based softmax (backward compatible).
         'rmt_min_variance': Minimum variance using RMT-cleaned covariance.
         'rmt_risk_parity': Equal risk contribution using RMT-cleaned covariance.
+        'hrp': Hierarchical Risk Parity (REC-5) — robust to estimation error.
         'equal': Uniform 1/N allocation.
 
     Args:
@@ -288,10 +349,10 @@ def calculate_strategy_weights(
     if not strat_names:
         return {}
 
-    # RMT-based methods
-    if method in ('rmt_min_variance', 'rmt_risk_parity') and returns_data:
+    # RMT-based methods (including HRP — REC-5)
+    if method in ('rmt_min_variance', 'rmt_risk_parity', 'hrp') and returns_data:
         try:
-            from rmt_core import rmt_minimum_variance_weights, rmt_risk_parity_weights
+            from rmt_core import rmt_minimum_variance_weights, rmt_risk_parity_weights, hrp_weights
 
             # Align returns to common length
             available = [n for n in strat_names if n in returns_data and len(returns_data[n]) >= 20]
@@ -301,6 +362,8 @@ def calculate_strategy_weights(
 
                 if method == 'rmt_min_variance':
                     weights_dict = rmt_minimum_variance_weights(returns_matrix, available)
+                elif method == 'hrp':
+                    weights_dict = hrp_weights(returns_matrix, available)
                 else:
                     weights_dict = rmt_risk_parity_weights(returns_matrix, available)
 
@@ -318,10 +381,11 @@ def calculate_strategy_weights(
     if method == 'equal':
         return {name: 1.0 / len(strat_names) for name in strat_names}
 
-    # Default: softmax_sharpe with temperature scaling.
-    # Temperature κ controls concentration: κ=1 is near-equal-weight for
-    # typical Sharpe spreads; κ=5 provides meaningful differentiation.
-    SOFTMAX_TEMPERATURE = 5.0
+    # Default: softmax_sharpe with ADAPTIVE temperature scaling.
+    # HIGH-2 fix: κ = c / σ_Sharpe makes allocation invariant to the
+    # scale of performance differences.  c=1.5 gives meaningful
+    # differentiation without extreme concentration.
+    SOFTMAX_CONCENTRATION = 1.5  # desired concentration constant
 
     sharpe_values = []
     for name in strat_names:
@@ -339,7 +403,12 @@ def calculate_strategy_weights(
     if sharpe_values.size == 0:
         return {name: 1.0 / len(strat_names) for name in strat_names} if strat_names else {}
 
-    stable_sharpes = SOFTMAX_TEMPERATURE * (sharpe_values - np.max(sharpe_values))
+    # Adaptive temperature: κ = c / σ_Sharpe (clamped to [1, 20])
+    sharpe_std = np.std(sharpe_values)
+    temperature = SOFTMAX_CONCENTRATION / max(sharpe_std, 0.05)
+    temperature = float(np.clip(temperature, 1.0, 20.0))
+
+    stable_sharpes = temperature * (sharpe_values - np.max(sharpe_values))
     exp_sharpes = np.exp(stable_sharpes)
     total_score = np.sum(exp_sharpes)
 
@@ -413,23 +482,34 @@ def calculate_trigger_based_metrics(daily_data: pd.DataFrame, deployment_style: 
         absolute_pnl = final_value - total_investment
         total_return_pct = absolute_pnl / total_investment
 
-        # Time-Weighted Return (TWR) for SIP
-        # Correct approach: compute return BEFORE each cash injection.
-        # r_t = (V_t_before_injection - V_{t-1}_after_injection) / V_{t-1}_after_injection
-        # Then the cash flow adjusts the base for the next period.
+        # Time-Weighted Return (TWR) for SIP — Modified Dietz method
+        # (CRITICAL-5 fix)
+        #
+        # Cash flows are invested at the START of the day (generate_portfolio
+        # is called on the buy day), so cf earns a return during the period.
+        # Correct denominator: prev_val + cf (the capital base that earned
+        # the day's return).
+        #
+        # r_t = (V_t - V_{t-1} - CF_t) / (V_{t-1} + CF_t)
+        #
+        # This avoids the downward bias of the previous formula which used
+        # prev_val alone in the denominator even though cf was already
+        # deployed and earning returns.
         df = daily_data.copy()
         df['cash_flow'] = df['investment'].diff().fillna(0)
-        df['prev_value'] = df['value'].shift(1)
 
         twr_returns = []
         for i in range(1, len(df)):
             prev_val = df['value'].iloc[i - 1]
             curr_val = df['value'].iloc[i]
             cf = df['cash_flow'].iloc[i]
-            if prev_val > 0:
-                # Return on pre-existing capital: market moved value from
-                # prev_val to (curr_val - cf), the cf was injected today.
-                r = (curr_val - cf - prev_val) / prev_val
+            base = prev_val + cf  # capital base that was exposed to market
+            if base > 0:
+                r = (curr_val - base) / base
+                twr_returns.append(r)
+            elif prev_val > 0:
+                # Fallback: no new injection, use prev_val
+                r = (curr_val - prev_val) / prev_val
                 twr_returns.append(r)
             else:
                 twr_returns.append(0.0)
@@ -799,16 +879,24 @@ def evaluate_historical_performance_trigger_based(
     is_sip = 'SIP' in deployment_style
     
     MIN_TRAIN_DAYS = 5
+    # REC-2: Embargo period between training window and test observation.
+    # Prevents information leakage through serial correlation of indicator
+    # features.  Set to 1 day (conservative; the actual indicator lookback
+    # is handled by backdata.py's warmup, but returns computed from the
+    # last training observation can correlate with the first OOS observation).
+    # Reference: Lopez de Prado (2018), "Advances in Financial Machine
+    # Learning", Ch. 7 — purged/embargoed cross-validation.
+    EMBARGO_DAYS = 1
     TRAINING_CAPITAL = 2500000.0
-    
+
     logger.info("=" * 70)
     logger.info("WALK-FORWARD EVALUATION (TRIGGER-INTEGRATED)")
     logger.info("=" * 70)
     logger.info(f"  Style: {deployment_style} | Buy < {buy_threshold} | Sell >= {sell_threshold} (enabled={sell_enabled})")
     logger.info(f"  Strategies: {list(_strategies.keys())}")
-    logger.info(f"  Data points: {len(historical_data)}")
-    
-    if len(historical_data) < MIN_TRAIN_DAYS + 2:
+    logger.info(f"  Data points: {len(historical_data)} | Embargo: {EMBARGO_DAYS} days")
+
+    if len(historical_data) < MIN_TRAIN_DAYS + EMBARGO_DAYS + 2:
         logger.error(f"Not enough data ({len(historical_data)}) for walk-forward. Need {MIN_TRAIN_DAYS + 2}+")
         return {}
     
@@ -823,21 +911,41 @@ def evaluate_historical_performance_trigger_based(
     buy_mask = [False] * len(historical_data)
     sell_mask = [False] * len(historical_data)
     
+    use_sprt = trigger_config.get('use_sprt', False)
+
     if trigger_df is not None and not trigger_df.empty and 'REL_BREADTH' in trigger_df.columns:
-        # Build date→value lookup from trigger data
-        if hasattr(trigger_df.index, 'date'):
-            trigger_map = {idx.date(): val for idx, val in trigger_df['REL_BREADTH'].items() if pd.notna(val)}
-        else:
-            trigger_map = {pd.to_datetime(idx).date(): val for idx, val in trigger_df['REL_BREADTH'].items() if pd.notna(val)}
-        
-        for i, sim_date in enumerate(simulation_dates):
-            if sim_date in trigger_map:
-                breadth = trigger_map[sim_date]
-                if breadth < buy_threshold:
-                    buy_mask[i] = True
-                if sell_enabled and breadth >= sell_threshold:
-                    sell_mask[i] = True
-        
+        if use_sprt:
+            # REC-3: Use SPRT evidence accumulation instead of fixed thresholds
+            try:
+                from strategy_selection import get_sprt_trigger_dates
+                sprt_buy_dates, sprt_sell_dates = get_sprt_trigger_dates(trigger_df)
+                sprt_buy_set = set(d.date() if hasattr(d, 'date') else d for d in sprt_buy_dates)
+                sprt_sell_set = set(d.date() if hasattr(d, 'date') else d for d in sprt_sell_dates)
+                for i, sim_date in enumerate(simulation_dates):
+                    if sim_date in sprt_buy_set:
+                        buy_mask[i] = True
+                    if sell_enabled and sim_date in sprt_sell_set:
+                        sell_mask[i] = True
+                logger.info(f"  SPRT trigger masks: {sum(buy_mask)} buy days, {sum(sell_mask)} sell days")
+            except Exception as e:
+                logger.warning(f"  SPRT trigger failed ({e}), falling back to fixed thresholds")
+                use_sprt = False  # fall through to fixed thresholds below
+
+        if not use_sprt:
+            # Fixed-threshold triggers (original method)
+            if hasattr(trigger_df.index, 'date'):
+                trigger_map = {idx.date(): val for idx, val in trigger_df['REL_BREADTH'].items() if pd.notna(val)}
+            else:
+                trigger_map = {pd.to_datetime(idx).date(): val for idx, val in trigger_df['REL_BREADTH'].items() if pd.notna(val)}
+
+            for i, sim_date in enumerate(simulation_dates):
+                if sim_date in trigger_map:
+                    breadth = trigger_map[sim_date]
+                    if breadth < buy_threshold:
+                        buy_mask[i] = True
+                    if sell_enabled and breadth >= sell_threshold:
+                        sell_mask[i] = True
+
         logger.info(f"  Trigger masks: {sum(buy_mask)} buy days, {sum(sell_mask)} sell days")
     else:
         # No trigger data: treat every day as active (standard walk-forward)
@@ -864,16 +972,17 @@ def evaluate_historical_performance_trigger_based(
     last_strategy_ports = {}  # strategy_name -> portfolio DataFrame
     
     progress_bar = st.progress(0, text="Initializing walk-forward...")
-    total_steps = len(historical_data) - MIN_TRAIN_DAYS - 1
-    
+    total_steps = len(historical_data) - MIN_TRAIN_DAYS - EMBARGO_DAYS - 1
+
     if total_steps <= 0:
         progress_bar.empty()
         logger.error("Not enough data for walk-forward steps")
         return {}
-    
+
     step_count = 0
-    for i in range(MIN_TRAIN_DAYS, len(historical_data) - 1):
-        train_window = historical_data[:i]
+    for i in range(MIN_TRAIN_DAYS + EMBARGO_DAYS, len(historical_data) - 1):
+        # REC-2: train on data[:i-EMBARGO], skip embargo gap, test at i
+        train_window = historical_data[:i - EMBARGO_DAYS]
         test_date, test_df = historical_data[i]
         next_date, next_df = historical_data[i + 1]
         
@@ -900,8 +1009,9 @@ def evaluate_historical_performance_trigger_based(
                 if curated_port.empty:
                     oos_perf['System_Curated']['returns'].append({'return': 0, 'date': next_date})
                 else:
+                    prev_curated = last_curated_port if not last_curated_port.empty else None
                     last_curated_port = curated_port.copy()
-                    oos_ret = compute_portfolio_return(curated_port, next_df, is_rebalance=True)
+                    oos_ret = compute_portfolio_return(curated_port, next_df, is_rebalance=True, prev_portfolio=prev_curated)
                     oos_perf['System_Curated']['returns'].append({'return': oos_ret, 'date': next_date})
 
                     # Track weight entropy
@@ -935,9 +1045,12 @@ def evaluate_historical_performance_trigger_based(
                 if is_buy_day:
                     portfolio = strategy.generate_portfolio(test_df, TRAINING_CAPITAL)
                     if not portfolio.empty:
+                        prev_strat_port = last_strategy_ports.get(name)
+                        if prev_strat_port is not None and prev_strat_port.empty:
+                            prev_strat_port = None
                         last_strategy_ports[name] = portfolio.copy()
                         oos_perf[name]['returns'].append({
-                            'return': compute_portfolio_return(portfolio, next_df, is_rebalance=True),
+                            'return': compute_portfolio_return(portfolio, next_df, is_rebalance=True, prev_portfolio=prev_strat_port),
                             'date': next_date
                         })
                     else:
@@ -997,8 +1110,13 @@ def evaluate_historical_performance_trigger_based(
     if weight_entropies:
         final_oos_perf['System_Curated']['metrics']['avg_weight_entropy'] = np.mean(weight_entropies)
 
-    # Tier-level performance from full history
-    full_history_subset_perf = _calculate_performance_on_window(historical_data, _strategies, TRAINING_CAPITAL)['subset']
+    # Tier-level performance from TRAIN window only (CRITICAL-2 fix:
+    # using full historical_data here caused look-ahead bias — the tier
+    # Sharpes included OOS data that the walk-forward loop had not yet seen).
+    train_cutoff = max(MIN_TRAIN_DAYS, len(historical_data) * 2 // 3)
+    full_history_subset_perf = _calculate_performance_on_window(
+        historical_data[:train_cutoff], _strategies, TRAINING_CAPITAL
+    )['subset']
 
     logger.info("=" * 70)
     curated_metrics = final_oos_perf.get('System_Curated', {}).get('metrics', {})
@@ -1018,6 +1136,42 @@ def evaluate_historical_performance_trigger_based(
             'n_observations': len(spectral_history),
         }
 
+    # REC-4: Conformal prediction intervals for strategy returns
+    conformal_intervals = {}
+    try:
+        from rmt_core import conformal_strategy_intervals
+        strat_returns_for_ci = {}
+        for name, data in final_oos_perf.items():
+            if name == 'System_Curated':
+                continue
+            ret_list = data.get('returns', [])
+            if len(ret_list) >= 20:
+                strat_returns_for_ci[name] = np.array(
+                    [r['return'] if isinstance(r, dict) else r for r in ret_list], dtype=float
+                )
+        if strat_returns_for_ci:
+            conformal_intervals = conformal_strategy_intervals(strat_returns_for_ci, alpha=0.1)
+    except Exception:
+        pass
+
+    # REC-1: Strategy dimensionality reduction summary
+    strategy_factors = {}
+    try:
+        from rmt_core import reduce_strategy_space
+        strat_returns_for_pca = {}
+        for name, data in final_oos_perf.items():
+            if name == 'System_Curated':
+                continue
+            ret_list = data.get('returns', [])
+            if len(ret_list) >= 20:
+                strat_returns_for_pca[name] = np.array(
+                    [r['return'] if isinstance(r, dict) else r for r in ret_list], dtype=float
+                )
+        if len(strat_returns_for_pca) >= 3:
+            strategy_factors = reduce_strategy_space(strat_returns_for_pca)
+    except Exception:
+        pass
+
     return {
         'strategy': final_oos_perf,
         'subset': full_history_subset_perf,
@@ -1027,6 +1181,8 @@ def evaluate_historical_performance_trigger_based(
         'trigger_config': trigger_config,
         'spectral_history': spectral_history,
         'spectral_summary': spectral_summary,
+        'conformal_intervals': conformal_intervals,
+        'strategy_factors': strategy_factors,
     }
 
 
@@ -1039,12 +1195,13 @@ def evaluate_historical_performance(
     Every day is a rebalancing day.
     """
     MIN_TRAIN_FILES = 2
+    EMBARGO_DAYS = 1  # REC-2: embargo gap
     TRAINING_CAPITAL = 2500000.0
-    
-    if len(historical_data) < MIN_TRAIN_FILES + 1:
-        st.error(f"Not enough historical data. Need at least {MIN_TRAIN_FILES + 1} files.")
+
+    if len(historical_data) < MIN_TRAIN_FILES + EMBARGO_DAYS + 1:
+        st.error(f"Not enough historical data. Need at least {MIN_TRAIN_FILES + EMBARGO_DAYS + 1} files.")
         return {}
-    
+
     all_names = list(_strategies.keys()) + ['System_Curated']
     oos_perf = {name: {'returns': []} for name in all_names}
     weight_entropies = []
@@ -1052,37 +1209,45 @@ def evaluate_historical_performance(
     subset_weights_history = []
     spectral_history = []
 
+    # Track previous portfolios for turnover-proportional cost (CRITICAL-3 wiring)
+    last_curated_port = pd.DataFrame()
+    last_strategy_ports: Dict[str, pd.DataFrame] = {}
+
     progress_bar = st.progress(0, text="Initializing backtest...")
-    total_steps = len(historical_data) - MIN_TRAIN_FILES - 1
-    
+    total_steps = len(historical_data) - MIN_TRAIN_FILES - EMBARGO_DAYS - 1
+
     if total_steps <= 0:
-        st.error(f"Not enough data for backtest steps. Need at least {MIN_TRAIN_FILES + 2} days.")
+        st.error(f"Not enough data for backtest steps. Need at least {MIN_TRAIN_FILES + EMBARGO_DAYS + 2} days.")
         progress_bar.empty()
         return {}
-    
-    for i in range(MIN_TRAIN_FILES, len(historical_data) - 1):
-        train_window = historical_data[:i]
+
+    for i in range(MIN_TRAIN_FILES + EMBARGO_DAYS, len(historical_data) - 1):
+        # REC-2: train on data[:i-EMBARGO], skip embargo gap, test at i
+        train_window = historical_data[:i - EMBARGO_DAYS]
         test_date, test_df = historical_data[i]
         next_date, next_df = historical_data[i + 1]
-        
-        progress_text = f"Processing step {i - MIN_TRAIN_FILES + 1}/{total_steps}"
-        progress_bar.progress((i - MIN_TRAIN_FILES + 1) / total_steps, text=progress_text)
-        
+
+        step_idx = i - MIN_TRAIN_FILES - EMBARGO_DAYS + 1
+        progress_text = f"Processing step {step_idx}/{total_steps}"
+        progress_bar.progress(step_idx / total_steps, text=progress_text)
+
         in_sample_perf = _calculate_performance_on_window(train_window, _strategies, TRAINING_CAPITAL)
-        
+
         try:
             curated_port, strat_wts, sub_wts, _ = curate_final_portfolio(
                 _strategies, in_sample_perf, test_df, TRAINING_CAPITAL, 30, 1.0, 10.0
             )
-            
+
             strategy_weights_history.append({'date': test_date, **strat_wts})
             subset_weights_history.append({'date': test_date, **sub_wts})
-            
+
             if curated_port.empty:
                 oos_perf['System_Curated']['returns'].append({'return': 0, 'date': next_date})
             else:
+                prev_curated = last_curated_port if not last_curated_port.empty else None
+                last_curated_port = curated_port.copy()
                 oos_perf['System_Curated']['returns'].append({
-                    'return': compute_portfolio_return(curated_port, next_df, is_rebalance=True),
+                    'return': compute_portfolio_return(curated_port, next_df, is_rebalance=True, prev_portfolio=prev_curated),
                     'date': next_date
                 })
                 weights = curated_port['weightage_pct'] / 100
@@ -1093,12 +1258,16 @@ def evaluate_historical_performance(
         except Exception as e:
             logger.error(f"OOS Curation Error ({test_date.date()}): {e}")
             oos_perf['System_Curated']['returns'].append({'return': 0, 'date': next_date})
-        
+
         for name, strategy in _strategies.items():
             try:
                 portfolio = strategy.generate_portfolio(test_df, TRAINING_CAPITAL)
+                prev_strat_port = last_strategy_ports.get(name)
+                if prev_strat_port is not None and prev_strat_port.empty:
+                    prev_strat_port = None
+                last_strategy_ports[name] = portfolio.copy() if not portfolio.empty else pd.DataFrame()
                 oos_perf[name]['returns'].append({
-                    'return': compute_portfolio_return(portfolio, next_df, is_rebalance=True),
+                    'return': compute_portfolio_return(portfolio, next_df, is_rebalance=True, prev_portfolio=prev_strat_port),
                     'date': next_date
                 })
             except Exception as e:
@@ -1106,7 +1275,7 @@ def evaluate_historical_performance(
                 oos_perf[name]['returns'].append({'return': 0, 'date': next_date})
 
         # ─── SPECTRAL TRACKING (every 5th step) — uses return time-series ───
-        step_count = i - MIN_TRAIN_FILES
+        step_count = i - MIN_TRAIN_FILES - EMBARGO_DAYS
         if step_count % 5 == 0 and i >= 20:
             try:
                 from rmt_core import compute_spectral_diagnostics
@@ -1147,7 +1316,11 @@ def evaluate_historical_performance(
     if weight_entropies:
         final_oos_perf['System_Curated']['metrics']['avg_weight_entropy'] = np.mean(weight_entropies)
     
-    full_history_subset_perf = _calculate_performance_on_window(historical_data, _strategies, TRAINING_CAPITAL)['subset']
+    # CRITICAL-2 fix: use train-only window for tier Sharpe calculation
+    train_cutoff = max(MIN_TRAIN_FILES, len(historical_data) * 2 // 3)
+    full_history_subset_perf = _calculate_performance_on_window(
+        historical_data[:train_cutoff], _strategies, TRAINING_CAPITAL
+    )['subset']
 
     # Spectral summary (market correlation regime)
     spectral_summary = {}
@@ -1184,6 +1357,42 @@ def evaluate_historical_performance(
     except Exception:
         pass
 
+    # REC-4: Conformal prediction intervals for strategy returns
+    conformal_intervals = {}
+    try:
+        from rmt_core import conformal_strategy_intervals
+        strat_returns_for_ci = {}
+        for name, data in final_oos_perf.items():
+            if name == 'System_Curated':
+                continue
+            ret_list = data.get('returns', [])
+            if len(ret_list) >= 20:
+                strat_returns_for_ci[name] = np.array(
+                    [r['return'] if isinstance(r, dict) else r for r in ret_list], dtype=float
+                )
+        if strat_returns_for_ci:
+            conformal_intervals = conformal_strategy_intervals(strat_returns_for_ci, alpha=0.1)
+    except Exception:
+        pass
+
+    # REC-1: Strategy dimensionality reduction summary
+    strategy_factors = {}
+    try:
+        from rmt_core import reduce_strategy_space
+        strat_returns_for_pca = {}
+        for name, data in final_oos_perf.items():
+            if name == 'System_Curated':
+                continue
+            ret_list = data.get('returns', [])
+            if len(ret_list) >= 20:
+                strat_returns_for_pca[name] = np.array(
+                    [r['return'] if isinstance(r, dict) else r for r in ret_list], dtype=float
+                )
+        if len(strat_returns_for_pca) >= 3:
+            strategy_factors = reduce_strategy_space(strat_returns_for_pca)
+    except Exception:
+        pass
+
     return {
         'strategy': final_oos_perf,
         'subset': full_history_subset_perf,
@@ -1192,6 +1401,8 @@ def evaluate_historical_performance(
         'spectral_history': spectral_history,
         'spectral_summary': spectral_summary,
         'cross_strategy_spectral': cross_strategy_spectral,
+        'conformal_intervals': conformal_intervals,
+        'strategy_factors': strategy_factors,
     }
 
 
@@ -1211,7 +1422,7 @@ def curate_final_portfolio(strategies: Dict[str, BaseStrategy], performance: Dic
 
     strategy_weights = calculate_strategy_weights(
         performance,
-        method='rmt_risk_parity' if len(returns_data) >= 2 else 'softmax_sharpe',
+        method='hrp' if len(returns_data) >= 2 else 'softmax_sharpe',
         returns_data=returns_data if returns_data else None,
     )
     subset_weights = {}
@@ -1340,26 +1551,49 @@ class MarketRegimeDetectorV2:
         }
 
     def _analyze_momentum_regime(self, window: list) -> Dict:
-        rsi_values = [df['rsi latest'].mean() for _, df in window]
+        # HIGH-1 fix: separate cross-sectional BREADTH from time-series
+        # MOMENTUM.  The cross-sectional mean of individual RSIs is a
+        # breadth indicator, NOT a momentum indicator.  For momentum we
+        # use the median price change (a proxy for a cap-equal index
+        # return) and its Theil-Sen trend.
+        #
+        # Breadth: fraction of stocks with RSI > 50 (participation)
+        # Momentum: median % change trend (market direction)
+        breadth_values = [(df['rsi latest'] > 50).mean() for _, df in window]
+        pct_change_medians = [df['% change'].median() for _, df in window]
+
+        current_breadth = breadth_values[-1]
+        breadth_trend = theilslopes(breadth_values, range(len(breadth_values)))[0]
+
+        # Momentum from actual price returns (not RSI levels)
+        current_momentum = pct_change_medians[-1]
+        momentum_trend = theilslopes(pct_change_medians, range(len(pct_change_medians)))[0]
+
+        # Also keep OSC for supplementary signal
         osc_values = [df['osc latest'].mean() for _, df in window]
-        
-        current_rsi = rsi_values[-1]
-        rsi_trend = theilslopes(rsi_values, range(len(rsi_values)))[0]
         current_osc = osc_values[-1]
         osc_trend = theilslopes(osc_values, range(len(osc_values)))[0]
-        
-        if current_rsi > 65 and rsi_trend > 0.5:
+
+        # Classification using BOTH breadth and momentum
+        if current_breadth > 0.65 and momentum_trend > 0 and current_momentum > 0:
             strength, score = 'STRONG_BULLISH', 2.0
-        elif current_rsi > 55 and rsi_trend >= 0:
+        elif current_breadth > 0.55 and momentum_trend >= 0:
             strength, score = 'BULLISH', 1.0
-        elif current_rsi < 35 and rsi_trend < -0.5:
+        elif current_breadth < 0.30 and momentum_trend < 0 and current_momentum < 0:
             strength, score = 'STRONG_BEARISH', -2.0
-        elif current_rsi < 45 and rsi_trend <= 0:
+        elif current_breadth < 0.45 and momentum_trend <= 0:
             strength, score = 'BEARISH', -1.0
         else:
             strength, score = 'NEUTRAL', 0.0
-            
-        return {'strength': strength, 'score': score, 'current_rsi': current_rsi, 'rsi_trend': rsi_trend, 'current_osc': current_osc, 'osc_trend': osc_trend}
+
+        return {
+            'strength': strength, 'score': score,
+            'current_rsi': current_breadth * 100,  # backward-compat: scale to 0-100
+            'rsi_trend': breadth_trend,
+            'current_breadth': current_breadth,
+            'momentum_trend': momentum_trend,
+            'current_osc': current_osc, 'osc_trend': osc_trend
+        }
 
     def _analyze_trend_quality(self, window: list) -> Dict:
         above_ma200_pct = [(df['price'] > df['ma200 latest']).mean() for _, df in window]
@@ -1405,7 +1639,15 @@ class MarketRegimeDetectorV2:
         return {'quality': quality, 'score': score, 'rsi_bullish_pct': rsi_bullish, 'osc_positive_pct': osc_positive, 'divergence': divergence}
 
     def _analyze_volatility_regime(self, window: list) -> Dict:
-        bb_widths = [((4 * df['dev20 latest']) / (df['ma20 latest'] + 1e-6)).mean() for _, df in window]
+        # HIGH-4 fix: use np.where to avoid division by near-zero MA20
+        # (instruments with MA20 < 1.0 would produce enormous BBW with +1e-6 guard)
+        bb_widths = []
+        for _, df in window:
+            ma20 = df['ma20 latest'].values
+            dev20 = df['dev20 latest'].values
+            safe_ma20 = np.where(np.abs(ma20) > 1.0, ma20, np.nan)
+            bbw = (4 * dev20) / safe_ma20
+            bb_widths.append(float(np.nanmean(bbw)))
         current_bbw = bb_widths[-1]
         vol_trend = theilslopes(bb_widths, range(len(bb_widths)))[0]
         
@@ -1900,6 +2142,53 @@ def _render_risk_intelligence(performance: Dict):
         st.markdown(_section_header("Strategy Weight Evolution",
                                     "How portfolio weights shifted across the walk-forward window"), unsafe_allow_html=True)
         _plot_area_evolution(wh)
+
+    # ── REC-4: Conformal Prediction Intervals ──
+    ci = performance.get('conformal_intervals', {})
+    if ci:
+        _section_divider()
+        st.markdown(_section_header("Conformal Prediction Intervals (90%)",
+                                    "Distribution-free coverage guarantee — next-period return likely falls within these bounds"), unsafe_allow_html=True)
+        ci_rows = []
+        for name, interval in ci.items():
+            lower, point_est, upper = interval
+            ci_rows.append({
+                'Strategy': name,
+                'Lower (90%)': f"{lower:.4f}",
+                'Point Est': f"{point_est:.4f}",
+                'Upper (90%)': f"{upper:.4f}",
+                'Width': f"{upper - lower:.4f}",
+            })
+        if ci_rows:
+            st.dataframe(pd.DataFrame(ci_rows).set_index('Strategy'), use_container_width=True)
+
+    # ── REC-1: Strategy Dimensionality Reduction ──
+    sf = performance.get('strategy_factors', {})
+    if sf and 'n_factors' in sf:
+        _section_divider()
+        st.markdown(_section_header("Strategy Factor Decomposition",
+                                    "RMT-based identification of true independent factors among strategies"), unsafe_allow_html=True)
+        n_factors = sf.get('n_factors', 0)
+        factor_labels = sf.get('factor_labels', [])
+        n_strats = len(sf.get('strategy_factor_map', {}))
+        explained_var = sf.get('explained_variance', np.array([]))
+        total_var_explained = float(explained_var.sum()) if len(explained_var) > 0 else 0.0
+        factor_cards = [
+            ("Strategies", str(n_strats), "Total strategies analyzed", 'info'),
+            ("Signal Factors", str(n_factors), "Above MP noise boundary", 'success' if n_factors >= 3 else 'warning'),
+            ("Variance Explained", f"{total_var_explained:.0%}", "By signal factors", 'success' if total_var_explained > 0.5 else 'info'),
+            ("Redundancy", f"{max(0, n_strats - n_factors)}", "Noise-dominated strategies", 'warning' if n_strats - n_factors > n_factors else 'info'),
+        ]
+        _render_cards(factor_cards)
+
+        mapping = sf.get('strategy_factor_map', {})
+        if mapping and factor_labels:
+            factor_groups = {}
+            for strat, factor_idx in mapping.items():
+                label = factor_labels[factor_idx] if factor_idx < len(factor_labels) else f"Factor_{factor_idx}"
+                factor_groups.setdefault(label, []).append(strat)
+            for label, strats in sorted(factor_groups.items()):
+                st.markdown(f"**{label}**: {', '.join(strats)}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

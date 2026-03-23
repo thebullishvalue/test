@@ -1013,6 +1013,194 @@ class StrategySelectionEngine:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SEQUENTIAL PROBABILITY RATIO TEST (REC-3)
+# ══════════════════════════════════════════════════════════════════════════════
+# Reference: Wald (1945), "Sequential Analysis";
+#            Shiryaev (1963), "On optimum methods in quickest detection".
+#
+# Replaces fixed-threshold triggers (REL_BREADTH < 0.42) with a
+# statistically principled sequential test that accumulates evidence
+# for regime change and fires when the evidence crosses a significance
+# boundary.
+
+class SPRTRegimeTrigger:
+    """
+    Sequential Probability Ratio Test for regime change detection.
+
+    Instead of a fixed threshold on REL_BREADTH, this test:
+    1. Models REL_BREADTH under two hypotheses:
+       H0 (neutral): REL_BREADTH ~ N(μ0, σ²)  — normal market
+       H1 (stress):  REL_BREADTH ~ N(μ1, σ²)  — stressed market (buy opp)
+    2. Accumulates log-likelihood ratio evidence sequentially
+    3. Fires BUY when evidence exceeds upper bound (confirms H1)
+    4. Fires SELL when evidence falls below lower bound (confirms H0)
+
+    The bounds are set by Type I/II error rates (α, β), providing
+    statistical control over false signals.
+
+    Usage:
+        sprt = SPRTRegimeTrigger()
+        sprt.fit(historical_breadth_series)
+
+        for breadth_value in new_observations:
+            signal = sprt.update(breadth_value)
+            if signal == 'BUY':
+                ...
+            elif signal == 'SELL':
+                ...
+    """
+
+    def __init__(
+        self,
+        alpha: float = 0.05,   # P(false buy signal) — Type I error
+        beta: float = 0.10,    # P(missed buy opportunity) — Type II error
+        stress_shift: float = -0.5,  # how many σ below mean constitutes stress
+    ):
+        self.alpha = alpha
+        self.beta = beta
+        self.stress_shift = stress_shift
+
+        # Wald boundaries (log scale)
+        self.upper_bound = np.log((1 - beta) / alpha)   # accept H1 (BUY)
+        self.lower_bound = np.log(beta / (1 - alpha))   # accept H0 (SELL)
+
+        # Distribution parameters (fitted from data)
+        self.mu0 = 0.5   # neutral mean
+        self.mu1 = 0.3   # stress mean
+        self.sigma = 0.15
+
+        # Running state
+        self.log_lr = 0.0  # cumulative log-likelihood ratio
+        self.fitted = False
+
+    def fit(self, breadth_series: 'pd.Series') -> 'SPRTRegimeTrigger':
+        """
+        Estimate distribution parameters from historical breadth data.
+
+        Args:
+            breadth_series: Historical REL_BREADTH values.
+
+        Returns:
+            self (for chaining).
+        """
+        clean = breadth_series.dropna().values
+        if len(clean) < 20:
+            return self
+
+        self.mu0 = float(np.median(clean))  # robust central tendency
+        self.sigma = float(np.std(clean))
+        if self.sigma < 0.01:
+            self.sigma = 0.15
+
+        # Stress hypothesis: shift below median
+        self.mu1 = self.mu0 + self.stress_shift * self.sigma
+
+        self.log_lr = 0.0
+        self.fitted = True
+        return self
+
+    def update(self, breadth_value: float) -> str:
+        """
+        Process a new breadth observation and return signal.
+
+        Args:
+            breadth_value: Current REL_BREADTH observation.
+
+        Returns:
+            'BUY' if evidence confirms stress regime (H1),
+            'SELL' if evidence confirms neutral regime (H0),
+            'HOLD' if still accumulating evidence.
+        """
+        if not self.fitted:
+            # Fallback to fixed threshold
+            if breadth_value < SIP_TRIGGER:
+                return 'BUY'
+            elif breadth_value >= SWING_SELL_TRIGGER:
+                return 'SELL'
+            return 'HOLD'
+
+        # Log-likelihood ratio increment
+        # log(f(x|H1) / f(x|H0)) for Gaussian
+        ll_h1 = -0.5 * ((breadth_value - self.mu1) / self.sigma) ** 2
+        ll_h0 = -0.5 * ((breadth_value - self.mu0) / self.sigma) ** 2
+        self.log_lr += (ll_h1 - ll_h0)
+
+        if self.log_lr >= self.upper_bound:
+            # Evidence confirms stress → BUY
+            self.log_lr = 0.0  # reset for next sequence
+            return 'BUY'
+        elif self.log_lr <= self.lower_bound:
+            # Evidence confirms neutral → SELL
+            self.log_lr = 0.0  # reset
+            return 'SELL'
+        else:
+            return 'HOLD'
+
+    def get_evidence_level(self) -> float:
+        """Return current log-likelihood ratio (for monitoring)."""
+        return self.log_lr
+
+    def get_buy_probability(self) -> float:
+        """
+        Approximate probability of the stress hypothesis given current evidence.
+
+        Uses the posterior odds: P(H1|data) / P(H0|data) = exp(log_lr)
+        assuming equal priors.
+        """
+        odds = np.exp(np.clip(self.log_lr, -20, 20))
+        return float(odds / (1 + odds))
+
+    def reset(self):
+        """Reset accumulated evidence."""
+        self.log_lr = 0.0
+
+
+def get_sprt_trigger_dates(
+    breadth_data: 'pd.DataFrame',
+    alpha: float = 0.05,
+    beta: float = 0.10,
+) -> tuple:
+    """
+    Apply SPRT to breadth data and return buy/sell trigger dates.
+
+    This is a drop-in replacement for get_sip_trigger_dates and
+    get_swing_cycles when SPRT mode is enabled.
+
+    Args:
+        breadth_data: DataFrame with DATE and REL_BREADTH columns.
+        alpha: Type I error rate (false buy).
+        beta: Type II error rate (missed buy).
+
+    Returns:
+        (buy_dates, sell_dates) — lists of datetime objects.
+    """
+    if breadth_data.empty or 'REL_BREADTH' not in breadth_data.columns:
+        return [], []
+
+    sprt = SPRTRegimeTrigger(alpha=alpha, beta=beta)
+    sprt.fit(breadth_data['REL_BREADTH'])
+
+    buy_dates = []
+    sell_dates = []
+
+    has_date_col = 'DATE' in breadth_data.columns
+
+    for idx, row in breadth_data.iterrows():
+        signal = sprt.update(row['REL_BREADTH'])
+        date_val = row['DATE'] if has_date_col else idx
+        if signal == 'BUY':
+            buy_dates.append(date_val)
+        elif signal == 'SELL':
+            sell_dates.append(date_val)
+
+    logger.info(
+        f"SPRT triggers: {len(buy_dates)} buy, {len(sell_dates)} sell "
+        f"(α={alpha}, β={beta})"
+    )
+    return buy_dates, sell_dates
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # EXPORTS
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1028,8 +1216,11 @@ __all__ = [
     'rank_strategies',
     'get_strategy_weights',
     'MasterPortfolio',
+    'SPRTRegimeTrigger',
+    'get_sprt_trigger_dates',
+    'compute_adaptive_thresholds',
     'SIP_TRIGGER',
     'SWING_BUY_TRIGGER',
     'SWING_SELL_TRIGGER',
-    'BREADTH_SHEET_URL'
+    'BREADTH_SHEET_URL',
 ]

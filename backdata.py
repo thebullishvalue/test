@@ -146,6 +146,16 @@ def load_symbols_from_file(filepath: str = "symbols.txt") -> List[str]:
         with open(filepath, 'r') as f:
             symbols = [line.strip().upper() for line in f if line.strip()]
         logger.info("Loaded %d symbols from %s", len(symbols), filepath)
+        # MEDIUM-2: Survivorship bias warning — a static symbol file only
+        # contains stocks that exist TODAY.  Any stock removed from the index
+        # (delisted, merged, or dropped from NIFTY) is absent, systematically
+        # overstating backtest returns for mean-reversion strategies.
+        logger.warning(
+            "SURVIVORSHIP BIAS: symbols.txt is a static file containing only "
+            "current constituents.  Historical backtest results may be upward-"
+            "biased because delisted or removed stocks are excluded.  Consider "
+            "using a point-in-time constituent list for rigorous backtesting."
+        )
         return symbols
     except Exception as e:
         logger.error("Error reading symbol file %s: %s", filepath, e)

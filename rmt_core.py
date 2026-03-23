@@ -250,29 +250,34 @@ def ledoit_wolf_shrinkage(
     np.fill_diagonal(target, 1.0)
     target = target * np.outer(std, std)
 
-    # Optimal shrinkage intensity (Ledoit-Wolf formula)
+    # Optimal shrinkage intensity — fully vectorized (HIGH-3 fix).
+    # The previous O(N²) Python loop with early-termination heuristic
+    # introduced bias for heterogeneous correlation structures.  This
+    # vectorized version computes the exact Ledoit-Wolf (2004) formula.
     X2 = X ** 2
     pi_mat = (X2.T @ X2) / T - sample_cov ** 2
     pi_sum = pi_mat.sum()
 
     rho_diag = np.sum(np.diag(pi_mat))
-    # Off-diagonal: approximate via asymptotic formula
-    rho_off = 0.0
-    for i in range(N):
-        for j in range(i + 1, N):
-            if j < N and i < N:
-                rij = np.sqrt(sample_cov[j, j] / max(sample_cov[i, i], _EPS))
-                rji = np.sqrt(sample_cov[i, i] / max(sample_cov[j, j], _EPS))
-                theta_ij = (X2[:, i] * X[:, j] * X[:, i]).sum() / T
-                theta_ji = (X2[:, j] * X[:, i] * X[:, j]).sum() / T
-                rho_off += (rij * theta_ij + rji * theta_ji) * rho_bar / 2
-                # Limit iterations for large N
-                if i * N + j > 50000:
-                    rho_off *= (N * (N - 1) / 2) / (i * N + j)
-                    break
-        else:
-            continue
-        break
+
+    # Vectorized off-diagonal rho computation
+    # theta_ij = (1/T) * sum_t(X_ti^2 * X_tj * X_ti) = (1/T) * (X^3)^T @ X
+    # But we need: rho_off = sum_{i<j} (rij*theta_ij + rji*theta_ji) * rho_bar/2
+    diag_cov = np.diag(sample_cov).copy()
+    diag_cov = np.where(diag_cov > _EPS, diag_cov, _EPS)
+
+    # r_ij = sqrt(S_jj / S_ii), so R_mat[i,j] = sqrt(S_jj / S_ii)
+    r_mat = np.sqrt(diag_cov[np.newaxis, :] / diag_cov[:, np.newaxis])
+
+    # theta_mat[i,j] = (1/T) * sum_t(X_ti^2 * X_tj * X_ti)
+    #                = (1/T) * sum_t(X_ti^3 * X_tj)
+    X3 = X ** 3
+    theta_mat = (X3.T @ X) / T
+
+    # Combined: each (i,j) contributes (r_ij * theta_ij + r_ji * theta_ji) * rho_bar / 2
+    contrib_mat = (r_mat * theta_mat + r_mat.T * theta_mat.T) * (rho_bar / 2)
+    # Sum upper triangle only
+    rho_off = float(np.triu(contrib_mat, k=1).sum())
 
     gamma_lw = np.sum((target - sample_cov) ** 2)
     kappa = (pi_sum - rho_diag - 2 * rho_off) / gamma_lw if gamma_lw > 0 else 0.0
@@ -381,17 +386,25 @@ def compute_spectral_diagnostics(
     # Ensure non-negative eigenvalues (numerical noise)
     eigenvalues = np.maximum(eigenvalues, 0.0)
 
-    # Marchenko-Pastur fit
+    # Marchenko-Pastur fit — iterative σ² estimation (MEDIUM-1 fix).
+    # A single pass can misclassify borderline eigenvalues.  We iterate
+    # until σ² converges (typically 3-5 iterations).
+    # Reference: Bun, Bouchaud & Potters (2017), "Cleaning large
+    # correlation matrices: Tools from Random Matrix Theory".
     gamma = T / N
-    # Estimate noise variance from eigenvalues within expected MP bulk
-    lambda_minus, lambda_plus = marchenko_pastur_edges(gamma, sigma_sq=1.0)
-    noise_eigenvalues = eigenvalues[eigenvalues <= lambda_plus]
-    if len(noise_eigenvalues) > 0:
-        sigma_sq = float(noise_eigenvalues.mean())
-        # Recompute edges with estimated sigma
+    sigma_sq = 1.0
+    for _mp_iter in range(10):
         lambda_minus, lambda_plus = marchenko_pastur_edges(gamma, sigma_sq)
-    else:
-        sigma_sq = 1.0
+        noise_eigenvalues = eigenvalues[eigenvalues <= lambda_plus]
+        if len(noise_eigenvalues) == 0:
+            break
+        sigma_sq_new = float(noise_eigenvalues.mean())
+        if abs(sigma_sq_new - sigma_sq) < 1e-6:
+            sigma_sq = sigma_sq_new
+            break
+        sigma_sq = sigma_sq_new
+    # Final edges with converged sigma
+    lambda_minus, lambda_plus = marchenko_pastur_edges(gamma, sigma_sq)
 
     n_signal = int(np.sum(eigenvalues > lambda_plus))
     n_noise = N - n_signal
@@ -848,3 +861,412 @@ def compute_spectral_turnover(
 
     # Turnover = 1 - average similarity
     return float(1.0 - np.mean(similarities))
+
+
+# ---------------------------------------------------------------------------
+# Strategy Dimensionality Reduction (CRITICAL-1 + REC-1)
+# ---------------------------------------------------------------------------
+# Reference: Ahn, Conrad & Dittmar (2009), "Basis Assets";
+#            Kelly, Pruitt & Su (2019), "Instrumented PCA".
+
+def reduce_strategy_space(
+    strategy_returns: Dict[str, np.ndarray],
+    min_window: int = 20,
+) -> Dict:
+    """
+    Reduce the strategy space to its true independent factors using the
+    Marchenko-Pastur threshold from RMT spectral analysis.
+
+    Instead of selecting among 60+ correlated strategies, this function:
+    1. Builds the T×N strategy return matrix
+    2. Identifies signal eigenvalues (above MP threshold)
+    3. Projects strategies onto signal eigenvectors → factor portfolios
+    4. Labels each factor by the strategy with highest loading
+    5. Returns factor portfolios and the mapping from strategies to factors
+
+    Args:
+        strategy_returns: {strategy_name: 1D array of daily returns}
+        min_window: minimum number of overlapping observations
+
+    Returns:
+        {
+            'n_factors': int,           # number of true independent factors
+            'factor_returns': np.ndarray,  # T × n_factors matrix
+            'factor_labels': List[str],    # interpretable name per factor
+            'strategy_factor_map': Dict[str, int],  # strategy → factor index
+            'factor_weights': Dict[str, np.ndarray],  # factor → strategy loadings
+            'explained_variance': np.ndarray,  # variance per factor
+            'diagnostics': SpectralDiagnostics,
+        }
+    """
+    names = list(strategy_returns.keys())
+    n_strategies = len(names)
+
+    if n_strategies < 2:
+        return {
+            'n_factors': n_strategies,
+            'factor_returns': np.column_stack([strategy_returns[n] for n in names]) if names else np.array([]),
+            'factor_labels': names,
+            'strategy_factor_map': {n: 0 for n in names},
+            'factor_weights': {names[0]: np.array([1.0])} if names else {},
+            'explained_variance': np.array([1.0]),
+            'diagnostics': None,
+        }
+
+    # Align to common length
+    min_len = min(len(v) for v in strategy_returns.values())
+    if min_len < min_window:
+        return {
+            'n_factors': n_strategies,
+            'factor_returns': np.column_stack([strategy_returns[n][:min_len] for n in names]),
+            'factor_labels': names,
+            'strategy_factor_map': {n: i for i, n in enumerate(names)},
+            'factor_weights': {},
+            'explained_variance': np.ones(n_strategies),
+            'diagnostics': None,
+        }
+
+    returns_matrix = np.column_stack([
+        strategy_returns[name][:min_len] for name in names
+    ])
+
+    # Remove NaN rows
+    valid = ~np.any(np.isnan(returns_matrix), axis=1)
+    returns_matrix = returns_matrix[valid]
+
+    if returns_matrix.shape[0] < min_window:
+        return {
+            'n_factors': n_strategies,
+            'factor_returns': returns_matrix,
+            'factor_labels': names,
+            'strategy_factor_map': {n: i for i, n in enumerate(names)},
+            'factor_weights': {},
+            'explained_variance': np.ones(n_strategies),
+            'diagnostics': None,
+        }
+
+    diagnostics = compute_spectral_diagnostics(returns_matrix)
+    n_signal = diagnostics.mp_dist.n_signal
+
+    # Ensure at least 1 factor
+    n_factors = max(n_signal, 1)
+    # Cap at reasonable number
+    n_factors = min(n_factors, n_strategies, 10)
+
+    # Signal eigenvectors (top n_factors)
+    V_signal = diagnostics.eigenvectors[:, :n_factors]  # N × n_factors
+    eigenvalues_signal = diagnostics.eigenvalues[:n_factors]
+
+    # Project returns onto signal subspace → factor returns
+    # Standardize first
+    col_mean = returns_matrix.mean(axis=0)
+    col_std = np.std(returns_matrix, axis=0)
+    col_std = np.where(col_std > _EPS, col_std, 1.0)
+    standardized = (returns_matrix - col_mean) / col_std
+
+    factor_returns = standardized @ V_signal  # T × n_factors
+
+    # Label each factor by the strategy with the highest absolute loading
+    factor_labels = []
+    strategy_factor_map = {}
+    factor_weights = {}
+
+    for k in range(n_factors):
+        loadings = V_signal[:, k]
+        best_idx = int(np.argmax(np.abs(loadings)))
+        label = names[best_idx]
+        # Avoid duplicate labels
+        suffix = 1
+        original_label = label
+        while label in factor_labels:
+            suffix += 1
+            label = f"{original_label}_{suffix}"
+        factor_labels.append(label)
+        factor_weights[label] = loadings
+
+    # Map each strategy to the factor it loads most heavily on
+    for i, name in enumerate(names):
+        factor_loadings = np.abs(V_signal[i, :])
+        strategy_factor_map[name] = int(np.argmax(factor_loadings))
+
+    # Explained variance per factor
+    total_var = diagnostics.eigenvalues.sum()
+    explained_variance = eigenvalues_signal / total_var if total_var > 0 else eigenvalues_signal
+
+    return {
+        'n_factors': n_factors,
+        'factor_returns': factor_returns,
+        'factor_labels': factor_labels,
+        'strategy_factor_map': strategy_factor_map,
+        'factor_weights': factor_weights,
+        'explained_variance': explained_variance,
+        'diagnostics': diagnostics,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Hierarchical Risk Parity (REC-5)
+# ---------------------------------------------------------------------------
+# Reference: Lopez de Prado (2016), "Building Diversified Portfolios that
+#            Outperform Out of Sample".
+
+def _quasi_diag(link: np.ndarray) -> List[int]:
+    """
+    Quasi-diagonalization: reorder the correlation matrix so that correlated
+    assets are adjacent.  Uses the dendrogram linkage matrix.
+
+    Returns sorted list of original asset indices.
+    """
+    n = int(link[-1, 3])
+    sort_idx = [n - 1]  # start with last merged cluster
+
+    while any(i >= (n - 1) // 2 for i in sort_idx if not isinstance(i, int)):
+        pass  # fallback — use iterative expansion below
+
+    # Iterative cluster expansion
+    sort_idx = [int(link.shape[0] + link.shape[0])]
+    # Simpler recursive approach via stack
+    num_items = int(link[-1, 3])
+    sort_idx = _get_quasi_diag_order(link, num_items)
+    return sort_idx
+
+
+def _get_quasi_diag_order(link: np.ndarray, num_items: int) -> List[int]:
+    """Iterative quasi-diagonalization using a stack (avoids recursion depth issues)."""
+    n = link.shape[0] + 1  # number of original items
+    stack = [2 * n - 2]  # root cluster index
+    order = []
+
+    while stack:
+        node = stack.pop()
+        if node < n:
+            order.append(int(node))
+        else:
+            cluster_idx = int(node - n)
+            if cluster_idx < len(link):
+                left = int(link[cluster_idx, 0])
+                right = int(link[cluster_idx, 1])
+                stack.append(right)
+                stack.append(left)
+
+    return order
+
+
+def _hrp_bisect_weights(
+    cov: np.ndarray,
+    sorted_indices: List[int],
+) -> np.ndarray:
+    """
+    Recursive bisection allocation for HRP.
+
+    At each split, allocate inversely proportional to cluster variance:
+    w_left / w_right = var_right / (var_left + var_right)
+    """
+    n = len(sorted_indices)
+    weights = np.ones(cov.shape[0])
+
+    # Build cluster tree via bisection
+    clusters = [sorted_indices]
+
+    while clusters:
+        new_clusters = []
+        for cluster in clusters:
+            if len(cluster) <= 1:
+                continue
+            mid = len(cluster) // 2
+            left = cluster[:mid]
+            right = cluster[mid:]
+
+            # Cluster variance = inverse-vol portfolio variance
+            def cluster_var(indices):
+                sub_cov = cov[np.ix_(indices, indices)]
+                ivp = 1.0 / np.diag(sub_cov)
+                ivp = ivp / ivp.sum()
+                return float(ivp @ sub_cov @ ivp)
+
+            var_left = cluster_var(left)
+            var_right = cluster_var(right)
+
+            # Allocation factor
+            total_var = var_left + var_right
+            if total_var > 0:
+                alpha = 1.0 - var_left / total_var
+            else:
+                alpha = 0.5
+
+            for idx in left:
+                weights[idx] *= alpha
+            for idx in right:
+                weights[idx] *= (1.0 - alpha)
+
+            if len(left) > 1:
+                new_clusters.append(left)
+            if len(right) > 1:
+                new_clusters.append(right)
+
+        clusters = new_clusters
+
+    # Normalize
+    total = weights.sum()
+    if total > 0:
+        weights = weights / total
+    return weights
+
+
+def hrp_weights(
+    returns_matrix: np.ndarray,
+    strategy_names: List[str],
+    use_cleaned_corr: bool = True,
+) -> Dict[str, float]:
+    """
+    Hierarchical Risk Parity portfolio weights.
+
+    Does not require covariance matrix inversion — more robust to estimation
+    error than minimum variance or standard risk parity, especially for
+    small T/N ratios typical of strategy allocation.
+
+    Args:
+        returns_matrix: T × N matrix of strategy returns.
+        strategy_names: names for each column.
+        use_cleaned_corr: if True, use RMT-cleaned correlation for clustering.
+
+    Returns:
+        {strategy_name: weight} summing to 1.0.
+    """
+    from scipy.cluster.hierarchy import linkage
+    from scipy.spatial.distance import squareform
+
+    N = len(strategy_names)
+    if N <= 1:
+        return {strategy_names[0]: 1.0} if N == 1 else {}
+
+    # Covariance from returns
+    vols = np.std(returns_matrix, axis=0)
+    vols = np.where(vols > _EPS, vols, _EPS)
+
+    if use_cleaned_corr:
+        diagnostics = compute_spectral_diagnostics(returns_matrix)
+        corr = diagnostics.cleaned_corr
+    else:
+        standardized = (returns_matrix - returns_matrix.mean(axis=0)) / vols
+        corr = np.corrcoef(standardized.T)
+        np.fill_diagonal(corr, 1.0)
+
+    cov = corr * np.outer(vols, vols)
+    # Regularize
+    cov += np.eye(N) * 1e-8
+
+    # Distance matrix from correlation
+    dist = np.sqrt(0.5 * (1.0 - corr))
+    np.fill_diagonal(dist, 0.0)
+    dist = np.clip(dist, 0.0, 1.0)
+
+    # Hierarchical clustering
+    condensed_dist = squareform(dist, checks=False)
+    link = linkage(condensed_dist, method='single')
+
+    # Quasi-diagonalization
+    sorted_indices = _get_quasi_diag_order(link, N)
+
+    # Recursive bisection
+    weights = _hrp_bisect_weights(cov, sorted_indices)
+
+    return {name: float(weights[i]) for i, name in enumerate(strategy_names)}
+
+
+# ---------------------------------------------------------------------------
+# Conformal Prediction Intervals (REC-4)
+# ---------------------------------------------------------------------------
+# Reference: Vovk, Gammerman & Shafer (2005), "Algorithmic Learning in a
+#            Random World"; Barber et al. (2023), conformal prediction
+#            beyond exchangeability.
+
+def conformal_prediction_interval(
+    historical_returns: np.ndarray,
+    alpha: float = 0.10,
+    method: str = 'split',
+) -> Tuple[float, float, float]:
+    """
+    Distribution-free prediction interval for next-period return using
+    conformal inference.
+
+    Provides finite-sample valid coverage: the true next return falls
+    within [lo, hi] with probability ≥ 1 - α, without any distributional
+    assumptions (Gaussian, etc.).
+
+    Args:
+        historical_returns: 1D array of past returns (in chronological order).
+        alpha: Miscoverage rate (default 0.10 → 90% interval).
+        method: 'split' (split conformal) or 'full' (full conformal, slower).
+
+    Returns:
+        (lower_bound, point_estimate, upper_bound)
+    """
+    r = np.asarray(historical_returns, dtype=float)
+    r = r[np.isfinite(r)]
+    n = len(r)
+
+    if n < 5:
+        return (float(r.min()) if n > 0 else -0.05,
+                float(r.mean()) if n > 0 else 0.0,
+                float(r.max()) if n > 0 else 0.05)
+
+    point_estimate = float(r.mean())
+
+    if method == 'split':
+        # Split conformal: use first half as training, second as calibration
+        split = n // 2
+        train = r[:split]
+        cal = r[split:]
+
+        # Simple model: predict the training mean
+        mu_hat = train.mean()
+
+        # Nonconformity scores: |actual - predicted|
+        scores = np.abs(cal - mu_hat)
+
+        # Quantile of calibration scores (with finite-sample correction)
+        q_level = np.ceil((1 - alpha) * (len(cal) + 1)) / len(cal)
+        q_level = min(q_level, 1.0)
+        q = float(np.quantile(scores, q_level))
+
+        lower = mu_hat - q
+        upper = mu_hat + q
+        point_estimate = float(mu_hat)
+
+    else:  # full conformal
+        # Use all data; compute leave-one-out residuals
+        residuals = np.abs(r - point_estimate)
+
+        q_level = np.ceil((1 - alpha) * (n + 1)) / n
+        q_level = min(q_level, 1.0)
+        q = float(np.quantile(residuals, q_level))
+
+        lower = point_estimate - q
+        upper = point_estimate + q
+
+    return (float(lower), float(point_estimate), float(upper))
+
+
+def conformal_strategy_intervals(
+    strategy_returns: Dict[str, np.ndarray],
+    alpha: float = 0.10,
+) -> Dict[str, Tuple[float, float, float]]:
+    """
+    Compute conformal prediction intervals for each strategy's next return.
+
+    Args:
+        strategy_returns: {strategy_name: 1D array of returns}
+        alpha: Miscoverage rate.
+
+    Returns:
+        {strategy_name: (lower, point_estimate, upper)}
+    """
+    intervals = {}
+    for name, returns in strategy_returns.items():
+        if len(returns) >= 5:
+            intervals[name] = conformal_prediction_interval(returns, alpha)
+        else:
+            mu = returns.mean() if len(returns) > 0 else 0.0
+            intervals[name] = (mu - 0.05, mu, mu + 0.05)
+    return intervals
