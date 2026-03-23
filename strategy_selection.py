@@ -679,26 +679,32 @@ def execute_swing_mode(
                 returns = closed['return'].values
                 avg_return = returns.mean()
                 win_rate = (returns > 0).mean()
-                
+
                 # Compounded total return
                 total_return = (1 + closed['return']).prod() - 1
-                
-                # Risk metrics
-                if len(returns) > 1 and returns.std() > 0:
-                    sharpe = avg_return / returns.std()
-                    downside = returns[returns < 0]
-                    sortino = avg_return / downside.std() if len(downside) > 0 and downside.std() > 0 else sharpe * 1.5
+
+                # Risk metrics — delegate to canonical when available
+                if compute_risk_metrics is not None and len(returns) >= 2:
+                    core = compute_risk_metrics(returns, periods_per_year=max(len(returns), 1), total_return=total_return)
+                    sharpe = core['sharpe']
+                    sortino = core['sortino']
+                    max_dd = core['max_drawdown']
+                    calmar = core['calmar']
+                elif len(returns) > 1 and returns.std() > 0:
+                    ann_factor = np.sqrt(max(len(returns), 1))
+                    sharpe = (avg_return / returns.std()) * ann_factor
+                    downside = np.minimum(returns, 0)
+                    downside_dev = np.sqrt(np.mean(downside ** 2))
+                    sortino = (avg_return / downside_dev) * ann_factor if downside_dev > 0 else sharpe
+                    cumulative = np.cumprod(1 + returns)
+                    peak = np.maximum.accumulate(cumulative)
+                    max_dd = float(np.min((cumulative - peak) / peak))
+                    calmar = total_return / abs(max_dd) if max_dd < -0.001 else 0
                 else:
                     sharpe = avg_return * 10 if avg_return > 0 else 0
                     sortino = sharpe
-                
-                # Drawdown
-                cumulative = (1 + closed['return']).cumprod()
-                peak = cumulative.expanding().max()
-                drawdown = (cumulative - peak) / peak
-                max_dd = drawdown.min()
-                
-                calmar = total_return / abs(max_dd) if max_dd < -0.001 else 0
+                    max_dd = 0
+                    calmar = 0
                 
             else:
                 # Only open trades

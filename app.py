@@ -1407,7 +1407,7 @@ class MarketRegimeDetectorV2:
     def _analyze_volatility_regime(self, window: list) -> Dict:
         bb_widths = [((4 * df['dev20 latest']) / (df['ma20 latest'] + 1e-6)).mean() for _, df in window]
         current_bbw = bb_widths[-1]
-        vol_trend = np.polyfit(range(len(bb_widths)), bb_widths, 1)[0]
+        vol_trend = theilslopes(bb_widths, range(len(bb_widths)))[0]
         
         if current_bbw < 0.08 and vol_trend < 0:
             regime, score = 'SQUEEZE', 0.5 

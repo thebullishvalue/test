@@ -311,6 +311,14 @@ This software is licensed exclusively to authorized users. Redistribution, modif
 
 ## Changelog
 
+### v3.5.0 (March 2026)
+- Adversarial audit: 15 metric/formula fixes (Sortino RMS, SIP TWR, tier Sharpe, spectral matrix)
+- Unified metric pipeline — single canonical `compute_risk_metrics()` replaces 4 duplicate implementations
+- Strategy interface contracts — runtime portfolio validation via `BaseStrategy.__init_subclass__`
+- Transaction cost model (20 bps NSE round-trip) applied to all walk-forward loops
+- Held-position returns on non-trigger days (no more zero-return assumption)
+- Theil-Sen robust trend estimation, configurable trigger thresholds, NSE holiday-safe resampling
+
 ### v3.4.0 (March 2026)
 - Charts v2.0 visual redesign — complete rewrite of all chart functions with institutional-grade aesthetics
 - Tab rendering architecture overhaul — dedicated rendering functions for Risk, Strategy, and Backtest tabs
