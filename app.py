@@ -18,6 +18,7 @@ from typing import List, Dict, Tuple, Optional
 import io
 import base64
 import warnings
+from scipy.stats import theilslopes
 
 # --- Suppress known NumPy warnings during backtest warm-up ---
 warnings.filterwarnings('ignore', category=RuntimeWarning, message='Mean of empty slice')
@@ -69,7 +70,8 @@ try:
     from backtest_engine import (
         UnifiedBacktestEngine,
         DynamicPortfolioStylesGenerator,
-        PerformanceMetrics
+        PerformanceMetrics,
+        compute_risk_metrics,
     )
     DYNAMIC_SELECTION_AVAILABLE = True
 except ImportError:
@@ -81,7 +83,7 @@ except ImportError:
 st.set_page_config(page_title="PRAGYAM | Portfolio Intelligence", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
 
 # --- Constants ---
-VERSION = "v3.4.0"  # Charts v2.0 redesign, tab architecture overhaul
+VERSION = "v3.5.0"  # Adversarial audit: metric fixes, transaction costs, robust estimation
 PRODUCT_NAME = "Pragyam"
 COMPANY = "Hemrek Capital"
 
@@ -168,33 +170,39 @@ def load_historical_data(end_date: datetime, lookback_files: int) -> List[Tuple[
 
 
 # --- Core Backtesting & Curation Engine (Optimized) ---
-def compute_portfolio_return(portfolio: pd.DataFrame, next_prices: pd.DataFrame) -> float:
+
+# Transaction cost model: round-trip cost in basis points (buy + sell).
+# NSE typical: ~20 bps (brokerage + STT + GST + stamp duty + exchange fees).
+TRANSACTION_COST_BPS = 20  # basis points per round-trip trade
+
+
+def compute_portfolio_return(portfolio: pd.DataFrame, next_prices: pd.DataFrame, is_rebalance: bool = False) -> float:
     if portfolio.empty or 'value' not in portfolio.columns or portfolio['value'].sum() == 0: return 0.0
-    merged = portfolio.merge(next_prices[['symbol', 'price']], on='symbol', how='inner', suffixes=('_prev', '_next'))
+    merged = portfolio.merge(next_prices[['symbol', 'price']], on='symbol', how='left', suffixes=('_prev', '_next'))
     if merged.empty: return 0.0
+    # Missing symbols (delisted/halted) get 0 return instead of being silently dropped
+    merged['price_next'] = merged['price_next'].fillna(merged['price_prev'])
     returns = (merged['price_next'] - merged['price_prev']) / merged['price_prev']
-    return np.average(returns, weights=merged['value'])
+    gross_return = np.average(returns, weights=merged['value'])
+    # Deduct one-way cost on rebalance days (half of round-trip)
+    if is_rebalance and TRANSACTION_COST_BPS > 0:
+        gross_return -= TRANSACTION_COST_BPS / 10000 / 2
+    return gross_return
 
 def calculate_advanced_metrics(returns_with_dates: List[Dict]) -> Tuple[Dict, float]:
-    """
-    Calculate comprehensive risk-adjusted performance metrics.
-    
-    Mathematical Framework:
-    - CAGR: Compound Annual Growth Rate via geometric mean
-    - Sharpe: Excess return per unit of total volatility (annualized)
-    - Sortino: Excess return per unit of downside deviation
-    - Calmar: CAGR / |Max Drawdown| - recovery efficiency metric
-    - Kelly: f* = p - q/b where p=win_rate, q=1-p, b=avg_win/avg_loss
-    
-    Uses proper time-weighted annualization factor.
+    """Calculate comprehensive risk-adjusted performance metrics.
+
+    Core ratios (Sharpe, Sortino, Calmar, etc.) are delegated to
+    :func:`backtest_engine.compute_risk_metrics`.  This function adds
+    higher-order metrics: Kelly, Omega, tail ratio, gain-to-pain, profit factor.
     """
     default_metrics = {
-        'total_return': 0, 'annual_return': 0, 'volatility': 0, 
-        'sharpe': 0, 'sortino': 0, 'max_drawdown': 0, 'calmar': 0, 
+        'total_return': 0, 'annual_return': 0, 'volatility': 0,
+        'sharpe': 0, 'sortino': 0, 'max_drawdown': 0, 'calmar': 0,
         'win_rate': 0, 'kelly_criterion': 0, 'omega_ratio': 1.0,
         'tail_ratio': 1.0, 'gain_to_pain': 0, 'profit_factor': 1.0
     }
-    if len(returns_with_dates) < 2: 
+    if len(returns_with_dates) < 2:
         return default_metrics, 52
 
     returns_df = pd.DataFrame(returns_with_dates).sort_values('date').set_index('date')
@@ -202,91 +210,58 @@ def calculate_advanced_metrics(returns_with_dates: List[Dict]) -> Tuple[Dict, fl
     avg_period_days = time_deltas.mean()
     periods_per_year = 365.25 / avg_period_days if pd.notna(avg_period_days) and avg_period_days > 0 else 52
 
-    returns = returns_df['return']
-    n_periods = len(returns)
-    
-    # Total Return (geometric)
-    total_return = (1 + returns).prod() - 1
-    
-    # CAGR: Correct annualization formula
-    # CAGR = (Final/Initial)^(1/years) - 1 = (1 + total_return)^(periods_per_year/n_periods) - 1
-    years = n_periods / periods_per_year
-    if years > 0 and total_return > -1:
-        annual_return = (1 + total_return) ** (1 / years) - 1
-    else:
-        annual_return = 0
-    
-    # Volatility (annualized standard deviation)
-    volatility = returns.std(ddof=1) * np.sqrt(periods_per_year)
-    
-    # Sharpe Ratio (assuming risk-free rate = 0)
-    sharpe = annual_return / volatility if volatility > 0.001 else 0
-    sharpe = np.clip(sharpe, -10, 10)
+    returns = returns_df['return'].values
 
-    # Sortino Ratio (downside deviation — full series, min(r,0))
-    downside = np.minimum(returns, 0)
-    downside_vol = np.std(downside, ddof=1) * np.sqrt(periods_per_year)
-    sortino = annual_return / downside_vol if downside_vol > 0.001 else 0.0
+    # ── Delegate core ratios to canonical implementation ──
+    core = compute_risk_metrics(returns, periods_per_year=periods_per_year)
 
-    # Maximum Drawdown
-    cumulative = (1 + returns).cumprod()
-    running_max = cumulative.expanding(min_periods=1).max()
-    drawdown_series = (cumulative / running_max) - 1
-    max_drawdown = drawdown_series.min()
-    
-    # Calmar Ratio
-    calmar = annual_return / abs(max_drawdown) if max_drawdown < -0.001 else 0
-    calmar = np.clip(calmar, -20, 20)
-    
-    # Win Rate
-    win_rate = (returns > 0).mean()
-
-    # Win/Loss Statistics
-    gains = returns[returns > 0]
-    losses = returns[returns < 0]
+    # ── Higher-order metrics (unique to this function) ──
+    r = np.asarray(returns, dtype=np.float64)
+    gains = r[r > 0]
+    losses = r[r < 0]
     avg_win = gains.mean() if len(gains) > 0 else 0
     avg_loss = abs(losses.mean()) if len(losses) > 0 else 0
     total_gains = gains.sum() if len(gains) > 0 else 0
     total_losses = abs(losses.sum()) if len(losses) > 0 else 0
-    
-    # Kelly Criterion: f* = W - (1-W)/R where W=win_rate, R=avg_win/avg_loss
+
+    # Kelly Criterion
     win_loss_ratio = avg_win / avg_loss if avg_loss > 0.0001 else 0
-    kelly = (win_rate - ((1 - win_rate) / win_loss_ratio)) if win_loss_ratio > 0 else 0
-    kelly = np.clip(kelly, -1, 1)
-    
-    # Omega Ratio: ∫(gains) / ∫(losses) above/below threshold=0
+    kelly = (core['win_rate'] - ((1 - core['win_rate']) / win_loss_ratio)) if win_loss_ratio > 0 else 0
+    kelly = float(np.clip(kelly, -1, 1))
+
+    # Omega Ratio
     omega_ratio = total_gains / total_losses if total_losses > 0.0001 else (total_gains * 10 if total_gains > 0 else 1.0)
-    omega_ratio = np.clip(omega_ratio, 0, 50)
-    
-    # Profit Factor: Sum(gains) / Sum(losses)
+    omega_ratio = float(np.clip(omega_ratio, 0, 50))
+
+    # Profit Factor
     profit_factor = total_gains / total_losses if total_losses > 0.0001 else (10.0 if total_gains > 0 else 1.0)
-    profit_factor = np.clip(profit_factor, 0, 50)
-    
-    # Tail Ratio: 95th percentile / |5th percentile|
-    upper_tail = np.percentile(returns, 95) if len(returns) >= 20 else returns.max()
-    lower_tail = abs(np.percentile(returns, 5)) if len(returns) >= 20 else abs(returns.min())
+    profit_factor = float(np.clip(profit_factor, 0, 50))
+
+    # Tail Ratio
+    upper_tail = np.percentile(r, 95) if len(r) >= 20 else r.max()
+    lower_tail = abs(np.percentile(r, 5)) if len(r) >= 20 else abs(r.min())
     tail_ratio = upper_tail / lower_tail if lower_tail > 0.0001 else (10.0 if upper_tail > 0 else 1.0)
-    tail_ratio = np.clip(tail_ratio, 0, 20)
-    
-    # Gain-to-Pain Ratio: Total return / Sum(abs(negative returns))
+    tail_ratio = float(np.clip(tail_ratio, 0, 20))
+
+    # Gain-to-Pain Ratio
     pain = abs(losses.sum()) if len(losses) > 0 else 0
-    gain_to_pain = returns.sum() / pain if pain > 0.0001 else (returns.sum() * 10 if returns.sum() > 0 else 0)
-    gain_to_pain = np.clip(gain_to_pain, -20, 20)
+    gain_to_pain = r.sum() / pain if pain > 0.0001 else (r.sum() * 10 if r.sum() > 0 else 0)
+    gain_to_pain = float(np.clip(gain_to_pain, -20, 20))
 
     metrics = {
-        'total_return': total_return, 
-        'annual_return': annual_return, 
-        'volatility': volatility, 
-        'sharpe': sharpe, 
-        'sortino': sortino, 
-        'max_drawdown': max_drawdown, 
-        'calmar': calmar, 
-        'win_rate': win_rate, 
+        'total_return': core['total_return'],
+        'annual_return': core['ann_return'],
+        'volatility': core['volatility'],
+        'sharpe': core['sharpe'],
+        'sortino': core['sortino'],
+        'max_drawdown': core['max_drawdown'],
+        'calmar': core['calmar'],
+        'win_rate': core['win_rate'],
         'kelly_criterion': kelly,
         'omega_ratio': omega_ratio,
         'tail_ratio': tail_ratio,
         'gain_to_pain': gain_to_pain,
-        'profit_factor': profit_factor
+        'profit_factor': profit_factor,
     }
     return metrics, periods_per_year
 
@@ -343,7 +318,11 @@ def calculate_strategy_weights(
     if method == 'equal':
         return {name: 1.0 / len(strat_names) for name in strat_names}
 
-    # Default: softmax_sharpe (original behavior)
+    # Default: softmax_sharpe with temperature scaling.
+    # Temperature κ controls concentration: κ=1 is near-equal-weight for
+    # typical Sharpe spreads; κ=5 provides meaningful differentiation.
+    SOFTMAX_TEMPERATURE = 5.0
+
     sharpe_values = []
     for name in strat_names:
         strat_data = performance['strategy'][name]
@@ -353,14 +332,14 @@ def calculate_strategy_weights(
             sharpe = strat_data.get('sharpe', 0)
         if not isinstance(sharpe, (int, float)) or not np.isfinite(sharpe):
             sharpe = 0
-        sharpe_values.append(sharpe + 2)
+        sharpe_values.append(sharpe)
 
     sharpe_values = np.array(sharpe_values)
 
     if sharpe_values.size == 0:
         return {name: 1.0 / len(strat_names) for name in strat_names} if strat_names else {}
 
-    stable_sharpes = sharpe_values - np.max(sharpe_values)
+    stable_sharpes = SOFTMAX_TEMPERATURE * (sharpe_values - np.max(sharpe_values))
     exp_sharpes = np.exp(stable_sharpes)
     total_score = np.sum(exp_sharpes)
 
@@ -433,17 +412,29 @@ def calculate_trigger_based_metrics(daily_data: pd.DataFrame, deployment_style: 
             return {}
         absolute_pnl = final_value - total_investment
         total_return_pct = absolute_pnl / total_investment
-        
-        # Cash-flow adjusted returns for SIP
+
+        # Time-Weighted Return (TWR) for SIP
+        # Correct approach: compute return BEFORE each cash injection.
+        # r_t = (V_t_before_injection - V_{t-1}_after_injection) / V_{t-1}_after_injection
+        # Then the cash flow adjusts the base for the next period.
         df = daily_data.copy()
         df['cash_flow'] = df['investment'].diff().fillna(0)
-        df['prev_value'] = df['value'].shift(1).fillna(0)
-        df['returns'] = np.where(
-            df['prev_value'] > 0,
-            (df['value'] - df['cash_flow']) / df['prev_value'] - 1,
-            0
-        )
-        returns = pd.Series(df['returns']).replace([np.inf, -np.inf], 0)
+        df['prev_value'] = df['value'].shift(1)
+
+        twr_returns = []
+        for i in range(1, len(df)):
+            prev_val = df['value'].iloc[i - 1]
+            curr_val = df['value'].iloc[i]
+            cf = df['cash_flow'].iloc[i]
+            if prev_val > 0:
+                # Return on pre-existing capital: market moved value from
+                # prev_val to (curr_val - cf), the cf was injected today.
+                r = (curr_val - cf - prev_val) / prev_val
+                twr_returns.append(r)
+            else:
+                twr_returns.append(0.0)
+
+        returns = pd.Series(twr_returns).replace([np.inf, -np.inf], 0).clip(-1.0, 1.0)
         ann_return = (1 + returns.mean()) ** 252 - 1
         cagr = None
     else:  # Swing/Lumpsum
@@ -463,51 +454,34 @@ def calculate_trigger_based_metrics(daily_data: pd.DataFrame, deployment_style: 
     
     if returns.empty or len(returns) < 2:
         return {'total_return': total_return_pct, 'absolute_pnl': absolute_pnl}
-    
-    # Risk metrics
-    ann_factor = np.sqrt(252)
-    volatility = returns.std() * ann_factor
-    
-    downside = np.minimum(returns, 0)
-    downside_vol = downside.std() * ann_factor if len(returns) > 1 else 0
 
-    # Sharpe and Sortino
-    sharpe_ratio = (ann_return / volatility) if volatility > 0.001 else 0
-    sortino_ratio = (ann_return / downside_vol) if downside_vol > 0.001 else 0
-    
-    # Drawdown analysis
-    cumulative = (1 + returns).cumprod()
-    running_max = cumulative.expanding(min_periods=1).max()
-    drawdown = (cumulative / running_max) - 1
-    max_drawdown = drawdown.min()
-    
-    # Calmar ratio
-    calmar_ratio = ann_return / abs(max_drawdown) if max_drawdown < -0.001 else 0
-    
-    # Clip extreme values
-    sharpe_ratio = np.clip(sharpe_ratio, -10, 10)
-    sortino_ratio = np.clip(sortino_ratio, -20, 20)
-    calmar_ratio = np.clip(calmar_ratio, -20, 20)
-    
+    # Delegate core risk math to canonical implementation
+    core = compute_risk_metrics(
+        returns.values,
+        periods_per_year=252.0,
+        ann_return=ann_return,
+        total_return=total_return_pct,
+    )
+
     metrics = {
         'total_return': total_return_pct,
         'annual_return': ann_return,
         'absolute_pnl': absolute_pnl,
-        'volatility': volatility,
-        'max_drawdown': max_drawdown,
-        'sharpe': sharpe_ratio,
-        'sortino': sortino_ratio,
-        'calmar': calmar_ratio,
-        'win_rate': (returns > 0).mean(),
-        'best_day': returns.max(),
-        'worst_day': returns.min(),
+        'volatility': core['volatility'],
+        'max_drawdown': core['max_drawdown'],
+        'sharpe': core['sharpe'],
+        'sortino': core['sortino'],
+        'calmar': core['calmar'],
+        'win_rate': core['win_rate'],
+        'best_day': core['best_period'],
+        'worst_day': core['worst_period'],
         'trading_days': len(returns),
-        'final_value': final_value
+        'final_value': final_value,
     }
-    
+
     if cagr is not None:
         metrics['cagr'] = cagr
-    
+
     return metrics
 
 
@@ -731,23 +705,42 @@ def run_trigger_based_backtest(
             else:
                 metrics['trade_events'] = len(trade_log)
             
-            # Compute tier-level performance
+            # Compute tier-level performance from actual tier returns
             subset_performance = {}
             if len(daily_values) > 0:
-                # For tier analysis, generate portfolio on first buy day
-                first_buy_idx = next((i for i, m in enumerate(buy_dates_mask) if m), 0)
-                if first_buy_idx < len(simulation_dates):
-                    first_df = date_to_df[simulation_dates[first_buy_idx]]
-                    tier_portfolio = strategy.generate_portfolio(first_df.copy(), capital)
-                    
-                    if not tier_portfolio.empty:
-                        n_stocks = len(tier_portfolio)
-                        tier_size = 10
-                        num_tiers = n_stocks // tier_size
-                        
-                        for t in range(num_tiers):
-                            tier_name = f'tier_{t+1}'
-                            subset_performance[tier_name] = metrics.get('sharpe', 0) * (1 - t * 0.05)
+                # Collect actual tier-level returns across all buy days
+                tier_returns_accum = {}  # tier_name -> [returns]
+                buy_indices = [i for i, m in enumerate(buy_dates_mask) if m]
+
+                for bi in buy_indices:
+                    if bi + 1 >= len(simulation_dates):
+                        continue
+                    buy_date = simulation_dates[bi]
+                    next_date = simulation_dates[bi + 1]
+                    buy_df = date_to_df[buy_date]
+                    next_df = date_to_df[next_date]
+
+                    tier_port = strategy.generate_portfolio(buy_df.copy(), capital)
+                    if tier_port.empty:
+                        continue
+
+                    n_stocks = len(tier_port)
+                    tier_size = 10
+                    num_tiers = n_stocks // tier_size
+                    for t in range(num_tiers):
+                        tier_name = f'tier_{t+1}'
+                        sub_df = tier_port.iloc[t * tier_size : (t + 1) * tier_size]
+                        if not sub_df.empty:
+                            ret = compute_portfolio_return(sub_df, next_df)
+                            tier_returns_accum.setdefault(tier_name, []).append(ret)
+
+                # Compute actual Sharpe per tier
+                for tier_name, rets in tier_returns_accum.items():
+                    arr = np.array(rets)
+                    if len(arr) > 1 and arr.std() > 0.001:
+                        subset_performance[tier_name] = float(arr.mean() / arr.std())
+                    else:
+                        subset_performance[tier_name] = float(arr.mean() * 10) if len(arr) > 0 else 0.0
             
             all_results[name] = {
                 'metrics': metrics,
@@ -865,6 +858,10 @@ def evaluate_historical_performance_trigger_based(
     # State for SIP accumulation tracking
     sip_portfolio_units = {}  # strategy -> {symbol: units}
     swing_in_position = {}   # strategy -> bool
+
+    # Track last held portfolios for computing returns on non-trigger days
+    last_curated_port = pd.DataFrame()
+    last_strategy_ports = {}  # strategy_name -> portfolio DataFrame
     
     progress_bar = st.progress(0, text="Initializing walk-forward...")
     total_steps = len(historical_data) - MIN_TRAIN_DAYS - 1
@@ -903,22 +900,34 @@ def evaluate_historical_performance_trigger_based(
                 if curated_port.empty:
                     oos_perf['System_Curated']['returns'].append({'return': 0, 'date': next_date})
                 else:
-                    oos_ret = compute_portfolio_return(curated_port, next_df)
+                    last_curated_port = curated_port.copy()
+                    oos_ret = compute_portfolio_return(curated_port, next_df, is_rebalance=True)
                     oos_perf['System_Curated']['returns'].append({'return': oos_ret, 'date': next_date})
-                    
+
                     # Track weight entropy
                     weights = curated_port['weightage_pct'] / 100
                     valid_weights = weights[weights > 0]
                     if len(valid_weights) > 0:
                         entropy = -np.sum(valid_weights * np.log2(valid_weights))
                         weight_entropies.append(entropy)
-                        
+
             except Exception as e:
                 logger.error(f"Walk-forward curation error ({test_date}): {e}")
                 oos_perf['System_Curated']['returns'].append({'return': 0, 'date': next_date})
         else:
-            # Non-trigger day: portfolio held, compute return from previous positions
-            oos_perf['System_Curated']['returns'].append({'return': 0, 'date': next_date})
+            # Non-trigger day: compute return from held positions
+            if not last_curated_port.empty:
+                held_ret = compute_portfolio_return(last_curated_port, next_df)
+                oos_perf['System_Curated']['returns'].append({'return': held_ret, 'date': next_date})
+                # Update held portfolio prices for next day's return calc
+                merged = last_curated_port.merge(next_df[['symbol', 'price']], on='symbol', how='left')
+                if 'price_y' in merged.columns:
+                    merged['price'] = merged['price_y'].fillna(merged['price_x'])
+                    merged = merged.drop(columns=['price_x', 'price_y'])
+                    merged['value'] = merged['price'] * (last_curated_port['value'] / last_curated_port['price'].replace(0, 1))
+                    last_curated_port = merged
+            else:
+                oos_perf['System_Curated']['returns'].append({'return': 0, 'date': next_date})
         
         # ─── PER-STRATEGY OOS Returns ───
         for name, strategy in _strategies.items():
@@ -926,39 +935,54 @@ def evaluate_historical_performance_trigger_based(
                 if is_buy_day:
                     portfolio = strategy.generate_portfolio(test_df, TRAINING_CAPITAL)
                     if not portfolio.empty:
+                        last_strategy_ports[name] = portfolio.copy()
                         oos_perf[name]['returns'].append({
-                            'return': compute_portfolio_return(portfolio, next_df),
+                            'return': compute_portfolio_return(portfolio, next_df, is_rebalance=True),
                             'date': next_date
                         })
                     else:
                         oos_perf[name]['returns'].append({'return': 0, 'date': next_date})
+                elif name in last_strategy_ports and not last_strategy_ports[name].empty:
+                    # Held position: compute actual return
+                    held_ret = compute_portfolio_return(last_strategy_ports[name], next_df)
+                    oos_perf[name]['returns'].append({'return': held_ret, 'date': next_date})
                 else:
                     oos_perf[name]['returns'].append({'return': 0, 'date': next_date})
             except Exception as e:
                 logger.error(f"OOS Strategy Error ({name}, {test_date}): {e}")
                 oos_perf[name]['returns'].append({'return': 0, 'date': next_date})
 
-        # ─── SPECTRAL TRACKING (every 5th step) ───
-        if step_count % 5 == 0:
+        # ─── SPECTRAL TRACKING (every 5th step) — uses return time-series, not cross-section ───
+        if step_count % 5 == 0 and i >= 20:
             try:
                 from rmt_core import compute_spectral_diagnostics
-                indicator_cols = ['rsi latest', 'osc latest', 'zscore latest', 'rsi weekly', 'osc weekly']
-                avail_cols = [c for c in indicator_cols if c in test_df.columns]
-                if len(avail_cols) >= 3 and len(test_df) >= 8:
-                    indicator_matrix = test_df[avail_cols].ffill().fillna(test_df[avail_cols].median()).values
-                    spec_diag = compute_spectral_diagnostics(indicator_matrix)
-                    spectral_history.append({
-                        'date': test_date,
-                        'absorption_ratio': spec_diag.absorption_ratio,
-                        'effective_rank': spec_diag.effective_rank,
-                        'condition_number': spec_diag.condition_number,
-                        'largest_eigenvalue': float(spec_diag.eigenvalues[0]),
-                    })
+                # Build T×N return matrix from trailing window of per-strategy OOS returns
+                strat_keys = [n for n in _strategies.keys()]
+                ret_cols = {}
+                for sn in strat_keys:
+                    r_list = oos_perf[sn]['returns']
+                    if len(r_list) >= 10:
+                        ret_cols[sn] = np.array([
+                            r['return'] if isinstance(r, dict) else r for r in r_list
+                        ], dtype=float)
+                if len(ret_cols) >= 2:
+                    min_len = min(len(v) for v in ret_cols.values())
+                    if min_len >= 10:
+                        ret_matrix = np.column_stack([v[:min_len] for v in ret_cols.values()])
+                        ret_matrix = np.nan_to_num(ret_matrix, nan=0.0)
+                        spec_diag = compute_spectral_diagnostics(ret_matrix)
+                        spectral_history.append({
+                            'date': test_date,
+                            'absorption_ratio': spec_diag.absorption_ratio,
+                            'effective_rank': spec_diag.effective_rank,
+                            'condition_number': spec_diag.condition_number,
+                            'largest_eigenvalue': float(spec_diag.eigenvalues[0]),
+                        })
             except Exception:
                 pass
 
     progress_bar.empty()
-    
+
     # ─────────────────────────────────────────────────────────────────────
     # COMPUTE FINAL METRICS
     # ─────────────────────────────────────────────────────────────────────
@@ -969,19 +993,19 @@ def evaluate_historical_performance_trigger_based(
             'returns': data['returns'],
             'metrics': metrics
         }
-    
+
     if weight_entropies:
         final_oos_perf['System_Curated']['metrics']['avg_weight_entropy'] = np.mean(weight_entropies)
-    
+
     # Tier-level performance from full history
     full_history_subset_perf = _calculate_performance_on_window(historical_data, _strategies, TRAINING_CAPITAL)['subset']
-    
+
     logger.info("=" * 70)
     curated_metrics = final_oos_perf.get('System_Curated', {}).get('metrics', {})
     logger.info(f"WALK-FORWARD COMPLETE | System_Curated CAGR: {curated_metrics.get('annual_return', 0):.1%} | "
                  f"Sharpe: {curated_metrics.get('sharpe', 0):.2f} | MaxDD: {curated_metrics.get('max_drawdown', 0):.1%}")
     logger.info("=" * 70)
-    
+
     # Spectral summary
     spectral_summary = {}
     if spectral_history:
@@ -1058,7 +1082,7 @@ def evaluate_historical_performance(
                 oos_perf['System_Curated']['returns'].append({'return': 0, 'date': next_date})
             else:
                 oos_perf['System_Curated']['returns'].append({
-                    'return': compute_portfolio_return(curated_port, next_df),
+                    'return': compute_portfolio_return(curated_port, next_df, is_rebalance=True),
                     'date': next_date
                 })
                 weights = curated_port['weightage_pct'] / 100
@@ -1074,30 +1098,39 @@ def evaluate_historical_performance(
             try:
                 portfolio = strategy.generate_portfolio(test_df, TRAINING_CAPITAL)
                 oos_perf[name]['returns'].append({
-                    'return': compute_portfolio_return(portfolio, next_df),
+                    'return': compute_portfolio_return(portfolio, next_df, is_rebalance=True),
                     'date': next_date
                 })
             except Exception as e:
                 logger.error(f"OOS Strategy Error ({name}, {test_date.date()}): {e}")
                 oos_perf[name]['returns'].append({'return': 0, 'date': next_date})
 
-        # ─── SPECTRAL TRACKING (every 5th step) ───
+        # ─── SPECTRAL TRACKING (every 5th step) — uses return time-series ───
         step_count = i - MIN_TRAIN_FILES
-        if step_count % 5 == 0:
+        if step_count % 5 == 0 and i >= 20:
             try:
                 from rmt_core import compute_spectral_diagnostics
-                indicator_cols = ['rsi latest', 'osc latest', 'zscore latest', 'rsi weekly', 'osc weekly']
-                avail_cols = [c for c in indicator_cols if c in test_df.columns]
-                if len(avail_cols) >= 3 and len(test_df) >= 8:
-                    indicator_matrix = test_df[avail_cols].ffill().fillna(test_df[avail_cols].median()).values
-                    spec_diag = compute_spectral_diagnostics(indicator_matrix)
-                    spectral_history.append({
-                        'date': test_date,
-                        'absorption_ratio': spec_diag.absorption_ratio,
-                        'effective_rank': spec_diag.effective_rank,
-                        'condition_number': spec_diag.condition_number,
-                        'largest_eigenvalue': float(spec_diag.eigenvalues[0]),
-                    })
+                strat_keys = list(_strategies.keys())
+                ret_cols = {}
+                for sn in strat_keys:
+                    r_list = oos_perf[sn]['returns']
+                    if len(r_list) >= 10:
+                        ret_cols[sn] = np.array([
+                            r['return'] if isinstance(r, dict) else r for r in r_list
+                        ], dtype=float)
+                if len(ret_cols) >= 2:
+                    min_len = min(len(v) for v in ret_cols.values())
+                    if min_len >= 10:
+                        ret_matrix = np.column_stack([v[:min_len] for v in ret_cols.values()])
+                        ret_matrix = np.nan_to_num(ret_matrix, nan=0.0)
+                        spec_diag = compute_spectral_diagnostics(ret_matrix)
+                        spectral_history.append({
+                            'date': test_date,
+                            'absorption_ratio': spec_diag.absorption_ratio,
+                            'effective_rank': spec_diag.effective_rank,
+                            'condition_number': spec_diag.condition_number,
+                            'largest_eigenvalue': float(spec_diag.eigenvalues[0]),
+                        })
             except Exception:
                 pass
 
@@ -1311,9 +1344,9 @@ class MarketRegimeDetectorV2:
         osc_values = [df['osc latest'].mean() for _, df in window]
         
         current_rsi = rsi_values[-1]
-        rsi_trend = np.polyfit(range(len(rsi_values)), rsi_values, 1)[0]
+        rsi_trend = theilslopes(rsi_values, range(len(rsi_values)))[0]
         current_osc = osc_values[-1]
-        osc_trend = np.polyfit(range(len(osc_values)), osc_values, 1)[0]
+        osc_trend = theilslopes(osc_values, range(len(osc_values)))[0]
         
         if current_rsi > 65 and rsi_trend > 0.5:
             strength, score = 'STRONG_BULLISH', 2.0
@@ -1334,7 +1367,7 @@ class MarketRegimeDetectorV2:
         
         current_above_200 = above_ma200_pct[-1]
         current_alignment = ma_alignment[-1]
-        trend_consistency = np.polyfit(range(len(above_ma200_pct)), above_ma200_pct, 1)[0]
+        trend_consistency = theilslopes(above_ma200_pct, range(len(above_ma200_pct)))[0]
         
         if current_above_200 > 0.75 and current_alignment > 0.70 and trend_consistency >= 0:
             quality, score = 'STRONG_UPTREND', 2.0
@@ -1541,7 +1574,7 @@ class MarketRegimeDetectorV2:
         }
 
     def _calculate_composite_score(self, metrics: Dict) -> float:
-        weights = { 'momentum': 0.30, 'trend': 0.25, 'breadth': 0.15, 'volatility': 0.05, 'extremes': 0.10, 'correlation': 0.0, 'velocity': 0.15 }
+        weights = { 'momentum': 0.25, 'trend': 0.25, 'breadth': 0.15, 'volatility': 0.05, 'extremes': 0.10, 'correlation': 0.10, 'velocity': 0.10 }
         return sum(metrics[factor]['score'] * weight for factor, weight in weights.items())
     
     def _classify_regime(self, score: float, metrics: Dict) -> Tuple[str, float]:
@@ -2157,89 +2190,53 @@ def _compute_backtest_metrics(daily_values: List[float], periods_per_year: float
     Compute performance metrics from daily portfolio values.
     Returns realistic, unbounded metrics for proper comparison.
     """
-    result = {
-        'total_return': 0.0,
-        'ann_return': 0.0,
-        'volatility': 0.0,
-        'sharpe': 0.0,
-        'sortino': 0.0,
-        'calmar': 0.0,
-        'max_dd': 0.0,
-        'win_rate': 0.0
+    empty = {
+        'total_return': 0.0, 'ann_return': 0.0, 'volatility': 0.0,
+        'sharpe': 0.0, 'sortino': 0.0, 'calmar': 0.0,
+        'max_dd': 0.0, 'win_rate': 0.0,
     }
-    
+
     if len(daily_values) < 5:
-        return result
-    
+        return empty
+
     values = np.array(daily_values, dtype=np.float64)
-    
-    # Validate data
     if np.any(values <= 0) or np.any(~np.isfinite(values)):
-        return result
-    
-    initial = values[0]
-    final = values[-1]
-    n_days = len(values)
-    
-    # Total Return
-    total_return = (final - initial) / initial
-    result['total_return'] = total_return
-    
-    # Daily Returns (guard against zero denominators)
+        return empty
+
+    initial, final = values[0], values[-1]
+
+    # Compute returns from value series
     prev_values = values[:-1]
     safe_prev = np.where(prev_values != 0, prev_values, 1e-10)
     daily_returns = np.diff(values) / safe_prev
     daily_returns = daily_returns[np.isfinite(daily_returns)]
-    
+
     if len(daily_returns) < 3:
-        return result
-    
-    # Annualized Return (CAGR)
-    years = n_days / periods_per_year
-    if years > 0 and final > 0 and initial > 0:
-        ann_return = (final / initial) ** (1.0 / years) - 1.0
-    else:
-        ann_return = 0.0
-    result['ann_return'] = ann_return
-    
-    # Volatility (annualized)
-    daily_vol = np.std(daily_returns, ddof=1)
-    volatility = daily_vol * np.sqrt(periods_per_year)
-    result['volatility'] = volatility
-    
-    # Sharpe Ratio
-    if volatility > 0.001:
-        sharpe = ann_return / volatility
-    else:
-        sharpe = 0.0
-    sharpe = np.clip(sharpe, -10, 10)
-    result['sharpe'] = sharpe
-    
-    # Sortino Ratio (downside deviation — full series, min(r,0))
-    downside = np.minimum(daily_returns, 0)
-    downside_vol = np.std(downside, ddof=1) * np.sqrt(periods_per_year)
-    sortino = ann_return / downside_vol if downside_vol > 0.001 else 0.0
-    result['sortino'] = sortino
-    
-    # Maximum Drawdown
-    running_max = np.maximum.accumulate(values)
-    drawdowns = (values - running_max) / running_max
-    max_dd = np.min(drawdowns)
-    result['max_dd'] = max_dd
-    
-    # Calmar Ratio (annualized return / max drawdown)
-    if max_dd < -0.001:  # At least 0.1% drawdown
-        calmar = ann_return / abs(max_dd)
-    else:
-        calmar = 0
-    calmar = np.clip(calmar, -20, 20)
-    result['calmar'] = calmar
-    
-    # Win Rate
-    win_rate = np.mean(daily_returns > 0)
-    result['win_rate'] = win_rate
-    
-    return result
+        return empty
+
+    # Pre-compute CAGR from value endpoints (more stable than compounding returns)
+    years = len(values) / periods_per_year
+    cagr = (final / initial) ** (1.0 / years) - 1.0 if years > 0 else 0.0
+    total_return = (final - initial) / initial
+
+    # Delegate to canonical implementation
+    core = compute_risk_metrics(
+        daily_returns,
+        periods_per_year=periods_per_year,
+        total_return=total_return,
+        ann_return=cagr,
+    )
+
+    return {
+        'total_return': core['total_return'],
+        'ann_return': core['ann_return'],
+        'volatility': core['volatility'],
+        'sharpe': core['sharpe'],
+        'sortino': core['sortino'],
+        'calmar': core['calmar'],
+        'max_dd': core['max_drawdown'],
+        'win_rate': core['win_rate'],
+    }
 
 
 def _run_dynamic_strategy_selection(

@@ -46,11 +46,20 @@ class LiquidityOscillator:
         return oscillator.rename('liquidity_oscillator')
 
 def resample_data(df: pd.DataFrame, rule: str = 'W-FRI') -> pd.DataFrame:
-    """Resample daily OHLCV data to a different timeframe."""
+    """Resample daily OHLCV data to a different timeframe.
+
+    Uses last-available trading day per week to handle NSE holidays
+    (e.g. Friday closures) that would otherwise produce partial or
+    missing weekly bars with a rigid W-FRI rule.
+    """
     if df.empty or not isinstance(df.index, pd.DatetimeIndex):
         return pd.DataFrame()
     agg_map = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
-    return df.resample(rule).agg(agg_map).dropna()
+    resampled = df.resample(rule).agg(agg_map).dropna()
+    # Drop weeks with too few trading days (< 2) to avoid noisy single-day bars
+    counts = df['close'].resample(rule).count()
+    valid_weeks = counts[counts >= 2].index
+    return resampled.loc[resampled.index.isin(valid_weeks)]
 
 
 def calculate_rsi(data: pd.DataFrame, period: int = 14) -> pd.Series:

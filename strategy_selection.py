@@ -35,6 +35,11 @@ import warnings
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=RuntimeWarning, message='Mean of empty slice')
 
+try:
+    from backtest_engine import compute_risk_metrics
+except ImportError:
+    compute_risk_metrics = None  # graceful degradation
+
 logger = logging.getLogger("StrategySelection")
 
 
@@ -42,9 +47,33 @@ logger = logging.getLogger("StrategySelection")
 # CONSTANTS - RESEARCH-DERIVED TRIGGERS (NOT ARBITRARY)
 # ══════════════════════════════════════════════════════════════════════════════
 
-SIP_TRIGGER = 0.42          # Accumulate when breadth falls below this
-SWING_BUY_TRIGGER = 0.42    # Enter swing position below this  
-SWING_SELL_TRIGGER = 0.50   # Exit swing position at or above this
+# Defaults — override via environment: PRAGYAM_SIP_TRIGGER, PRAGYAM_SWING_BUY, PRAGYAM_SWING_SELL
+import os as _os
+SIP_TRIGGER = float(_os.environ.get('PRAGYAM_SIP_TRIGGER', '0.42'))
+SWING_BUY_TRIGGER = float(_os.environ.get('PRAGYAM_SWING_BUY', '0.42'))
+SWING_SELL_TRIGGER = float(_os.environ.get('PRAGYAM_SWING_SELL', '0.50'))
+
+
+def compute_adaptive_thresholds(breadth_series: 'pd.Series', buy_pct: float = 25, sell_pct: float = 60) -> tuple:
+    """Compute adaptive buy/sell thresholds from historical breadth distribution.
+
+    Args:
+        breadth_series: Historical REL_BREADTH values.
+        buy_pct: Percentile below which to trigger buys (default 25th).
+        sell_pct: Percentile above which to trigger sells (default 60th).
+
+    Returns:
+        (buy_threshold, sell_threshold) tuple.
+    """
+    clean = breadth_series.dropna()
+    if len(clean) < 20:
+        return SIP_TRIGGER, SWING_SELL_TRIGGER
+    buy_thresh = float(np.percentile(clean, buy_pct))
+    sell_thresh = float(np.percentile(clean, sell_pct))
+    # Sanity: buy must be below sell
+    if buy_thresh >= sell_thresh:
+        return SIP_TRIGGER, SWING_SELL_TRIGGER
+    return round(buy_thresh, 3), round(sell_thresh, 3)
 
 BREADTH_SHEET_ID = "1po7z42n3dYIQGAvn0D1-a4pmyxpnGPQ13TrNi3DB5_c"
 BREADTH_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{BREADTH_SHEET_ID}/export?format=csv"
@@ -331,47 +360,63 @@ class MasterPortfolio:
         })
     
     def get_metrics(self) -> Dict:
-        """Calculate comprehensive performance metrics."""
+        """Calculate comprehensive performance metrics.
+
+        Delegates core ratio math to :func:`backtest_engine.compute_risk_metrics`
+        when available, with inline fallback for standalone usage.
+        """
         if not self.history or self.total_invested <= 0:
             return self._empty_metrics()
-        
+
         total_return = self.get_total_return()
         terminal_value = self.get_current_value()
-        
-        # Extract returns at each snapshot for risk metrics
+
+        # Extract per-snapshot returns
         returns = []
         for i in range(1, len(self.history)):
-            prev_val = self.history[i-1]['current_value']
+            prev_val = self.history[i - 1]['current_value']
             curr_val = self.history[i]['current_value']
             if prev_val > 0:
                 returns.append((curr_val - prev_val) / prev_val)
-        
+
         returns = np.array(returns) if returns else np.array([total_return])
-        
-        # Risk metrics
-        if len(returns) > 1 and returns.std() > 0:
-            sharpe = returns.mean() / returns.std()
-            downside = returns[returns < 0]
-            sortino = returns.mean() / downside.std() if len(downside) > 0 and downside.std() > 0 else sharpe
+
+        # Estimate periods_per_year from snapshot frequency
+        periods_per_year = max(len(returns), 1)
+
+        if compute_risk_metrics is not None and len(returns) >= 2:
+            core = compute_risk_metrics(
+                returns,
+                periods_per_year=periods_per_year,
+                total_return=total_return,
+            )
+            sharpe = core['sharpe']
+            sortino = core['sortino']
+            max_dd = core['max_drawdown']
+            win_rate = core['win_rate']
+            calmar = core['calmar']
         else:
-            sharpe = total_return if total_return > 0 else 0
-            sortino = sharpe
-        
-        # Drawdown
-        values = [h['current_value'] for h in self.history]
-        if values:
-            peak = np.maximum.accumulate(values)
-            drawdown = (np.array(values) - peak) / np.where(peak > 0, peak, 1)
-            max_dd = drawdown.min()
-        else:
-            max_dd = 0
-        
-        # Win rate (positive snapshots)
-        win_rate = (returns > 0).mean() if len(returns) > 0 else 0
-        
-        # Calmar
-        calmar = total_return / abs(max_dd) if max_dd < -0.001 else 0
-        
+            # Fallback: inline computation for standalone usage
+            ann_factor = np.sqrt(periods_per_year)
+            if len(returns) > 1 and returns.std() > 0:
+                sharpe = (returns.mean() / returns.std()) * ann_factor
+                downside = returns[returns < 0]
+                downside_dev = np.sqrt(np.mean(downside ** 2)) if len(downside) > 0 else 0
+                sortino = (returns.mean() / downside_dev) * ann_factor if downside_dev > 0 else sharpe
+            else:
+                sharpe = total_return if total_return > 0 else 0
+                sortino = sharpe
+
+            values = [h['current_value'] for h in self.history]
+            if values:
+                peak = np.maximum.accumulate(values)
+                drawdown = (np.array(values) - peak) / np.where(peak > 0, peak, 1)
+                max_dd = drawdown.min()
+            else:
+                max_dd = 0
+            win_rate = (returns > 0).mean() if len(returns) > 0 else 0
+            calmar = total_return / abs(max_dd) if max_dd < -0.001 else 0
+
         return {
             'total_invested': self.total_invested,
             'terminal_value': terminal_value,

@@ -1,3 +1,5 @@
+import functools
+
 import pandas as pd
 import numpy as np
 from abc import ABC, abstractmethod
@@ -8,13 +10,61 @@ import logging
 
 logger = logging.getLogger("strategies")
 
+# --- Portfolio contract: required columns and their expected dtypes ---
+PORTFOLIO_COLUMNS = ('symbol', 'price', 'weightage_pct', 'units', 'value')
+
 # --- Base Classes and Utilities ---
 
 
 class BaseStrategy(ABC):
+
+    # ── contract enforcement via __init_subclass__ ──
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        orig = cls.__dict__.get('generate_portfolio')
+        if orig is not None and callable(orig):
+            @functools.wraps(orig)
+            def _validated(self, df, sip_amount=100000.0, _orig=orig):
+                result = _orig(self, df, sip_amount)
+                return self._validate_portfolio(result)
+            cls.generate_portfolio = _validated  # type: ignore[assignment]
+
     @abstractmethod
     def generate_portfolio(self, df: pd.DataFrame, sip_amount: float = 100000.0) -> pd.DataFrame:
         pass
+
+    @staticmethod
+    def _validate_portfolio(portfolio: pd.DataFrame) -> pd.DataFrame:
+        """Runtime contract enforcement for portfolio DataFrames.
+
+        Ensures every non-empty portfolio returned by a strategy has the
+        required columns and sane values.  Invalid rows are dropped rather
+        than raising, to keep the walk-forward loop running.
+        """
+        if portfolio is None or not isinstance(portfolio, pd.DataFrame):
+            return pd.DataFrame(columns=list(PORTFOLIO_COLUMNS))
+
+        if portfolio.empty:
+            return portfolio
+
+        # Column presence check
+        missing = [c for c in PORTFOLIO_COLUMNS if c not in portfolio.columns]
+        if missing:
+            logger.warning(f"Strategy returned portfolio missing columns {missing}; returning empty")
+            return pd.DataFrame(columns=list(PORTFOLIO_COLUMNS))
+
+        # Drop rows with non-positive price or value
+        valid = (portfolio['price'] > 0) & (portfolio['value'] >= 0) & (portfolio['units'] >= 0)
+        if not valid.all():
+            n_dropped = (~valid).sum()
+            logger.warning(f"Dropped {n_dropped} invalid portfolio rows (non-positive price/value)")
+            portfolio = portfolio.loc[valid].copy()
+
+        # Drop duplicate symbols (keep first / highest weight)
+        if portfolio['symbol'].duplicated().any():
+            portfolio = portfolio.drop_duplicates(subset='symbol', keep='first')
+
+        return portfolio
 
     def _clean_data(self, df: pd.DataFrame, required_columns: List[str]) -> pd.DataFrame:
         """A standardized data cleaning utility for strategies."""
@@ -7656,6 +7706,7 @@ def discover_strategies() -> Dict[str, BaseStrategy]:
 
 __all__ = [
     'BaseStrategy',
+    'PORTFOLIO_COLUMNS',
     'STRATEGY_REGISTRY',
     'discover_strategies',
     *STRATEGY_REGISTRY.keys(),

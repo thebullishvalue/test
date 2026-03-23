@@ -17,6 +17,9 @@ import numpy as np
 from scipy.linalg import eigh
 from scipy.optimize import minimize
 
+# Canonical epsilon for division-by-zero guards across the module.
+_EPS = 1e-10
+
 
 # ---------------------------------------------------------------------------
 # Data Structures
@@ -63,7 +66,7 @@ def marchenko_pastur_edges(gamma: float, sigma_sq: float = 1.0) -> Tuple[float, 
     Returns:
         (lambda_minus, lambda_plus) — the support boundaries.
     """
-    sqrt_inv_gamma = 1.0 / np.sqrt(max(gamma, 1e-10))
+    sqrt_inv_gamma = 1.0 / np.sqrt(max(gamma, _EPS))
     lambda_plus = sigma_sq * (1.0 + sqrt_inv_gamma) ** 2
     lambda_minus = sigma_sq * max(0.0, (1.0 - sqrt_inv_gamma)) ** 2
     return lambda_minus, lambda_plus
@@ -112,7 +115,7 @@ def effective_number_of_bets(eigenvalues: np.ndarray) -> float:
     Returns 1.0 when all variance is in one factor (maximally concentrated),
     returns N when all eigenvalues are equal (maximally dispersed).
     """
-    eig = np.maximum(eigenvalues, 1e-15)
+    eig = np.maximum(eigenvalues, _EPS)
     p = eig / eig.sum()
     entropy = -np.sum(p * np.log(p))
     enb = np.exp(entropy)
@@ -159,7 +162,7 @@ def herfindahl_eigenvalue_index(eigenvalues: np.ndarray) -> float:
 def _corr_from_cov(cov: np.ndarray) -> np.ndarray:
     """Convert covariance matrix to correlation matrix."""
     std = np.sqrt(np.diag(cov))
-    std = np.where(std > 0, std, 1e-10)
+    std = np.where(std > 0, std, _EPS)
     corr = cov / np.outer(std, std)
     np.fill_diagonal(corr, 1.0)
     return np.clip(corr, -1.0, 1.0)
@@ -208,7 +211,7 @@ def clean_correlation_matrix(
 
     # Force unit diagonal
     d = np.sqrt(np.diag(corr_clean))
-    d = np.where(d > 0, d, 1e-10)
+    d = np.where(d > 0, d, _EPS)
     corr_clean = corr_clean / np.outer(d, d)
     np.fill_diagonal(corr_clean, 1.0)
 
@@ -238,7 +241,7 @@ def ledoit_wolf_shrinkage(
 
     # Target: constant-correlation matrix
     std = np.sqrt(np.diag(sample_cov))
-    std = np.where(std > 0, std, 1e-10)
+    std = np.where(std > 0, std, _EPS)
     corr = sample_cov / np.outer(std, std)
     np.fill_diagonal(corr, 1.0)
 
@@ -258,8 +261,8 @@ def ledoit_wolf_shrinkage(
     for i in range(N):
         for j in range(i + 1, N):
             if j < N and i < N:
-                rij = np.sqrt(sample_cov[j, j] / max(sample_cov[i, i], 1e-15))
-                rji = np.sqrt(sample_cov[i, i] / max(sample_cov[j, j], 1e-15))
+                rij = np.sqrt(sample_cov[j, j] / max(sample_cov[i, i], _EPS))
+                rji = np.sqrt(sample_cov[i, i] / max(sample_cov[j, j], _EPS))
                 theta_ij = (X2[:, i] * X[:, j] * X[:, i]).sum() / T
                 theta_ji = (X2[:, j] * X[:, i] * X[:, j]).sum() / T
                 rho_off += (rij * theta_ij + rji * theta_ji) * rho_bar / 2
@@ -282,7 +285,11 @@ def ledoit_wolf_shrinkage(
 def _fast_ledoit_wolf_intensity(returns_matrix: np.ndarray) -> float:
     """
     Fast approximation of Ledoit-Wolf shrinkage intensity.
-    Uses the simplified formula for identity target.
+
+    Uses the Oracle Approximating Shrinkage (OAS) estimator toward the
+    scaled identity target μI, where μ = tr(S)/N.
+
+    Reference: Chen, Wiesel, Eldar & Hero (2010).
     """
     T, N = returns_matrix.shape
     if T < 2 or N < 2:
@@ -291,18 +298,17 @@ def _fast_ledoit_wolf_intensity(returns_matrix: np.ndarray) -> float:
     X = returns_matrix - returns_matrix.mean(axis=0)
     S = (X.T @ X) / T
 
-    # Frobenius norms
-    trace_S2 = np.sum(S ** 2)
     trace_S = np.trace(S)
+    trace_S2 = np.sum(S ** 2)
 
-    # Sum of squared element-wise products
-    X2 = X ** 2
-    sum_x4 = np.sum((X2.T @ X2) / T - S ** 2)
+    # OAS intensity: balances bias-variance of shrinkage toward μI
+    rho_num = (1.0 - 2.0 / N) * trace_S2 + trace_S ** 2
+    rho_den = (T + 1.0 - 2.0 / N) * (trace_S2 - trace_S ** 2 / N)
 
-    mu = trace_S / N
-    delta = ((T + 1 - 2.0 / N) * trace_S2 + trace_S ** 2) / ((T + 1 - 2.0 / N) * (trace_S2 - trace_S ** 2 / N) + trace_S ** 2)
+    if abs(rho_den) < 1e-15:
+        return 0.0
 
-    intensity = max(0.0, min(1.0, sum_x4 / (T * (trace_S2 - trace_S ** 2 / N))))
+    intensity = max(0.0, min(1.0, rho_num / rho_den))
     return intensity
 
 
@@ -357,7 +363,7 @@ def compute_spectral_diagnostics(
 
     # Standardize columns (-> correlation matrix from covariance of standardized data)
     col_std = np.std(data_matrix, axis=0)
-    col_std = np.where(col_std > 1e-10, col_std, 1.0)
+    col_std = np.where(col_std > _EPS, col_std, 1.0)
     standardized = (data_matrix - np.mean(data_matrix, axis=0)) / col_std
 
     # Sample correlation matrix
@@ -413,7 +419,7 @@ def compute_spectral_diagnostics(
         shrinkage_intensity = 0.0
 
     # Metrics
-    cond = float(eigenvalues[0] / max(eigenvalues[-1], 1e-15))
+    cond = float(eigenvalues[0] / max(eigenvalues[-1], _EPS))
     eff_rank = effective_number_of_bets(eigenvalues)
     ar = absorption_ratio(eigenvalues, n_absorption_factors)
     hei = herfindahl_eigenvalue_index(eigenvalues)
@@ -554,27 +560,38 @@ def _cluster_by_correlation(
     threshold: float = 0.7,
 ) -> List[List[str]]:
     """
-    Simple greedy clustering: strategies with cleaned correlation > threshold
-    are placed in the same cluster.
+    Union-Find clustering: strategies with cleaned correlation > threshold
+    are placed in the same cluster.  Order-independent (unlike the previous
+    greedy pass which was sensitive to index ordering).
     """
     n = len(names)
-    assigned = [False] * n
-    clusters = []
+
+    # Union-Find with path compression
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
 
     for i in range(n):
-        if assigned[i]:
-            continue
-        cluster = [names[i]]
-        assigned[i] = True
         for j in range(i + 1, n):
-            if assigned[j]:
-                continue
             if abs(corr_matrix[i, j]) > threshold:
-                cluster.append(names[j])
-                assigned[j] = True
-        clusters.append(cluster)
+                union(i, j)
 
-    return clusters
+    # Collect clusters
+    cluster_map: Dict[int, List[str]] = {}
+    for i in range(n):
+        root = find(i)
+        cluster_map.setdefault(root, []).append(names[i])
+
+    return list(cluster_map.values())
 
 
 # ---------------------------------------------------------------------------
@@ -660,7 +677,7 @@ def rmt_minimum_variance_weights(
 
     # Build cleaned covariance from cleaned correlation + sample volatilities
     vols = np.std(returns_matrix, axis=0)
-    vols = np.where(vols > 1e-10, vols, 1e-10)
+    vols = np.where(vols > _EPS, vols, _EPS)
     cleaned_cov = diagnostics.cleaned_corr * np.outer(vols, vols)
 
     # Regularize slightly to ensure positive definiteness
@@ -708,7 +725,7 @@ def rmt_risk_parity_weights(
     N = len(strategy_names)
 
     vols = np.std(returns_matrix, axis=0)
-    vols = np.where(vols > 1e-10, vols, 1e-10)
+    vols = np.where(vols > _EPS, vols, _EPS)
     cleaned_cov = diagnostics.cleaned_corr * np.outer(vols, vols)
     cleaned_cov += np.eye(N) * 1e-8
 
@@ -756,7 +773,7 @@ def compute_diversification_ratio(
     vols = np.sqrt(np.diag(cleaned_cov))
     weighted_avg_vol = np.dot(weights, vols)
     port_var = weights @ cleaned_cov @ weights
-    port_vol = np.sqrt(max(port_var, 1e-15))
+    port_vol = np.sqrt(max(port_var, _EPS))
     return float(weighted_avg_vol / port_vol)
 
 

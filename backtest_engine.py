@@ -25,7 +25,106 @@ logger = logging.getLogger("BacktestEngine")
 
 
 # ============================================================================
-# PERFORMANCE METRICS CALCULATOR
+# CANONICAL RISK METRICS — single source of truth for Sharpe, Sortino, etc.
+# ============================================================================
+
+def compute_risk_metrics(
+    returns: np.ndarray,
+    periods_per_year: float = 252.0,
+    risk_free_rate: float = 0.0,
+    total_return: float | None = None,
+    ann_return: float | None = None,
+) -> Dict[str, float]:
+    """Canonical risk-metric computation used by every analytics path.
+
+    Operates on a 1-D array of periodic returns (daily, weekly, or
+    per-trigger-day).  All ratio math lives here — callers should
+    **not** re-derive Sharpe / Sortino / Calmar independently.
+
+    Args:
+        returns: 1-D array-like of periodic simple returns.
+        periods_per_year: Annualization factor (252 for daily, 52 for
+            weekly, or an empirically estimated value).
+        risk_free_rate: Annual risk-free rate subtracted from return.
+        total_return: Pre-computed total (geometric) return.  If *None*,
+            computed from ``returns`` via ``prod(1+r) - 1``.
+        ann_return: Pre-computed annualized return / CAGR.  If *None*,
+            derived from *total_return* and the number of periods.
+
+    Returns:
+        Dict with keys: total_return, ann_return, volatility, sharpe,
+        sortino, max_drawdown, calmar, win_rate, best_period, worst_period.
+    """
+    empty = {
+        'total_return': 0.0, 'ann_return': 0.0, 'volatility': 0.0,
+        'sharpe': 0.0, 'sortino': 0.0, 'max_drawdown': 0.0,
+        'calmar': 0.0, 'win_rate': 0.0, 'best_period': 0.0, 'worst_period': 0.0,
+    }
+
+    r = np.asarray(returns, dtype=np.float64)
+    r = r[np.isfinite(r)]
+    if len(r) < 2:
+        return empty
+
+    # ── total return ──
+    if total_return is None:
+        total_return = float(np.prod(1 + r) - 1)
+
+    # ── annualized return ──
+    n = len(r)
+    years = n / periods_per_year
+    if ann_return is None:
+        if years > 0 and total_return > -1:
+            ann_return = (1 + total_return) ** (1 / years) - 1
+        else:
+            ann_return = 0.0
+
+    # ── volatility (annualized) ──
+    ann_factor = np.sqrt(periods_per_year)
+    volatility = float(np.std(r, ddof=1) * ann_factor)
+
+    # ── Sharpe ──
+    excess = ann_return - risk_free_rate
+    sharpe = excess / volatility if volatility > 0.001 else 0.0
+    sharpe = float(np.clip(sharpe, -10, 10))
+
+    # ── Sortino (RMS of downside) ──
+    downside = np.minimum(r, 0.0)
+    downside_vol = float(np.sqrt(np.mean(downside ** 2)) * ann_factor)
+    sortino = excess / downside_vol if downside_vol > 0.001 else 0.0
+    sortino = float(np.clip(sortino, -10, 10))
+
+    # ── max drawdown ──
+    cumulative = np.cumprod(1 + r)
+    running_max = np.maximum.accumulate(cumulative)
+    drawdowns = (cumulative - running_max) / running_max
+    max_drawdown = float(np.min(drawdowns))
+
+    # ── Calmar ──
+    calmar = ann_return / abs(max_drawdown) if max_drawdown < -0.001 else 0.0
+    calmar = float(np.clip(calmar, -20, 20))
+
+    # ── Win rate & extremes ──
+    win_rate = float(np.mean(r > 0))
+    best_period = float(np.max(r))
+    worst_period = float(np.min(r))
+
+    return {
+        'total_return': total_return,
+        'ann_return': ann_return,
+        'volatility': volatility,
+        'sharpe': sharpe,
+        'sortino': sortino,
+        'max_drawdown': max_drawdown,
+        'calmar': calmar,
+        'win_rate': win_rate,
+        'best_period': best_period,
+        'worst_period': worst_period,
+    }
+
+
+# ============================================================================
+# PERFORMANCE METRICS CALCULATOR (legacy class — delegates to canonical)
 # ============================================================================
 
 class PerformanceMetrics:
@@ -40,108 +139,52 @@ class PerformanceMetrics:
         risk_free_rate: float = 0.0,
         periods_per_year: float = 252.0
     ) -> Dict[str, float]:
-        """
-        Calculate comprehensive performance metrics from daily portfolio values.
-        
-        Args:
-            daily_values: DataFrame with 'date', 'value', 'investment' columns
-            risk_free_rate: Annual risk-free rate (default 0)
-            periods_per_year: Trading periods per year (default 252)
-            
-        Returns:
-            Dictionary of performance metrics
+        """Calculate comprehensive performance metrics from daily portfolio values.
+
+        Delegates core ratio math to :func:`compute_risk_metrics`.
         """
         if daily_values.empty or len(daily_values) < 2:
             return PerformanceMetrics._empty_metrics()
-        
-        # Extract values
+
         values = daily_values['value'].values
         initial_value = daily_values['investment'].iloc[0]
         final_value = values[-1]
-        
-        # Sanity check: values should not be zero or negative
+
         if initial_value <= 0 or final_value <= 0:
             return PerformanceMetrics._empty_metrics()
-        
-        # Sanity check: values should not have wild swings (>99% single-day moves indicate data issues)
-        values_series = pd.Series(values)
-        daily_returns = values_series.pct_change().dropna()
-        
-        # Filter out invalid returns
-        daily_returns = daily_returns.replace([np.inf, -np.inf], np.nan).dropna()
-        
-        # Cap extreme returns at +/- 100% per day (guard against data errors)
-        daily_returns = daily_returns.clip(-1.0, 1.0)
-        
+
+        daily_returns = pd.Series(values).pct_change().dropna()
+        daily_returns = daily_returns.replace([np.inf, -np.inf], np.nan).dropna().clip(-1.0, 1.0)
+
         if daily_returns.empty or len(daily_returns) < 2:
             return PerformanceMetrics._empty_metrics()
-        
-        # Basic metrics - calculate from actual values, not returns
+
         total_return = (final_value - initial_value) / initial_value
-        
-        # Time-adjusted metrics
-        n_periods = len(daily_values)
-        years = n_periods / periods_per_year
-        
-        # CAGR - use this for annualized return (more stable than compounding daily)
-        if years > 0 and initial_value > 0 and final_value > 0:
-            cagr = (final_value / initial_value) ** (1 / years) - 1
-        else:
-            cagr = 0
-        
-        # Use CAGR as annualized return (more stable)
-        ann_return = cagr
-        
-        # Volatility
-        ann_factor = np.sqrt(periods_per_year)
-        volatility = daily_returns.std() * ann_factor
-        
-        # Sharpe Ratio
-        excess_return = ann_return - risk_free_rate
-        sharpe = excess_return / volatility if volatility > 0.001 else 0
-        
-        # Sortino Ratio (downside deviation using RMS of min(r, 0))
-        downside_diff = daily_returns.clip(upper=0)
-        downside_std = np.sqrt((downside_diff ** 2).mean()) * ann_factor
-        sortino = excess_return / downside_std if downside_std > 0.001 else 0
-        
-        # Maximum Drawdown - calculate from values directly
-        cumulative_max = values_series.expanding(min_periods=1).max()
-        drawdown_series = (values_series - cumulative_max) / cumulative_max
-        max_drawdown = drawdown_series.min()
-        
-        # Calmar Ratio - annual return / max drawdown
-        if max_drawdown < -0.001:  # At least 0.1% drawdown
-            calmar = ann_return / abs(max_drawdown)
-        else:
-            calmar = 0
-        
-        # Sanity bounds on ratios (realistic range: -10 to +10)
-        sharpe = np.clip(sharpe, -10, 10)
-        sortino = np.clip(sortino, -10, 10)
-        calmar = np.clip(calmar, -10, 10)
-        
-        # Win Rate
-        win_rate = (daily_returns > 0).mean()
-        
-        # Best/Worst Days
-        best_day = daily_returns.max()
-        worst_day = daily_returns.min()
-        
+        years = len(daily_values) / periods_per_year
+        cagr = (final_value / initial_value) ** (1 / years) - 1 if years > 0 else 0
+
+        core = compute_risk_metrics(
+            daily_returns.values,
+            periods_per_year=periods_per_year,
+            risk_free_rate=risk_free_rate,
+            total_return=total_return,
+            ann_return=cagr,
+        )
+
         return {
-            'total_return': total_return,
-            'annualized_return': ann_return,
+            'total_return': core['total_return'],
+            'annualized_return': core['ann_return'],
             'cagr': cagr,
-            'volatility': volatility,
-            'sharpe_ratio': sharpe,
-            'sortino_ratio': sortino,
-            'max_drawdown': max_drawdown,
-            'calmar_ratio': calmar,
-            'win_rate': win_rate,
-            'best_day': best_day,
-            'worst_day': worst_day,
-            'trading_days': n_periods,
-            'final_value': final_value
+            'volatility': core['volatility'],
+            'sharpe_ratio': core['sharpe'],
+            'sortino_ratio': core['sortino'],
+            'max_drawdown': core['max_drawdown'],
+            'calmar_ratio': core['calmar'],
+            'win_rate': core['win_rate'],
+            'best_day': core['best_period'],
+            'worst_day': core['worst_period'],
+            'trading_days': len(daily_values),
+            'final_value': final_value,
         }
     
     @staticmethod
@@ -1051,6 +1094,7 @@ def run_streamlit_ui():
 
 
 __all__ = [
+    'compute_risk_metrics',
     'PerformanceMetrics',
     'DataCacheManager',
     'UnifiedBacktestEngine',

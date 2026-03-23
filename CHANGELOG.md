@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.5.0] - 2026-03-23
+
+### Fixed
+- **[C1] Sortino ratio formula** — all 3 implementations (`calculate_advanced_metrics`, `calculate_trigger_based_metrics`, `_compute_backtest_metrics`) now use canonical RMS of downside returns: `sqrt(mean(min(r,0)²))` instead of incorrect `std(downside)`
+- **[C2] SIP Time-Weighted Return** — TWR now isolates market return from capital injection by computing `(V_t - CF_t - V_{t-1}) / V_{t-1}` per period, eliminating cash-flow leakage into performance
+- **[C3] Tier-level Sharpe ratios** — replaced fabricated linear decay formula (`sharpe * (1 - t * 0.05)`) with actual per-tier Sharpe computed from real tier-level returns across all buy days
+- **[C4] Spectral analysis matrix** — now builds T×N return time-series matrix from per-strategy OOS returns instead of single-day cross-sectional indicator matrix; applies to both trigger-based and standard walk-forward
+- **[C5] Trigger thresholds configurable** — thresholds now overridable via `PRAGYAM_SIP_TRIGGER`, `PRAGYAM_SWING_BUY`, `PRAGYAM_SWING_SELL` env vars; added `compute_adaptive_thresholds()` for percentile-based calibration
+- **[H1] Softmax temperature** — introduced `SOFTMAX_TEMPERATURE = 5.0` parameter and removed the `+2` additive shift that killed weight differentiation in `calculate_strategy_weights`
+- **[H2] Missing symbol handling** — `compute_portfolio_return` now uses `how='left'` merge; missing/halted symbols get 0 return instead of being silently dropped (redistributing weight)
+- **[H4] Non-annualized Sharpe/Sortino** in `strategy_selection.py` `MasterPortfolio.get_metrics()` — now annualized by `sqrt(N)` factor; Sortino uses RMS downside
+- **[H5] Ledoit-Wolf estimator** — replaced broken formula (dead variables `mu`, `delta`) with Oracle Approximating Shrinkage (OAS) estimator per Chen, Wiesel, Eldar & Hero (2010)
+- **[H6] Zero returns on held days** — non-trigger days now compute actual returns from last held portfolio instead of reporting 0; portfolio prices updated daily for correct chaining
+- **[M1] Correlation regime weight** — enabled from 0.0 → 0.10 in composite regime scoring; redistributed from momentum (0.30→0.25) and velocity (0.15→0.10)
+- **[M2] Order-dependent clustering** — replaced greedy sequential clustering with Union-Find algorithm for order-independent correlation clustering in `rmt_core.py`
+- **[M3] NSE holiday resampling** — `resample_data` now filters out partial weeks (< 2 trading days) to avoid noisy single-day bars from Friday closures
+- **[M4] Robust trend estimation** — replaced `np.polyfit` with Theil-Sen slopes in `_analyze_momentum_regime` and `_analyze_trend_quality` for outlier resilience
+- **[M5] Division-by-zero guards** — standardized all epsilon constants to canonical `_EPS = 1e-10` in `rmt_core.py`
+
+### Added
+- **[A1] Canonical `compute_risk_metrics()`** in `backtest_engine.py` — single source of truth for Sharpe, Sortino, Calmar, max drawdown, win rate, volatility, and CAGR; all 4 duplicate implementations now delegate to it
+- **[A2] Strategy interface contracts** — `BaseStrategy.__init_subclass__` auto-wraps `generate_portfolio()` with `_validate_portfolio()` runtime validation (column presence, non-negative price/value, duplicate symbol removal); `PORTFOLIO_COLUMNS` tuple defines the contract
+- **Transaction cost model** — `TRANSACTION_COST_BPS = 20` (NSE round-trip: brokerage + STT + GST + stamp duty); applied as one-way cost on rebalance days in all walk-forward loops
+- `compute_adaptive_thresholds()` in `strategy_selection.py` — percentile-based threshold calibration from historical breadth distribution
+- `scipy.stats.theilslopes` import for robust trend estimation
+
+### Changed
+- **[A1]** `calculate_advanced_metrics()`, `calculate_trigger_based_metrics()`, `_compute_backtest_metrics()` in `app.py` and `MasterPortfolio.get_metrics()` in `strategy_selection.py` all delegate core ratio math to `compute_risk_metrics()`; higher-order metrics (Kelly, Omega, tail ratio) remain in `calculate_advanced_metrics()` only
+- `compute_portfolio_return` signature extended with `is_rebalance` parameter for transaction cost deduction
+- Walk-forward loops track `last_curated_port` and `last_strategy_ports` state for held-position return computation
+- Regime scoring weights rebalanced: momentum 0.25, trend 0.25, breadth 0.15, velocity 0.10, correlation 0.10, extremes 0.10, volatility 0.05
+
+---
+
 ## [3.4.0] - 2026-03-23
 
 ### Added
