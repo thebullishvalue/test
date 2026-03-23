@@ -10,7 +10,9 @@ import pandas as pd
 import numpy as np
 import os
 from datetime import datetime, timedelta, timezone
+import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import logging
 
 logger = logging.getLogger("pragyam")
@@ -25,13 +27,23 @@ warnings.filterwarnings('ignore', category=RuntimeWarning, message='invalid valu
 # --- End suppression ---
 
 # --- Import Unified Chart Components ---
-from charts import (
-    COLORS, get_chart_layout,
-    create_equity_drawdown_chart, create_rolling_metrics_chart,
-    create_correlation_heatmap, create_tier_sharpe_heatmap,
-    create_risk_return_scatter, create_factor_radar,
-    create_weight_evolution_chart, create_signal_heatmap
-)
+try:
+    from charts import (
+        COLORS, get_chart_layout,
+        create_equity_drawdown_chart, create_rolling_metrics_chart,
+        create_correlation_heatmap, create_tier_sharpe_heatmap,
+        create_risk_return_scatter, create_factor_radar,
+        create_weight_evolution_chart, create_signal_heatmap
+    )
+    UNIFIED_CHARTS_AVAILABLE = True
+except ImportError:
+    UNIFIED_CHARTS_AVAILABLE = False
+    # Fallback color scheme
+    COLORS = {
+        'primary': '#FFC300', 'success': '#10b981', 'danger': '#ef4444',
+        'warning': '#f59e0b', 'info': '#06b6d4', 'muted': '#888888',
+        'card': '#1A1A1A', 'border': '#2A2A2A', 'text': '#EAEAEA'
+    }
 
 # --- Import Strategies from strategies.py ---
 try:
@@ -81,7 +93,7 @@ except ImportError:
 st.set_page_config(page_title="PRAGYAM | Portfolio Intelligence", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
 
 # --- Constants ---
-VERSION = "v3.4.0"  # Charts v2.0 redesign, tab architecture overhaul
+VERSION = "v3.3.0"  # Random Matrix Theory integration — spectral signal-noise separation
 PRODUCT_NAME = "Pragyam"
 COMPANY = "Hemrek Capital"
 
@@ -1622,524 +1634,644 @@ def get_market_mix_suggestion_v3(end_date: datetime) -> Tuple[str, str, float, D
 
 
 # --- UI & Visualization Functions ---
+def plot_weight_evolution(weight_history: List[Dict], title: str, y_axis_title: str):
+    if not weight_history:
+        return
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# UI PRIMITIVES — Helpers shared by all tabs
-# ═══════════════════════════════════════════════════════════════════════════════
+    df = pd.DataFrame(weight_history)
+    if 'date' not in df.columns: return
+
+    id_vars = ['date']
+    value_vars = [col for col in df.columns if col not in id_vars]
+    df_melted = df.melt(id_vars=id_vars, value_vars=value_vars, var_name='Category', value_name='Weight')
+
+    fig = px.area(df_melted, x='date', y='Weight', color='Category',
+                  labels={'Weight': y_axis_title, 'date': 'Date', 'Category': 'Category'})
+    fig.update_layout(
+        template='plotly_dark',
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#EAEAEA'),
+        height=400,
+        margin=dict(l=10, r=10, t=50, b=80),
+        title=dict(text='', font=dict(size=1)),
+        yaxis_tickformat=".0%",
+        legend=dict(orientation='h', y=-0.18, x=0.5, xanchor='center', yanchor='top', font=dict(size=10))
+    )
+    fig.update_xaxes(gridcolor='rgba(255,255,255,0.05)')
+    fig.update_yaxes(gridcolor='rgba(255,255,255,0.05)')
+    st.plotly_chart(fig, width='stretch')
 
 def _section_header(title: str, subtitle: str = "") -> str:
+    """Generate Swing-style section header HTML."""
     sub = f"<p class='section-subtitle'>{subtitle}</p>" if subtitle else ""
     return f"""<div class='section'><div class='section-header'><h3 class='section-title'>{title}</h3>{sub}</div></div>"""
 
 def _section_divider():
+    """Render gradient section divider."""
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
 def _metric_card(label: str, value: str, sub: str = "", cls: str = "neutral") -> str:
+    """Generate Swing-style metric card HTML."""
     sub_html = f"<div class='sub-metric'>{sub}</div>" if sub else ""
     return f"""<div class='metric-card {cls}'><h4>{label}</h4><h2>{value}</h2>{sub_html}</div>"""
 
-def _render_cards(cards_list):
-    """Render a row of metric cards from a list of (label, value, sub, cls) tuples."""
-    cols = st.columns(min(len(cards_list), 6))
-    for i, (label, val, sub, cls) in enumerate(cards_list):
-        with cols[i % len(cols)]:
-            st.markdown(_metric_card(label, val, sub, cls), unsafe_allow_html=True)
+def _chart_layout_base(height: int = 400, title_text: str = "") -> dict:
+    """Swing-style chart layout — transparent bg, muted chart title at top-left."""
+    layout = {
+        'template': 'plotly_dark',
+        'plot_bgcolor': 'rgba(0,0,0,0)',
+        'paper_bgcolor': 'rgba(0,0,0,0)',
+        'font': dict(color="#EAEAEA"),
+        'height': height,
+        'showlegend': False,
+        'margin': dict(l=10, r=10, t=120 if title_text else 50, b=50),
+        'legend': dict(orientation='h', y=1.02, x=0.01, xanchor='left', yanchor='bottom', font=dict(size=10)),
+    }
+    if title_text:
+        layout['title'] = dict(text=title_text, font=dict(size=16, color='#EAEAEA'), x=0.01, xanchor='left', y=0.98, yanchor='top')
+    else:
+        layout['title'] = dict(text='', font=dict(size=1))
+    return layout
 
-def _plot_area_evolution(weight_history: List[Dict], y_format: str = ".0%"):
-    fig = create_weight_evolution_chart(weight_history)
-    if fig.data:
-        st.plotly_chart(fig, width='stretch')
 
-def _build_returns_df(performance: Dict) -> pd.DataFrame:
-    frames = {}
+def display_performance_metrics(performance: Dict):
+    """Performance Analytics — Swing-style institutional layout (returns + risk overview)."""
+    if not performance:
+        st.warning("Performance data not available. Please run an analysis.")
+        return
+    _render_performance_returns(performance)
+
+
+def _render_risk_intelligence(performance: Dict):
+    """Risk Intelligence — RMT spectral analysis, correlations, and structural risk view."""
+    if not performance:
+        st.warning("Performance data not available. Please run an analysis.")
+        return
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # SECTION 1: STRATEGY CORRELATION
+    # ═══════════════════════════════════════════════════════════════════════════
+    returns_df = pd.DataFrame()
     for name, perf in performance.get('strategy', {}).items():
         if perf.get('returns'):
             df_raw = pd.DataFrame(perf['returns'])
             df = df_raw.drop_duplicates(subset='date', keep='last').set_index('date')
-            frames[name] = df['return']
-    return pd.DataFrame(frames) if frames else pd.DataFrame()
+            returns_df[name] = df['return']
 
+    if not returns_df.empty and len(returns_df.columns) > 1:
+        st.markdown(_section_header("Strategy Correlation", "Pairwise return correlations — lower is better for diversification"), unsafe_allow_html=True)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 2: PERFORMANCE
-# ═══════════════════════════════════════════════════════════════════════════════
+        corr_matrix = returns_df.corr()
 
-def display_performance_metrics(performance: Dict):
-    if not performance:
-        st.warning("Performance data not available. Please run an analysis.")
-        return
+        if UNIFIED_CHARTS_AVAILABLE:
+            fig_corr = create_correlation_heatmap(corr_matrix, title="")
+        else:
+            corr_values = corr_matrix.values.flatten()
+            off_diag_mask = ~np.eye(len(corr_matrix), dtype=bool).flatten()
+            off_diag_corrs = corr_values[off_diag_mask]
+            corr_min = np.nanmin(off_diag_corrs)
 
-    curated = performance.get('strategy', {}).get('System_Curated', {})
-    m = curated.get('metrics', {})
-    rets = curated.get('returns', [])
+            if corr_min > -0.1:
+                colorscale = [
+                    [0.0, '#10b981'], [0.25, '#34d399'],
+                    [0.5, '#fbbf24'], [0.75, '#f97316'], [1.0, '#ef4444']
+                ]
+                zmin = max(0, np.floor(corr_min * 10) / 10)
+                zmax = 1.0
+                zmid = (zmin + zmax) / 2
+            else:
+                colorscale = [
+                    [0.0, '#3b82f6'], [0.25, '#60a5fa'],
+                    [0.5, '#888888'],
+                    [0.75, '#f87171'], [1.0, '#ef4444']
+                ]
+                zmin, zmax, zmid = -1, 1, 0
 
-    # ── Hero Metrics ──
-    st.markdown(_section_header("Performance Overview",
-                                "System Curated portfolio — walk-forward out-of-sample results"), unsafe_allow_html=True)
-    _render_cards([
-        ("CAGR",         f"{m.get('annual_return',0):.1%}",  "Annualized return",
-         'success' if m.get('annual_return',0) > 0 else 'danger'),
-        ("Total Return", f"{m.get('total_return',0):.1%}",   "Cumulative",
-         'success' if m.get('total_return',0) > 0 else 'danger'),
-        ("Volatility",   f"{m.get('volatility',0):.1%}",     "Annualized σ",
-         'warning' if m.get('volatility',0) > 0.20 else 'info'),
-        ("Max Drawdown", f"{m.get('max_drawdown',0):.1%}",   "Peak-to-trough",
-         'danger' if m.get('max_drawdown',0) < -0.10 else 'warning' if m.get('max_drawdown',0) < -0.05 else 'success'),
-        ("Sharpe",       f"{m.get('sharpe',0):.2f}",          "Risk-adj. return",
-         'success' if m.get('sharpe',0) > 1 else 'warning' if m.get('sharpe',0) > 0 else 'danger'),
-        ("Sortino",      f"{m.get('sortino',0):.2f}",         "Downside-adj.",
-         'success' if m.get('sortino',0) > 1 else 'warning' if m.get('sortino',0) > 0 else 'danger'),
-    ])
+            fig_corr = go.Figure(data=go.Heatmap(
+                z=corr_matrix.values,
+                x=corr_matrix.columns,
+                y=corr_matrix.index,
+                colorscale=colorscale,
+                zmid=zmid, zmin=zmin, zmax=zmax,
+                text=np.round(corr_matrix.values, 2),
+                texttemplate='%{text}',
+                textfont=dict(size=10, color='white'),
+                colorbar=dict(title='ρ', tickfont=dict(color='#888888'))
+            ))
+            fig_corr.update_layout(
+                **_chart_layout_base(max(300, len(corr_matrix) * 35), "Pairwise Correlation Matrix")
+            )
+            fig_corr.update_layout(margin=dict(l=100, r=40, t=50, b=40))
 
-    # ── Equity Curve & Drawdown ──
-    if rets:
-        _section_divider()
-        st.markdown(_section_header("Equity Curve & Drawdown",
-                                    "Growth of ₹1 investment with underwater periods"), unsafe_allow_html=True)
-        df_ret = pd.DataFrame(rets).sort_values('date')
-        fig_eq = create_equity_drawdown_chart(df_ret, date_col='date', return_col='return')
-        st.plotly_chart(fig_eq, width='stretch')
+        st.plotly_chart(fig_corr, width='stretch')
 
-    # ── Extended Risk Metrics ──
-    _section_divider()
-    st.markdown(_section_header("Extended Risk Metrics",
-                                "Higher-order risk-adjusted performance ratios"), unsafe_allow_html=True)
-    _render_cards([
-        ("Calmar",        f"{m.get('calmar',0):.2f}",        "CAGR / MaxDD",
-         'success' if m.get('calmar',0) > 1 else 'warning' if m.get('calmar',0) > 0 else 'danger'),
-        ("Omega",         f"{m.get('omega_ratio',1):.2f}",   "Gain/loss ratio",
-         'success' if m.get('omega_ratio',1) > 1.5 else 'warning' if m.get('omega_ratio',1) > 1 else 'danger'),
-        ("Win Rate",      f"{m.get('win_rate',0):.0%}",      "Batting average",
-         'success' if m.get('win_rate',0) > 0.55 else 'warning' if m.get('win_rate',0) > 0.45 else 'danger'),
-        ("Profit Factor", f"{m.get('profit_factor',1):.2f}",  "Gross win/loss",
-         'success' if m.get('profit_factor',1) > 1.5 else 'warning' if m.get('profit_factor',1) > 1 else 'danger'),
-        ("Tail Ratio",    f"{m.get('tail_ratio',1):.2f}",     "Right/left tail",
-         'info' if m.get('tail_ratio',1) > 1 else 'warning'),
-        ("Gain/Pain",     f"{m.get('gain_to_pain',0):.2f}",   "Net efficiency",
-         'success' if m.get('gain_to_pain',0) > 0.5 else 'warning' if m.get('gain_to_pain',0) > 0 else 'danger'),
-    ])
+        off_diag_mask = ~np.eye(len(corr_matrix), dtype=bool)
+        avg_corr = corr_matrix.values[off_diag_mask].mean()
+        corr_interpretation = "Well Diversified" if avg_corr < 0.5 else ("Moderate" if avg_corr < 0.7 else "Concentrated")
+        cls = 'success' if avg_corr < 0.5 else 'warning' if avg_corr < 0.7 else 'danger'
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown(_metric_card("Avg Correlation", f"{avg_corr:.2f}", "Off-diagonal mean", cls), unsafe_allow_html=True)
+        with c2:
+            st.markdown(_metric_card("Regime", corr_interpretation, "Diversification quality", cls), unsafe_allow_html=True)
 
-    # ── Rolling Risk-Adjusted Performance ──
-    if rets and len(rets) >= 5:
-        _section_divider()
-        st.markdown(_section_header("Rolling Risk-Adjusted Performance",
-                                    "Time-varying Sharpe & Sortino to detect regime shifts"), unsafe_allow_html=True)
-        df_ret = pd.DataFrame(rets).sort_values('date')
-        win = max(3, len(df_ret) // 5)
-        fig_roll = create_rolling_metrics_chart(df_ret, window=win, date_col='date', return_col='return')
-        st.plotly_chart(fig_roll, width='stretch')
-
-    # ── Strategy Attribution Table ──
-    _section_divider()
-    st.markdown(_section_header("Strategy Attribution",
-                                "Walk-forward performance comparison across all strategies"), unsafe_allow_html=True)
-    rows = []
-    for name, perf in performance.get('strategy', {}).items():
-        pm = perf.get('metrics', {})
-        rows.append({'Strategy': name, 'CAGR': pm.get('annual_return', 0),
-                     'Vol': pm.get('volatility', 0), 'Sharpe': pm.get('sharpe', 0),
-                     'Sortino': pm.get('sortino', 0), 'Max DD': pm.get('max_drawdown', 0),
-                     'Win Rate': pm.get('win_rate', 0)})
-    if rows:
-        df_a = pd.DataFrame(rows).sort_values('Sharpe', ascending=False)
-        fmt = df_a.copy()
-        for c, f in [('CAGR','{:.1%}'),('Vol','{:.1%}'),('Sharpe','{:.2f}'),
-                      ('Sortino','{:.2f}'),('Max DD','{:.1%}'),('Win Rate','{:.0%}')]:
-            fmt[c] = fmt[c].apply(lambda x, ff=f: ff.format(x))
-        st.dataframe(fmt, width='stretch', hide_index=True)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 3: RISK INTELLIGENCE
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _render_risk_intelligence(performance: Dict):
-    if not performance:
-        st.warning("Performance data not available. Please run an analysis.")
-        return
-
-    returns_df = _build_returns_df(performance)
+    # ═══════════════════════════════════════════════════════════════════════════
+    # SECTION 2: SPECTRAL ANALYSIS (RMT)
+    # ═══════════════════════════════════════════════════════════════════════════
     spectral_hist = performance.get('spectral_history', [])
     spectral_summ = performance.get('spectral_summary', {})
-    cross_spec    = performance.get('cross_strategy_spectral', {})
+    cross_spec = performance.get('cross_strategy_spectral', {})
     dr = getattr(st.session_state, 'diversification_ratio', None)
 
-    # ── RMT Overview Cards ──
-    if cross_spec or dr or spectral_summ:
-        st.markdown(_section_header("RMT Portfolio Diagnostics",
-                                    "Marchenko-Pastur signal-noise separation applied to your portfolio"), unsafe_allow_html=True)
-        cards = []
-        if cross_spec:
-            eff = cross_spec.get('effective_strategy_count', 0)
-            cards.append(("Effective Strategies", f"{eff:.1f}", "Spectrally independent bets",
-                          'success' if eff >= 3 else 'warning' if eff >= 2 else 'danger'))
-            nf = cross_spec.get('noise_fraction', 0)
-            cards.append(("Noise Fraction", f"{nf:.0%}", "Correlations that are noise",
-                          'success' if nf < 0.5 else 'warning' if nf < 0.7 else 'danger'))
-        if dr:
-            cards.append(("Diversification Ratio", f"{dr:.2f}", "DR > 1 = genuine benefit",
-                          'success' if dr > 1.2 else 'info' if dr > 1.0 else 'warning'))
-        if spectral_summ:
-            ar = spectral_summ.get('mean_absorption_ratio', 0)
-            cards.append(("Absorption Ratio", f"{ar:.3f}", "AR > 0.7 = herding",
-                          'danger' if ar > 0.7 else 'warning' if ar > 0.5 else 'success'))
-            er = spectral_summ.get('mean_effective_rank', 0)
-            cards.append(("Effective Rank", f"{er:.1f}", "Independent factors",
-                          'success' if er > 3 else 'warning' if er > 2 else 'info'))
-            av = spectral_summ.get('ar_volatility', 0)
-            cards.append(("AR Volatility", f"{av:.3f}", "Regime stability",
-                          'warning' if av > 0.1 else 'info'))
-        if cards:
-            _render_cards(cards)
+    if (spectral_hist or cross_spec or dr) and UNIFIED_CHARTS_AVAILABLE:
+        try:
+            from charts import (
+                create_eigenvalue_histogram,
+                create_cleaned_vs_raw_correlation,
+                create_absorption_ratio_chart,
+                create_factor_loading_heatmap,
+                create_spectral_risk_dashboard,
+            )
 
-    # ── Strategy Correlation Matrix ──
-    if not returns_df.empty and len(returns_df.columns) > 1:
-        _section_divider()
-        st.markdown(_section_header("Strategy Correlation",
-                                    "Pairwise return correlations — lower is better for diversification"), unsafe_allow_html=True)
-        corr = returns_df.corr()
-        fig_c = create_correlation_heatmap(corr)
-        st.plotly_chart(fig_c, width='stretch')
-
-        od_mask = ~np.eye(len(corr), dtype=bool)
-        avg = corr.values[od_mask].mean()
-        regime = "Well Diversified" if avg < 0.5 else ("Moderate" if avg < 0.7 else "Concentrated")
-        cls = 'success' if avg < 0.5 else 'warning' if avg < 0.7 else 'danger'
-        _render_cards([
-            ("Avg Correlation", f"{avg:.2f}", "Off-diagonal mean", cls),
-            ("Regime", regime, "Diversification quality", cls),
-        ])
-
-    # ── Spectral Charts ──
-    if spectral_hist or cross_spec:
-        from charts import (create_eigenvalue_histogram, create_cleaned_vs_raw_correlation,
-                            create_absorption_ratio_chart, create_factor_loading_heatmap,
-                            create_spectral_risk_dashboard)
-
-        if spectral_hist:
             _section_divider()
-            st.markdown(_section_header("Rolling Absorption Ratio",
-                                        "Systemic risk indicator over time"), unsafe_allow_html=True)
-            st.plotly_chart(create_absorption_ratio_chart(spectral_hist), width='stretch')
+            st.markdown(
+                _section_header(
+                    "Spectral Analysis",
+                    "Random Matrix Theory diagnostics — separating signal from noise in correlation structure"
+                ),
+                unsafe_allow_html=True,
+            )
 
-        if not returns_df.empty and len(returns_df.columns) > 1:
-            try:
-                from rmt_core import compute_spectral_diagnostics
-                raw = returns_df.dropna().values
-                if raw.shape[0] >= 10 and raw.shape[1] >= 2:
-                    diag = compute_spectral_diagnostics(raw)
-                    labels = list(returns_df.columns)
+            # ── Strategy Independence Metrics (cross-strategy RMT) ──
+            if cross_spec or dr:
+                n_cards = (2 if cross_spec else 0) + (1 if dr else 0)
+                spec_cols = st.columns(max(n_cards, 1))
+                col_idx = 0
+                if cross_spec:
+                    eff_count = cross_spec.get('effective_strategy_count', 0)
+                    cls = 'success' if eff_count >= 3 else 'warning' if eff_count >= 2 else 'danger'
+                    with spec_cols[col_idx]:
+                        st.markdown(_metric_card("Effective Strategies", f"{eff_count:.1f}", "Spectrally independent bets", cls), unsafe_allow_html=True)
+                    col_idx += 1
+                    noise_frac = cross_spec.get('noise_fraction', 0)
+                    cls = 'success' if noise_frac < 0.5 else 'warning' if noise_frac < 0.7 else 'danger'
+                    with spec_cols[col_idx]:
+                        st.markdown(_metric_card("Noise Fraction", f"{noise_frac:.0%}", "Correlations that are noise", cls), unsafe_allow_html=True)
+                    col_idx += 1
+                if dr:
+                    cls = 'success' if dr > 1.2 else 'info' if dr > 1.0 else 'warning'
+                    with spec_cols[col_idx]:
+                        st.markdown(_metric_card("Diversification Ratio", f"{dr:.2f}", "DR > 1 = genuine benefit", cls), unsafe_allow_html=True)
 
-                    _section_divider()
-                    st.markdown(_section_header("Eigenvalue Decomposition",
-                                                "Strategy return eigenvalues vs Marchenko-Pastur noise boundary"), unsafe_allow_html=True)
-                    st.plotly_chart(create_eigenvalue_histogram(
-                        diag.eigenvalues, diag.mp_dist.lambda_plus,
-                        diag.mp_dist.lambda_minus, diag.mp_dist.gamma,
-                        diag.mp_dist.sigma_sq), width='stretch')
+            # ── Market Correlation Regime (indicator cross-section) ──
+            if spectral_summ:
+                _section_divider()
+                st.markdown(
+                    _section_header(
+                        "Market Correlation Regime",
+                        "Rolling spectral diagnostics of cross-sectional indicator structure"
+                    ),
+                    unsafe_allow_html=True,
+                )
 
-                    _section_divider()
-                    st.markdown(_section_header("Raw vs RMT-Cleaned Correlation",
-                                                "Noise removed from correlation structure"), unsafe_allow_html=True)
-                    st.plotly_chart(create_cleaned_vs_raw_correlation(
-                        returns_df.corr().values, diag.cleaned_corr, labels), width='stretch')
+                mc1, mc2, mc3, mc4 = st.columns(4)
+                ar_mean = spectral_summ.get('mean_absorption_ratio', 0)
+                ar_vol = spectral_summ.get('ar_volatility', 0)
+                eff_rank = spectral_summ.get('mean_effective_rank', 0)
+                n_obs = spectral_summ.get('n_observations', 0)
 
-                    if diag.eigenvectors.shape[1] >= 2:
+                with mc1:
+                    cls = 'danger' if ar_mean > 0.7 else 'warning' if ar_mean > 0.5 else 'success'
+                    st.markdown(_metric_card("Absorption Ratio", f"{ar_mean:.3f}", "AR > 0.7 = herding", cls), unsafe_allow_html=True)
+                with mc2:
+                    cls = 'warning' if ar_vol > 0.1 else 'info'
+                    st.markdown(_metric_card("AR Volatility", f"{ar_vol:.3f}", "Regime stability", cls), unsafe_allow_html=True)
+                with mc3:
+                    cls = 'success' if eff_rank > 3 else 'warning' if eff_rank > 2 else 'info'
+                    st.markdown(_metric_card("Effective Rank", f"{eff_rank:.1f}", "Independent factors", cls), unsafe_allow_html=True)
+                with mc4:
+                    st.markdown(_metric_card("Observations", f"{n_obs}", "Spectral snapshots", 'neutral'), unsafe_allow_html=True)
+
+            # ── Rolling Absorption Ratio Chart ──
+            if spectral_hist:
+                _section_divider()
+                fig_ar = create_absorption_ratio_chart(spectral_hist)
+                st.plotly_chart(fig_ar, width='stretch')
+
+            # ── Strategy Returns Spectral Decomposition ──
+            latest_spec = spectral_hist[-1] if spectral_hist else None
+            if latest_spec and not returns_df.empty and len(returns_df.columns) > 1:
+                try:
+                    from rmt_core import compute_spectral_diagnostics
+                    raw_returns = returns_df.dropna().values
+                    if raw_returns.shape[0] >= 10 and raw_returns.shape[1] >= 2:
+                        diag = compute_spectral_diagnostics(raw_returns)
+
                         _section_divider()
-                        st.markdown(_section_header("Factor Loadings",
-                                                    "Which strategies load on which hidden risk factors"), unsafe_allow_html=True)
-                        st.plotly_chart(create_factor_loading_heatmap(
-                            diag.eigenvectors, labels, diag.eigenvalues,
-                            n_factors=min(5, len(labels))), width='stretch')
-            except Exception:
-                pass
+                        st.markdown(
+                            _section_header(
+                                "Strategy Returns Decomposition",
+                                "Eigenvalue spectrum and correlation denoising of strategy return streams"
+                            ),
+                            unsafe_allow_html=True,
+                        )
 
-        if spectral_hist and len(spectral_hist) >= 3:
-            _section_divider()
-            st.markdown(_section_header("Spectral Risk Dashboard",
-                                        "Multi-panel tracking of spectral risk indicators"), unsafe_allow_html=True)
-            st.plotly_chart(create_spectral_risk_dashboard(spectral_hist), width='stretch')
+                        fig_eig = create_eigenvalue_histogram(
+                            diag.eigenvalues,
+                            diag.mp_dist.lambda_plus,
+                            diag.mp_dist.lambda_minus,
+                            diag.mp_dist.gamma,
+                            diag.mp_dist.sigma_sq,
+                        )
+                        st.plotly_chart(fig_eig, width='stretch')
 
-    # ── Strategy Weight Evolution ──
-    wh = performance.get('strategy_weights_history', [])
-    if wh:
-        _section_divider()
-        st.markdown(_section_header("Strategy Weight Evolution",
-                                    "How portfolio weights shifted across the walk-forward window"), unsafe_allow_html=True)
-        _plot_area_evolution(wh)
+                        _section_divider()
+                        raw_corr = returns_df.corr().values
+                        labels = list(returns_df.columns)
+                        fig_compare = create_cleaned_vs_raw_correlation(
+                            raw_corr, diag.cleaned_corr, labels
+                        )
+                        st.plotly_chart(fig_compare, width='stretch')
+
+                        if diag.eigenvectors.shape[1] >= 2:
+                            _section_divider()
+                            fig_loadings = create_factor_loading_heatmap(
+                                diag.eigenvectors, labels, diag.eigenvalues,
+                                n_factors=min(5, len(labels)),
+                            )
+                            st.plotly_chart(fig_loadings, width='stretch')
+                except Exception:
+                    pass
+
+            # ── Spectral Risk Dashboard (4-panel) ──
+            if spectral_hist and len(spectral_hist) >= 3:
+                _section_divider()
+                st.markdown(
+                    _section_header(
+                        "Spectral Risk Dashboard",
+                        "Multi-panel tracking of spectral risk indicators over the walk-forward window"
+                    ),
+                    unsafe_allow_html=True,
+                )
+                fig_dash = create_spectral_risk_dashboard(spectral_hist)
+                st.plotly_chart(fig_dash, width='stretch')
+
+        except ImportError:
+            pass
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 4: STRATEGY ANALYSIS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _render_strategy_analysis(performance: Dict, strategies_dict: Dict, current_df):
-    strat_names = [k for k in performance.get('strategy', {}).keys() if k != 'System_Curated']
-    if not strat_names:
-        st.warning("No individual strategy data available for analysis.")
+def _render_performance_returns(performance: Dict):
+    """Performance Returns — core return metrics, equity curve, risk ratios."""
+    if not performance:
         return
 
-    # ── Risk-Return Scatter & Factor Radar ──
-    st.markdown(_section_header("Risk-Return Profile",
-                                "Strategy positioning and multi-factor fingerprints"), unsafe_allow_html=True)
-    scatter_data, factor_data = [], []
-    for name in strat_names:
-        pm = performance.get('strategy', {}).get(name, {}).get('metrics', {})
-        if pm:
-            scatter_data.append({'Strategy': name, 'Volatility': pm.get('volatility', 0),
-                                 'CAGR': pm.get('annual_return', 0), 'Sharpe': pm.get('sharpe', 0),
-                                 'Max DD': pm.get('max_drawdown', 0)})
-            factor_data.append({'Strategy': name,
-                                'Return Factor': min(max(pm.get('annual_return',0)/0.30,-1),1),
-                                'Risk Control': min(max(-pm.get('max_drawdown',-0.20)/0.20,0),1),
-                                'Consistency': pm.get('win_rate', 0.5),
-                                'Efficiency': min(max(pm.get('sharpe',0)/2,-1),1),
-                                'Tail Risk': min(max(pm.get('tail_ratio',1),0),2)/2})
+    # Extract System_Curated metrics
+    curated_data = performance.get('strategy', {}).get('System_Curated', {})
+    curated_metrics = curated_data.get('metrics', {})
+    curated_returns = curated_data.get('returns', [])
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # SECTION 1: PERFORMANCE OVERVIEW
+    # ═══════════════════════════════════════════════════════════════════════════
+    st.markdown(_section_header("Performance Overview", "System Curated portfolio — walk-forward out-of-sample results"), unsafe_allow_html=True)
+    
+    ann_ret = curated_metrics.get('annual_return', 0)
+    total_ret = curated_metrics.get('total_return', 0)
+    volatility = curated_metrics.get('volatility', 0)
+    max_dd = curated_metrics.get('max_drawdown', 0)
+    sharpe = curated_metrics.get('sharpe', 0)
+    sortino = curated_metrics.get('sortino', 0)
+    
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1:
+        cls = 'success' if ann_ret > 0 else 'danger'
+        st.markdown(_metric_card("CAGR", f"{ann_ret:.1%}", "Annualized return", cls), unsafe_allow_html=True)
+    with c2:
+        cls = 'success' if total_ret > 0 else 'danger'
+        st.markdown(_metric_card("Total Return", f"{total_ret:.1%}", "Cumulative", cls), unsafe_allow_html=True)
+    with c3:
+        cls = 'warning' if volatility > 0.20 else 'info'
+        st.markdown(_metric_card("Volatility", f"{volatility:.1%}", "Annualized σ", cls), unsafe_allow_html=True)
+    with c4:
+        cls = 'danger' if max_dd < -0.10 else 'warning' if max_dd < -0.05 else 'success'
+        st.markdown(_metric_card("Max Drawdown", f"{max_dd:.1%}", "Peak-to-trough", cls), unsafe_allow_html=True)
+    with c5:
+        cls = 'success' if sharpe > 1 else 'warning' if sharpe > 0 else 'danger'
+        st.markdown(_metric_card("Sharpe", f"{sharpe:.2f}", "Risk-adj. return", cls), unsafe_allow_html=True)
+    with c6:
+        cls = 'success' if sortino > 1 else 'warning' if sortino > 0 else 'danger'
+        st.markdown(_metric_card("Sortino", f"{sortino:.2f}", "Downside-adj.", cls), unsafe_allow_html=True)
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # SECTION 2: EQUITY CURVE & DRAWDOWN
+    # ═══════════════════════════════════════════════════════════════════════════
+    _section_divider()
+    st.markdown(_section_header("Equity Curve & Drawdown", "Growth of ₹1 investment with underwater periods"), unsafe_allow_html=True)
+    
+    if curated_returns:
+        df_returns = pd.DataFrame(curated_returns).sort_values('date')
+        
+        if UNIFIED_CHARTS_AVAILABLE:
+            fig = create_equity_drawdown_chart(df_returns, date_col='date', return_col='return')
+        else:
+            df_returns['equity'] = (1 + df_returns['return']).cumprod()
+            df_returns['peak'] = df_returns['equity'].expanding().max()
+            df_returns['drawdown'] = (df_returns['equity'] / df_returns['peak']) - 1
+            
+            equity_min = df_returns['equity'].min()
+            equity_max = df_returns['equity'].max()
+            y_padding = (equity_max - equity_min) * 0.1
+            y_min = max(0.8, equity_min - y_padding)
+            y_max = equity_max + y_padding
+            
+            fig = make_subplots(
+                rows=2, cols=1, 
+                shared_xaxes=True,
+                vertical_spacing=0.12,
+                row_heights=[0.7, 0.3]
+            )
+            fig.layout.annotations = ()
+            
+            fig.add_trace(go.Scatter(
+                x=df_returns['date'], y=[y_min] * len(df_returns), 
+                mode='lines', name='_baseline', showlegend=False,
+                line=dict(color='rgba(0,0,0,0)', width=0)
+            ), row=1, col=1)
+            
+            fig.add_trace(go.Scatter(
+                x=df_returns['date'], y=df_returns['equity'], 
+                mode='lines', name='Portfolio',
+                line=dict(color='#FFC300', width=2.5),
+                fill='tonexty', fillcolor='rgba(255, 195, 0, 0.15)'
+            ), row=1, col=1)
+            
+            fig.add_trace(go.Scatter(
+                x=df_returns['date'], y=df_returns['peak'], 
+                mode='lines', name='High Water Mark',
+                line=dict(color='#888888', width=1.5, dash='dot')
+            ), row=1, col=1)
+            
+            fig.add_trace(go.Scatter(
+                x=df_returns['date'], y=df_returns['drawdown'], 
+                mode='lines', name='Drawdown',
+                fill='tozeroy',
+                line=dict(color='#ef4444', width=1.5),
+                fillcolor='rgba(239, 68, 68, 0.35)'
+            ), row=2, col=1)
+            
+            fig.update_layout(
+                template='plotly_dark',
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                height=500,
+                showlegend=True,
+                legend=dict(orientation='h', y=1.02, x=0.01, xanchor='left', yanchor='bottom', font=dict(size=10)),
+                font=dict(color='#EAEAEA'),
+                margin=dict(l=60, r=20, t=100, b=40),
+                title=dict(text='', font=dict(size=1))
+            )
+            fig.update_xaxes(showgrid=True, gridcolor='rgba(255,255,255,0.05)')
+            fig.update_yaxes(showgrid=True, gridcolor='rgba(255,255,255,0.05)', title_text="Portfolio Value", row=1, col=1, range=[y_min, y_max])
+            fig.update_yaxes(showgrid=True, gridcolor='rgba(255,255,255,0.05)', title_text="Drawdown", tickformat='.0%', row=2, col=1)
+        
+        st.plotly_chart(fig, width='stretch')
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # SECTION 3: EXTENDED RISK METRICS
+    # ═══════════════════════════════════════════════════════════════════════════
+    _section_divider()
+    st.markdown(_section_header("Extended Risk Metrics", "Higher-order risk-adjusted performance ratios"), unsafe_allow_html=True)
+    
+    calmar = curated_metrics.get('calmar', 0)
+    omega = curated_metrics.get('omega_ratio', 1)
+    win_rate = curated_metrics.get('win_rate', 0)
+    profit_factor = curated_metrics.get('profit_factor', 1)
+    tail_ratio = curated_metrics.get('tail_ratio', 1)
+    gain_to_pain = curated_metrics.get('gain_to_pain', 0)
+    
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1:
+        cls = 'success' if calmar > 1 else 'warning' if calmar > 0 else 'danger'
+        st.markdown(_metric_card("Calmar", f"{calmar:.2f}", "CAGR / MaxDD", cls), unsafe_allow_html=True)
+    with c2:
+        cls = 'success' if omega > 1.5 else 'warning' if omega > 1 else 'danger'
+        st.markdown(_metric_card("Omega", f"{omega:.2f}", "Gain/loss ratio", cls), unsafe_allow_html=True)
+    with c3:
+        cls = 'success' if win_rate > 0.55 else 'warning' if win_rate > 0.45 else 'danger'
+        st.markdown(_metric_card("Win Rate", f"{win_rate:.0%}", "Batting average", cls), unsafe_allow_html=True)
+    with c4:
+        cls = 'success' if profit_factor > 1.5 else 'warning' if profit_factor > 1 else 'danger'
+        st.markdown(_metric_card("Profit Factor", f"{profit_factor:.2f}", "Gross win/loss", cls), unsafe_allow_html=True)
+    with c5:
+        cls = 'info' if tail_ratio > 1 else 'warning'
+        st.markdown(_metric_card("Tail Ratio", f"{tail_ratio:.2f}", "Right/left tail", cls), unsafe_allow_html=True)
+    with c6:
+        cls = 'success' if gain_to_pain > 0.5 else 'warning' if gain_to_pain > 0 else 'danger'
+        st.markdown(_metric_card("Gain/Pain", f"{gain_to_pain:.2f}", "Net efficiency", cls), unsafe_allow_html=True)
 
-    col_l, col_r = st.columns(2)
-    with col_l:
-        if scatter_data:
-            st.plotly_chart(create_risk_return_scatter(scatter_data), width='stretch')
-
-    with col_r:
-        if factor_data:
-            st.plotly_chart(create_factor_radar(factor_data, max_strategies=4), width='stretch')
-
-    # ── Tier Sharpe Heatmap ──
-    subset_perf = performance.get('subset', {})
-    if subset_perf:
+    # ═══════════════════════════════════════════════════════════════════════════
+    # SECTION 4: ROLLING RISK-ADJUSTED PERFORMANCE
+    # ═══════════════════════════════════════════════════════════════════════════
+    if curated_returns and len(curated_returns) >= 5:
         _section_divider()
-        st.markdown(_section_header("Sharpe by Position Tier",
-                                    "Performance decay across 10-stock tiers"), unsafe_allow_html=True)
-        fig_t = create_tier_sharpe_heatmap(subset_perf, strat_names)
-        if fig_t is not None:
-            st.plotly_chart(fig_t, width='stretch')
-
-            # Tier insight cards
-            max_tier = 0
-            for s in strat_names:
-                if s in subset_perf and subset_perf[s]:
-                    nums = [int(t.split('_')[1]) for t in subset_perf[s].keys()]
-                    if nums: max_tier = max(max_tier, max(nums))
-            if max_tier > 0:
-                hm = {}
-                for s in strat_names:
-                    hm[s] = [subset_perf.get(s,{}).get(f'tier_{i+1}', np.nan) for i in range(max_tier)]
-                df_h = pd.DataFrame(hm).T
-                df_h.columns = [f'T{i+1}' for i in range(df_h.shape[1])]
-                tier_means = df_h.mean(axis=0)
-                _render_cards([
-                    ("Best Tier", tier_means.idxmax(), f"Sharpe {tier_means.max():.2f}", "success"),
-                    ("Worst Tier", tier_means.idxmin(), f"Sharpe {tier_means.min():.2f}", "danger"),
-                    ("Dispersion", f"{tier_means.std():.2f}", "Cross-tier σ", "info"),
-                ])
-
-    # ── Cross-Strategy Conviction ──
-    strats_for_hm = {n: strategies_dict[n] for n in strat_names if n in strategies_dict}
-    if strats_for_hm and current_df is not None:
-        _section_divider()
-        st.markdown(_section_header("Cross-Strategy Conviction",
-                                    "Signal overlap and consensus across selected strategies"), unsafe_allow_html=True)
-        all_signals, signal_counts = [], {}
-        for name, s in strats_for_hm.items():
-            try:
-                port = s.generate_portfolio(current_df.copy())
-                if not port.empty:
-                    if 'composite_score' not in port.columns:
-                        port['composite_score'] = port['weightage_pct']
-                    for _, row in port.head(20).iterrows():
-                        all_signals.append({'symbol': row['symbol'], 'strategy': name,
-                                            'conviction': row['composite_score']})
-                    for sym in port.head(10)['symbol']:
-                        signal_counts[sym] = signal_counts.get(sym, 0) + 1
-            except Exception:
-                pass
-
-        if all_signals:
-            df_sig = pd.DataFrame(all_signals)
-            hm_df = df_sig.pivot(index='symbol', columns='strategy', values='conviction').fillna(0)
-            cs = [[0.0, '#2563eb'], [0.5, '#4B5563'], [1.0, '#dc2626']]
-            fig_hm = go.Figure(data=go.Heatmap(
-                z=hm_df.values, x=hm_df.columns, y=hm_df.index,
-                colorscale=cs, zmid=0,
-                text=np.round(hm_df.values, 2), texttemplate='%{text:.2f}',
-                textfont=dict(size=9, color='rgba(255,255,255,0.8)'),
-                hovertemplate='%{y} × %{x}<br>Conviction: %{z:.2f}<extra></extra>',
-                colorbar=dict(title=dict(text='Score', font=dict(color='#6B7280', size=10)),
-                              tickfont=dict(color='#6B7280', size=9), thickness=8, outlinewidth=0),
-                xgap=1, ygap=1,
+        st.markdown(_section_header("Rolling Risk-Adjusted Performance", "Time-varying Sharpe & Sortino to detect regime shifts"), unsafe_allow_html=True)
+        
+        df_returns = pd.DataFrame(curated_returns).sort_values('date')
+        window_size = max(3, len(df_returns) // 5)
+        
+        if UNIFIED_CHARTS_AVAILABLE:
+            fig_rolling = create_rolling_metrics_chart(df_returns, window=window_size, date_col='date', return_col='return')
+        else:
+            rolling_mean = df_returns['return'].rolling(window=window_size).mean()
+            rolling_std = df_returns['return'].rolling(window=window_size).std()
+            rolling_sharpe = (rolling_mean / rolling_std.replace(0, np.nan)) * np.sqrt(52)
+            
+            downside_returns = df_returns['return'].apply(lambda x: x if x < 0 else 0)
+            rolling_downside = downside_returns.rolling(window=window_size).std()
+            rolling_sortino = (rolling_mean / rolling_downside.replace(0, np.nan)) * np.sqrt(52)
+            
+            fig_rolling = go.Figure()
+            fig_rolling.add_trace(go.Scatter(
+                x=df_returns['date'], y=rolling_sharpe,
+                mode='lines', name=f'Sharpe ({window_size}w)',
+                line=dict(color='#FFC300', width=2)
             ))
-            layout = get_chart_layout(height=max(320, len(hm_df) * 20), show_legend=False)
-            layout['hovermode'] = 'closest'
-            layout['margin'] = dict(l=80, r=16, t=36, b=36)
-            fig_hm.update_layout(**layout)
-            fig_hm.update_xaxes(tickfont=dict(size=9, color='#6B7280'), showgrid=False)
-            fig_hm.update_yaxes(tickfont=dict(size=9, color='#6B7280'), showgrid=False)
-            st.plotly_chart(fig_hm, width='stretch')
+            fig_rolling.add_trace(go.Scatter(
+                x=df_returns['date'], y=rolling_sortino,
+                mode='lines', name=f'Sortino ({window_size}w)',
+                line=dict(color='#10b981', width=2)
+            ))
+            
+            fig_rolling.add_hline(y=0, line_dash="dash", line_color="#888888", line_width=1)
+            fig_rolling.add_hline(y=1, line_dash="dot", line_color="#10b981", line_width=1)
+            fig_rolling.add_hline(y=2, line_dash="dot", line_color="#f59e0b", line_width=1)
+            
+            fig_rolling.update_layout(
+                **_chart_layout_base(320, f"Rolling {window_size}-Period Sharpe & Sortino")
+            )
+            fig_rolling.update_layout(
+                showlegend=True,
+                legend=dict(orientation='h', y=1.02, x=0.01, xanchor='left', yanchor='bottom', font=dict(size=10)),
+                margin=dict(l=10, r=10, t=120, b=40),
+            )
+            fig_rolling.update_xaxes(gridcolor='rgba(255,255,255,0.05)')
+            fig_rolling.update_yaxes(gridcolor='rgba(255,255,255,0.05)', zeroline=True, zerolinecolor='#888888', title='Ratio')
+        
+        st.plotly_chart(fig_rolling, width='stretch')
 
-        if signal_counts:
-            sorted_sigs = sorted(signal_counts.items(), key=lambda x: x[1], reverse=True)
-            threshold = len(strats_for_hm) / 2
-            high_conv = [s for s, c in sorted_sigs if c >= threshold]
-            avg_agr = np.mean([c for _, c in sorted_sigs]) / len(strats_for_hm)
-            top_pick = sorted_sigs[0] if sorted_sigs else ("—", 0)
-            _render_cards([
-                ("High Conviction", str(len(high_conv)), f"≥{threshold:.0f} strategy agreement", "primary"),
-                ("Signal Agreement", f"{avg_agr:.0%}", "Mean strategy overlap", "info"),
-                ("Top Consensus", top_pick[0], f"{top_pick[1]}/{len(strats_for_hm)} strategies", "success"),
-            ])
-
-    # ── Tier Allocation History ──
-    swh = performance.get('subset_weights_history', [])
-    if swh:
-        _section_divider()
-        st.markdown(_section_header("Tier Allocation History",
-                                    "How subset tier weights evolved through the walk-forward window"), unsafe_allow_html=True)
-        sel = st.selectbox("Select Strategy", options=strat_names, key="tier_evo_select")
-        if sel:
-            tier_hist = [{'date': r['date'], **r.get(sel, {})} for r in swh if r.get(sel)]
-            _plot_area_evolution(tier_hist)
-
-    # ── Adaptive Selection Ranking ──
+    # Strategy Attribution (compact summary for Performance tab)
     _section_divider()
-    st.markdown(_section_header("Adaptive Selection Ranking",
-                                "Dispersion-weighted rank composite"), unsafe_allow_html=True)
-    summary_rows = []
-    for name in strat_names:
-        pm = performance.get('strategy', {}).get(name, {}).get('metrics', {})
-        sub = performance.get('subset', {}).get(name, {})
-        summary_rows.append({
-            'Strategy': name, 'Sharpe': pm.get('sharpe',0), 'Sortino': pm.get('sortino',0),
-            'Calmar': pm.get('calmar',0), 'Max DD': pm.get('max_drawdown',0),
-            'Win Rate': pm.get('win_rate',0),
-            'T1 Sharpe': sub.get('tier_1', np.nan) if sub else np.nan})
-    if summary_rows:
-        df_s = pd.DataFrame(summary_rows)
-        for c in ['Sharpe','Sortino','Calmar','Win Rate']:
-            df_s[f'{c}_Rank'] = df_s[c].rank(pct=True)
-        df_s['DD_Rank'] = df_s['Max DD'].rank(pct=True, ascending=False)
-        r_cols = [c for c in df_s.columns if c.endswith('_Rank')]
-        dispersions = {c: df_s[c].std() for c in r_cols}
-        total_d = sum(dispersions.values()) or 1
-        weights = {c: d/total_d for c, d in dispersions.items()}
-        df_s['Score'] = sum(df_s[c]*w for c, w in weights.items())
-        df_s = df_s.sort_values('Score', ascending=False)
-        show = df_s[['Strategy','Sharpe','Sortino','Calmar','Max DD','Win Rate','T1 Sharpe','Score']].copy()
-        for c, f in [('Sharpe','{:.2f}'),('Sortino','{:.2f}'),('Calmar','{:.2f}'),
-                      ('Max DD','{:.1%}'),('Win Rate','{:.0%}'),('Score','{:.2f}')]:
-            show[c] = show[c].apply(lambda x, ff=f: ff.format(x))
-        show['T1 Sharpe'] = show['T1 Sharpe'].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "-")
-        st.dataframe(show, width='stretch', hide_index=True)
+    st.markdown(_section_header("Strategy Attribution", "Walk-forward performance comparison across all strategies"), unsafe_allow_html=True)
+
+    strategy_data = []
+    for name, perf in performance.get('strategy', {}).items():
+        metrics = perf.get('metrics', {})
+        strategy_data.append({
+            'Strategy': name,
+            'CAGR': metrics.get('annual_return', 0),
+            'Vol': metrics.get('volatility', 0),
+            'Sharpe': metrics.get('sharpe', 0),
+            'Sortino': metrics.get('sortino', 0),
+            'Max DD': metrics.get('max_drawdown', 0),
+            'Win Rate': metrics.get('win_rate', 0)
+        })
+
+    if strategy_data:
+        df_strategies = pd.DataFrame(strategy_data)
+        df_strategies = df_strategies.sort_values('Sharpe', ascending=False)
+
+        df_display = df_strategies.copy()
+        df_display['CAGR'] = df_display['CAGR'].apply(lambda x: f"{x:.1%}")
+        df_display['Vol'] = df_display['Vol'].apply(lambda x: f"{x:.1%}")
+        df_display['Sharpe'] = df_display['Sharpe'].apply(lambda x: f"{x:.2f}")
+        df_display['Sortino'] = df_display['Sortino'].apply(lambda x: f"{x:.2f}")
+        df_display['Max DD'] = df_display['Max DD'].apply(lambda x: f"{x:.1%}")
+        df_display['Win Rate'] = df_display['Win Rate'].apply(lambda x: f"{x:.0%}")
+
+        st.dataframe(df_display, width='stretch', hide_index=True)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 5: BACKTEST DATA
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _render_backtest_data(performance: Dict):
-    strat_keys = list(performance.get('strategy', {}).keys())
-    if not strat_keys:
-        st.warning("No strategy data available. Run analysis first.")
+def create_subset_heatmap(subset_perf: Dict, strategy_options: list):
+    """Create tier Sharpe heatmap with unified styling."""
+    if not subset_perf: 
         return
 
-    # ── Phase 3: Walk-Forward Metrics ──
-    st.markdown(_section_header("Phase 3 — Walk-Forward Performance",
-                                "Out-of-sample metrics for selected strategies"), unsafe_allow_html=True)
-    rows = []
-    for name in strat_keys:
-        sp = performance.get('strategy', {}).get(name, {})
-        pm = sp.get('metrics', {})
-        rows.append({
-            'Strategy': name,
-            'Total Return': pm.get('total_return', 0),
-            'CAGR': pm.get('annual_return', pm.get('ann_return', 0)),
-            'Volatility': pm.get('volatility', 0),
-            'Sharpe Ratio': pm.get('sharpe', 0),
-            'Sortino Ratio': pm.get('sortino', 0),
-            'Calmar Ratio': pm.get('calmar', 0),
-            'Max Drawdown': pm.get('max_drawdown', pm.get('max_dd', 0)),
-            'Win Rate': pm.get('win_rate', 0),
-            'Profit Factor': pm.get('profit_factor', 0),
-            'Omega Ratio': pm.get('omega_ratio', 0),
-            'Tail Ratio': pm.get('tail_ratio', 0),
-            'Gain/Pain': pm.get('gain_to_pain', 0),
-            'Trading Days': len(sp.get('returns', []))})
-    df_p3 = pd.DataFrame(rows).sort_values('Sharpe Ratio', ascending=False).reset_index(drop=True)
+    if UNIFIED_CHARTS_AVAILABLE:
+        fig = create_tier_sharpe_heatmap(subset_perf, strategy_options)
+        if fig:
+            st.plotly_chart(fig, width='stretch')
+            
+            # Add insights
+            all_values = []
+            for strat in strategy_options:
+                if strat in subset_perf:
+                    all_values.extend([v for v in subset_perf[strat].values() if not np.isnan(v)])
+            
+            if all_values:
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    best_tier = max(range(1, 11), key=lambda t: np.nanmean([
+                        subset_perf.get(s, {}).get(f'tier_{t}', np.nan) for s in strategy_options
+                    ]))
+                    st.markdown(_metric_card("Best Performing Tier", f"Tier {best_tier}", "Highest average Sharpe", "info"), unsafe_allow_html=True)
+                with col2:
+                    avg_sharpe = np.nanmean(all_values)
+                    cls = 'success' if avg_sharpe > 0 else 'danger'
+                    st.markdown(_metric_card("Average Tier Sharpe", f"{avg_sharpe:.2f}", "Mean across all tiers", cls), unsafe_allow_html=True)
+                with col3:
+                    tier_dispersion = np.nanstd(all_values)
+                    st.markdown(_metric_card("Tier Dispersion", f"{tier_dispersion:.2f}", "Cross-tier variability", "neutral"), unsafe_allow_html=True)
+        return
 
-    best = df_p3.iloc[0] if len(df_p3) else None
-    _render_cards([
-        ("Strategies", str(len(df_p3)), "Phase 3 walk-forward", "primary"),
-        ("Avg Sharpe", f"{df_p3['Sharpe Ratio'].mean():.2f}", "Cross-strategy mean",
-         'success' if df_p3['Sharpe Ratio'].mean() > 0.5 else 'warning' if df_p3['Sharpe Ratio'].mean() > 0 else 'danger'),
-        ("Avg Return", f"{df_p3['Total Return'].mean():.1%}", "Mean total return",
-         'success' if df_p3['Total Return'].mean() > 0 else 'danger'),
-        ("Top Strategy", str(best['Strategy'])[:15] if best is not None else "-",
-         f"Sharpe {best['Sharpe Ratio']:.2f}" if best is not None else "", "success"),
-    ])
-    _section_divider()
+    # Fallback implementation
+    heatmap_data = {}
+    max_tier_num = 0
+    for strat in strategy_options:
+        if strat in subset_perf and subset_perf[strat]:
+            tier_nums = [int(tier.split('_')[1]) for tier in subset_perf[strat].keys()]
+            if tier_nums:
+                max_tier_num = max(max_tier_num, max(tier_nums))
 
-    fmt_cols = {'Total Return':'{:.2%}','CAGR':'{:.2%}','Volatility':'{:.2%}',
-                'Sharpe Ratio':'{:.3f}','Sortino Ratio':'{:.3f}','Calmar Ratio':'{:.3f}',
-                'Max Drawdown':'{:.2%}','Win Rate':'{:.1%}','Profit Factor':'{:.2f}',
-                'Omega Ratio':'{:.2f}','Tail Ratio':'{:.2f}','Gain/Pain':'{:.2f}',
-                'Trading Days':'{:.0f}'}
-    styled = df_p3.style.format(fmt_cols)
-    grad = [c for c in ['Sharpe Ratio','Sortino Ratio','Calmar Ratio','Total Return'] if c in df_p3.columns]
-    if grad:
-        try: styled = styled.background_gradient(subset=grad, cmap='RdYlGn')
-        except Exception: pass
-    st.dataframe(styled, width='stretch', hide_index=True)
+    if max_tier_num == 0:
+        st.warning("No subset data available to display.", icon="⚠️")
+        return
 
-    st.download_button("Download Phase 3 CSV", data=df_p3.to_csv(index=False),
-                       file_name=f"phase3_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                       mime="text/csv")
+    for strat in strategy_options:
+        row = [subset_perf.get(strat, {}).get(f'tier_{i+1}', np.nan) for i in range(max_tier_num)]
+        heatmap_data[strat] = row
 
-    # ── Phase 2: All Strategies ──
-    p2 = st.session_state.get('phase2_strategy_metrics', {})
-    if p2:
-        _section_divider()
-        st.markdown(_section_header("Phase 2 — All Strategy Evaluations",
-                                    "Trigger-based backtest results used for dynamic strategy selection"), unsafe_allow_html=True)
-        p2_rows = []
-        for name, data in p2.items():
-            if not isinstance(data, dict) or data.get('status') != 'ok': continue
-            pm = data.get('metrics', {})
-            p2_rows.append({
-                'Strategy': name, 'Total Return': pm.get('total_return',0),
-                'Ann. Return': pm.get('ann_return',0), 'Volatility': pm.get('volatility',0),
-                'Sharpe': pm.get('sharpe',0), 'Sortino': pm.get('sortino',0),
-                'Calmar': pm.get('calmar',0), 'Max DD': pm.get('max_dd',0),
-                'Win Rate': pm.get('win_rate',0), 'Trades': pm.get('trade_events',0)})
-        if p2_rows:
-            df_p2 = pd.DataFrame(p2_rows).sort_values('Sharpe', ascending=False).reset_index(drop=True)
-            n_sel = len([k for k in performance.get('strategy',{}).keys() if k != 'System_Curated'])
-            n_tot = len(df_p2)
-            sr = n_sel / n_tot * 100 if n_tot > 0 else 0
-            _render_cards([
-                ("Evaluated", str(n_tot), "Total strategies", "primary"),
-                ("Selected", str(n_sel), f"{sr:.0f}% selection rate", "success"),
-                ("Avg Sharpe", f"{df_p2['Sharpe'].mean():.2f}", "All strategies",
-                 'success' if df_p2['Sharpe'].mean() > 0.5 else 'warning' if df_p2['Sharpe'].mean() > 0 else 'danger'),
-                ("Best Strategy", str(df_p2.iloc[0]['Strategy'])[:15],
-                 f"Sharpe {df_p2.iloc[0]['Sharpe']:.2f}", "info"),
-            ])
+    df = pd.DataFrame(heatmap_data).transpose()
+    df.columns = [f'Tier {i+1}' for i in range(df.shape[1])]
 
-            sel_strats = [k for k in performance.get('strategy',{}).keys() if k != 'System_Curated']
-            df_p2.insert(1, 'Selected', df_p2['Strategy'].apply(lambda x: '✅' if x in sel_strats else ''))
-            p2_fmt = {'Total Return':'{:.2%}','Ann. Return':'{:.2%}','Volatility':'{:.2%}',
-                      'Sharpe':'{:.2f}','Sortino':'{:.2f}','Calmar':'{:.2f}',
-                      'Max DD':'{:.2%}','Win Rate':'{:.1%}','Trades':'{:.0f}'}
-            p2_styled = df_p2.style.format(p2_fmt)
-            try: p2_styled = p2_styled.background_gradient(subset=['Sharpe','Sortino','Calmar'], cmap='RdYlGn')
-            except Exception: pass
-            st.dataframe(p2_styled, width='stretch', hide_index=True, height=600)
-            st.caption(f"Showing {n_tot} strategies evaluated in Phase 2. Y = selected for curation.")
-            st.download_button("Download Phase 2 CSV", data=df_p2.to_csv(index=False),
-                               file_name=f"phase2_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                               mime="text/csv")
-    else:
-        _section_divider()
-        st.info("Phase 2 strategy selection metrics not available. Run analysis with dynamic selection enabled.")
+    fig = px.imshow(df, text_auto=".2f", aspect="auto",
+                    color_continuous_scale='RdYlGn',
+                    labels=dict(x="10-Stock Tier", y="Strategy", color="Sharpe Ratio"))
+    fig.update_layout(
+        template='plotly_dark',
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#EAEAEA'),
+        margin=dict(l=10, r=10, t=50, b=40),
+        title=dict(text="Sharpe Ratio by 10-Stock Tier", font=dict(size=11, color='#888888'), x=0, xanchor='left')
+    )
+    st.plotly_chart(fig, width='stretch')
+
+def display_subset_weight_evolution(subset_weights_history: List[Dict], strategies: List[str]):
+    if not subset_weights_history:
+        st.caption("No subset weight history available.")
+        return
+        
+    selected_strategy = st.selectbox("Select Strategy to View Tier Weights", options=strategies)
+
+    if selected_strategy:
+        strategy_tier_history = []
+        for record in subset_weights_history:
+            date = record['date']
+            tier_weights = record.get(selected_strategy, {})
+            if tier_weights:
+                row = {'date': date, **tier_weights}
+                strategy_tier_history.append(row)
+        
+        plot_weight_evolution(
+            strategy_tier_history,
+            title=f"Tier Weight Evolution for {selected_strategy}",
+            y_axis_title="Tier Weight"
+        )
+
+
+def create_conviction_heatmap(strategies, current_df):
+    all_signals = []
+    for name, s in strategies.items():
+        port = s.generate_portfolio(current_df.copy())
+        
+        if port.empty:
+            continue
+
+        if 'composite_score' not in port.columns:
+            port['composite_score'] = port['weightage_pct']
+            
+        for _, row in port.head(20).iterrows():
+            all_signals.append({'symbol': row['symbol'], 'strategy': name, 'conviction': row['composite_score']})
+
+    if not all_signals: return go.Figure()
+
+    df = pd.DataFrame(all_signals)
+    heatmap_df = df.pivot(index='symbol', columns='strategy', values='conviction').fillna(0)
+
+    fig = px.imshow(heatmap_df, text_auto=".2f", aspect="auto",
+                    color_continuous_scale='RdBu',
+                    labels=dict(x="Strategy", y="Symbol", color="Conviction Score"))
+    fig.update_layout(
+        template='plotly_dark',
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#EAEAEA'),
+        height=600,
+        margin=dict(l=10, r=10, t=50, b=40),
+        title=dict(text="Strategy Conviction Scores (Top Symbols)", font=dict(size=11, color='#888888'), x=0, xanchor='left')
+    )
+    return fig
 
 # ═══════════════════════════════════════════════════════════════════════════
 # DYNAMIC STRATEGY SELECTION ENGINE v2.1
@@ -3188,13 +3320,509 @@ def main():
             display_performance_metrics(st.session_state.performance)
 
         with tab3:
+            st.markdown(_section_header("Risk Intelligence", "RMT spectral analysis, correlation structure & structural risk assessment"), unsafe_allow_html=True)
             _render_risk_intelligence(st.session_state.performance)
 
-        with tab4:
-            _render_strategy_analysis(st.session_state.performance, strategies, st.session_state.current_df)
+            # Strategy Weight Evolution (if available)
+            wh = st.session_state.performance.get('strategy_weights_history', [])
+            if wh:
+                _section_divider()
+                st.markdown(_section_header("Strategy Weight Evolution", "How portfolio strategy weights shifted across the walk-forward window"), unsafe_allow_html=True)
+                plot_weight_evolution(wh, title="", y_axis_title="Weight")
 
+        with tab4:
+            st.markdown(_section_header("Strategy Analysis", "Institutional analytics across individual strategies — tier analysis, risk-return profiling & conviction signals"), unsafe_allow_html=True)
+            
+            strategies_in_performance = [k for k in st.session_state.performance.get('strategy', {}).keys() if k != 'System_Curated']
+            
+            if not strategies_in_performance:
+                st.warning("No individual strategy data available for deep dive analysis.")
+            else:
+                # ═══════════════════════════════════════════════════════════════════════════
+                # SECTION 1: TIER SHARPE HEATMAP
+                # ═══════════════════════════════════════════════════════════════════════════
+                subset_perf = st.session_state.performance.get('subset', {})
+                
+                if subset_perf:
+                    _section_divider()
+                    st.markdown(_section_header("Sharpe by Position Tier", "Performance decay across 10-stock tiers — top tier should dominate"), unsafe_allow_html=True)
+                    
+                    heatmap_data = {}
+                    max_tier_num = 0
+                    for strat in strategies_in_performance:
+                        if strat in subset_perf and subset_perf[strat]:
+                            tier_nums = [int(tier.split('_')[1]) for tier in subset_perf[strat].keys()]
+                            if tier_nums:
+                                max_tier_num = max(max_tier_num, max(tier_nums))
+
+                    if max_tier_num > 0:
+                        for strat in strategies_in_performance:
+                            row = [subset_perf.get(strat, {}).get(f'tier_{i+1}', np.nan) for i in range(max_tier_num)]
+                            heatmap_data[strat] = row
+
+                        df_heatmap = pd.DataFrame(heatmap_data).transpose()
+                        df_heatmap.columns = [f'T{i+1}' for i in range(df_heatmap.shape[1])]
+                        
+                        df_heatmap['Avg'] = df_heatmap.mean(axis=1)
+                        df_heatmap = df_heatmap.sort_values('Avg', ascending=False)
+                        avg_sharpe = df_heatmap['Avg']
+                        df_heatmap = df_heatmap.drop('Avg', axis=1)
+
+                        fig_tier = px.imshow(
+                            df_heatmap, 
+                            text_auto=".2f", 
+                            aspect="auto",
+                            color_continuous_scale='RdYlGn',
+                            color_continuous_midpoint=0
+                        )
+                        fig_tier.update_layout(
+                            **_chart_layout_base(max(350, len(strategies_in_performance) * 30), "Sharpe Ratio by 10-Stock Tier"),
+                            coloraxis_colorbar=dict(title="Sharpe")
+                        )
+                        fig_tier.update_layout(margin=dict(l=120, r=20, t=50, b=40))
+                        st.plotly_chart(fig_tier, width='stretch')
+                        
+                        # Tier insights — metric cards
+                        tier_means = df_heatmap.mean(axis=0)
+                        c1, c2, c3 = st.columns(3)
+                        best_tier = tier_means.idxmax()
+                        worst_tier = tier_means.idxmin()
+                        with c1:
+                            st.markdown(_metric_card("Best Tier", best_tier, f"Sharpe {tier_means.max():.2f}", "success"), unsafe_allow_html=True)
+                        with c2:
+                            st.markdown(_metric_card("Worst Tier", worst_tier, f"Sharpe {tier_means.min():.2f}", "danger"), unsafe_allow_html=True)
+                        with c3:
+                            st.markdown(_metric_card("Dispersion", f"{tier_means.std():.2f}", "Cross-tier σ", "info"), unsafe_allow_html=True)
+                
+                # ═══════════════════════════════════════════════════════════════════════════
+                # SECTION 2: RISK-RETURN SCATTER & FACTOR RADAR (side by side)
+                # ═══════════════════════════════════════════════════════════════════════════
+                _section_divider()
+                st.markdown(_section_header("Risk-Return & Factor Profile", "Strategy positioning on the efficient frontier and multi-factor fingerprints"), unsafe_allow_html=True)
+                
+                scatter_data = []
+                for name in strategies_in_performance:
+                    metrics = st.session_state.performance.get('strategy', {}).get(name, {}).get('metrics', {})
+                    if metrics:
+                        scatter_data.append({
+                            'Strategy': name,
+                            'Volatility': metrics.get('volatility', 0),
+                            'CAGR': metrics.get('annual_return', 0),
+                            'Sharpe': metrics.get('sharpe', 0),
+                            'Max DD': metrics.get('max_drawdown', 0)
+                        })
+                
+                col_scatter, col_radar = st.columns(2)
+                
+                with col_scatter:
+                    st.markdown("#### Risk-Return Scatter")
+                    if scatter_data:
+                        if UNIFIED_CHARTS_AVAILABLE:
+                            fig_scatter = create_risk_return_scatter(scatter_data)
+                        else:
+                            df_scatter = pd.DataFrame(scatter_data)
+                            df_scatter['Vol_pct'] = df_scatter['Volatility'] * 100
+                            df_scatter['CAGR_pct'] = df_scatter['CAGR'] * 100
+                            df_scatter['Size'] = np.abs(df_scatter['Max DD']) * 100 + 5
+                            
+                            fig_scatter = go.Figure()
+                            fig_scatter.add_trace(go.Scatter(
+                                x=df_scatter['Vol_pct'],
+                                y=df_scatter['CAGR_pct'],
+                                mode='markers+text',
+                                marker=dict(
+                                    size=np.clip(df_scatter['Size'], 12, 40),
+                                    color=df_scatter['Sharpe'],
+                                    colorscale='RdYlGn',
+                                    cmin=-1, cmax=2,
+                                    showscale=True,
+                                    colorbar=dict(title='Sharpe', tickfont=dict(color='#888888')),
+                                    line=dict(width=2, color='rgba(255,255,255,0.8)'),
+                                    opacity=0.95
+                                ),
+                                text=df_scatter['Strategy'].apply(lambda x: x[:10]),
+                                textposition='top center',
+                                textfont=dict(size=10, color='#EAEAEA'),
+                                customdata=df_scatter[['Strategy', 'Max DD']].values,
+                                hovertemplate='<b>%{customdata[0]}</b><br>CAGR: %{y:.1f}%<br>Vol: %{x:.1f}%<extra></extra>'
+                            ))
+                            
+                            if len(df_scatter) > 2:
+                                max_sharpe_idx = df_scatter['Sharpe'].idxmax()
+                                tangent_vol = df_scatter.loc[max_sharpe_idx, 'Vol_pct']
+                                tangent_ret = df_scatter.loc[max_sharpe_idx, 'CAGR_pct']
+                                vol_max = df_scatter['Vol_pct'].max()
+                                cml_end_vol = min(tangent_vol * 1.8, vol_max * 1.3)
+                                cml_end_ret = tangent_ret * (cml_end_vol / tangent_vol) if tangent_vol > 0 else 0
+                                
+                                fig_scatter.add_trace(go.Scatter(
+                                    x=[0, cml_end_vol], y=[0, cml_end_ret],
+                                    mode='lines', name='CML',
+                                    line=dict(color='#888888', dash='dash', width=1.5),
+                                    showlegend=False
+                                ))
+                                fig_scatter.add_trace(go.Scatter(
+                                    x=[tangent_vol], y=[tangent_ret],
+                                    mode='markers', name='Optimal',
+                                    marker=dict(size=15, color='#FFC300', symbol='star',
+                                               line=dict(width=2, color='#EAEAEA')),
+                                    showlegend=False
+                                ))
+                            
+                            vol_range = df_scatter['Vol_pct'].max() - df_scatter['Vol_pct'].min()
+                            cagr_range = df_scatter['CAGR_pct'].max() - df_scatter['CAGR_pct'].min()
+                            vol_pad = max(vol_range * 0.15, 1)
+                            cagr_pad = max(cagr_range * 0.15, 0.5)
+                            
+                            fig_scatter.update_layout(
+                                **_chart_layout_base(400, "Volatility vs CAGR (Bubble = MaxDD, Color = Sharpe)")
+                            )
+                            fig_scatter.update_layout(margin=dict(l=50, r=20, t=50, b=50))
+                            fig_scatter.update_xaxes(
+                                title='Volatility (%)', gridcolor='rgba(255,255,255,0.05)',
+                                range=[max(0, df_scatter['Vol_pct'].min() - vol_pad), df_scatter['Vol_pct'].max() + vol_pad]
+                            )
+                            fig_scatter.update_yaxes(
+                                title='CAGR (%)', gridcolor='rgba(255,255,255,0.05)',
+                                range=[df_scatter['CAGR_pct'].min() - cagr_pad, df_scatter['CAGR_pct'].max() + cagr_pad]
+                            )
+                        
+                        st.plotly_chart(fig_scatter, width='stretch')
+                
+                with col_radar:
+                    st.markdown("#### Factor Fingerprint")
+                    factor_data = []
+                    for name in strategies_in_performance:
+                        metrics = st.session_state.performance.get('strategy', {}).get(name, {}).get('metrics', {})
+                        if metrics:
+                            factor_data.append({
+                                'Strategy': name,
+                                'Return Factor': min(max(metrics.get('annual_return', 0) / 0.30, -1), 1),
+                                'Risk Control': min(max(-metrics.get('max_drawdown', -0.20) / 0.20, 0), 1),
+                                'Consistency': metrics.get('win_rate', 0.5),
+                                'Efficiency': min(max(metrics.get('sharpe', 0) / 2, -1), 1),
+                                'Tail Risk': min(max(metrics.get('tail_ratio', 1), 0), 2) / 2
+                            })
+                    
+                    if factor_data and len(factor_data) > 0:
+                        if UNIFIED_CHARTS_AVAILABLE:
+                            fig_radar = create_factor_radar(factor_data, max_strategies=4)
+                        else:
+                            df_factors = pd.DataFrame(factor_data)
+                            top_strats = df_factors.nlargest(min(4, len(df_factors)), 'Efficiency')
+                            categories = ['Return Factor', 'Risk Control', 'Consistency', 'Efficiency', 'Tail Risk']
+                            
+                            fig_radar = go.Figure()
+                            palette = ['#FFC300', '#10b981', '#06b6d4', '#f59e0b']
+                            
+                            for idx, (_, row) in enumerate(top_strats.iterrows()):
+                                values = [row[cat] for cat in categories]
+                                values.append(values[0])
+                                color = palette[idx % len(palette)]
+                                
+                                fig_radar.add_trace(go.Scatterpolar(
+                                    r=values,
+                                    theta=categories + [categories[0]],
+                                    fill='toself',
+                                    name=row['Strategy'][:15],
+                                    line_color=color,
+                                    fillcolor=f'rgba{tuple(int(color.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)) + (0.2,)}',
+                                    opacity=0.8
+                                ))
+                            
+                            fig_radar.update_layout(
+                                polar=dict(
+                                    radialaxis=dict(
+                                        visible=True, range=[0, 1],
+                                        showticklabels=True,
+                                        tickfont=dict(size=9, color='#888888'),
+                                        gridcolor='rgba(255,255,255,0.05)'
+                                    ),
+                                    angularaxis=dict(
+                                        tickfont=dict(size=11, color='#EAEAEA'),
+                                        gridcolor='rgba(255,255,255,0.05)'
+                                    ),
+                                    bgcolor='rgba(0,0,0,0)'
+                                ),
+                                showlegend=True,
+                                legend=dict(orientation='h', y=-0.2, x=0.5, xanchor='center', yanchor='top', font=dict(size=10)),
+                                paper_bgcolor='rgba(0,0,0,0)',
+                                font=dict(color='#EAEAEA'),
+                                height=430,
+                                margin=dict(l=60, r=60, t=50, b=80),
+                                title=dict(text="Multi-Factor Strategy Comparison", font=dict(size=11, color='#888888'), x=0, xanchor='left')
+                            )
+                        
+                        st.plotly_chart(fig_radar, width='stretch')
+                
+                # ═══════════════════════════════════════════════════════════════════════════
+                # SECTION 3: TIER ALLOCATION HISTORY
+                # ═══════════════════════════════════════════════════════════════════════════
+                _section_divider()
+                st.markdown(_section_header("Tier Allocation History", "How subset tier weights evolved through the walk-forward window"), unsafe_allow_html=True)
+                
+                display_subset_weight_evolution(
+                    st.session_state.performance.get('subset_weights_history', []),
+                    strategies_in_performance
+                )
+                
+                # ═══════════════════════════════════════════════════════════════════════════
+                # SECTION 4: CONVICTION ANALYSIS
+                # ═══════════════════════════════════════════════════════════════════════════
+                _section_divider()
+                st.markdown(_section_header("Cross-Strategy Conviction", "Signal overlap and consensus across selected strategies"), unsafe_allow_html=True)
+                
+                strategies_for_heatmap = {name: strategies[name] for name in strategies_in_performance if name in strategies}
+                
+                if strategies_for_heatmap and st.session_state.current_df is not None:
+                    heatmap_fig = create_conviction_heatmap(strategies_for_heatmap, st.session_state.current_df)
+                    if heatmap_fig:
+                        st.plotly_chart(heatmap_fig, width='stretch')
+                    
+                    signal_counts = {}
+                    for name, s in strategies_for_heatmap.items():
+                        try:
+                            port = s.generate_portfolio(st.session_state.current_df.copy())
+                            if not port.empty:
+                                for symbol in port.head(10)['symbol']:
+                                    signal_counts[symbol] = signal_counts.get(symbol, 0) + 1
+                        except Exception:
+                            pass
+                    
+                    if signal_counts:
+                        sorted_signals = sorted(signal_counts.items(), key=lambda x: x[1], reverse=True)
+                        top_consensus = sorted_signals[:5]
+                        
+                        consensus_threshold = len(strategies_for_heatmap) / 2
+                        high_conviction = [s for s, c in sorted_signals if c >= consensus_threshold]
+                        avg_agreement = np.mean([c for _, c in sorted_signals]) / len(strategies_for_heatmap)
+                        
+                        c1, c2, c3 = st.columns(3)
+                        with c1:
+                            st.markdown(_metric_card("High Conviction", str(len(high_conviction)), f"≥{consensus_threshold:.0f} strategy agreement", "primary"), unsafe_allow_html=True)
+                        with c2:
+                            st.markdown(_metric_card("Signal Agreement", f"{avg_agreement:.0%}", "Mean strategy overlap", "info"), unsafe_allow_html=True)
+                        with c3:
+                            top_pick = top_consensus[0] if top_consensus else ("—", 0)
+                            st.markdown(_metric_card("Top Consensus", top_pick[0], f"{top_pick[1]}/{len(strategies_for_heatmap)} strategies", "success"), unsafe_allow_html=True)
+                
+                # ═══════════════════════════════════════════════════════════════════════════
+                # SECTION 5: ADAPTIVE SELECTION RANKING
+                # ═══════════════════════════════════════════════════════════════════════════
+                _section_divider()
+                st.markdown(_section_header("Adaptive Selection Ranking", "Dispersion-weighted rank composite — metrics with higher cross-sectional variance get more weight"), unsafe_allow_html=True)
+                
+                if strategies_in_performance:
+                    summary_data = []
+                    for name in strategies_in_performance:
+                        metrics = st.session_state.performance.get('strategy', {}).get(name, {}).get('metrics', {})
+                        subset = st.session_state.performance.get('subset', {}).get(name, {})
+                        tier1_sharpe = subset.get('tier_1', np.nan) if subset else np.nan
+                        
+                        summary_data.append({
+                            'Strategy': name,
+                            'Sharpe': metrics.get('sharpe', 0),
+                            'Sortino': metrics.get('sortino', 0),
+                            'Calmar': metrics.get('calmar', 0),
+                            'Max DD': metrics.get('max_drawdown', 0),
+                            'Win Rate': metrics.get('win_rate', 0),
+                            'T1 Sharpe': tier1_sharpe
+                        })
+                    
+                    df_summary = pd.DataFrame(summary_data)
+                    
+                    rank_metrics = ['Sharpe', 'Sortino', 'Calmar', 'Win Rate']
+                    for col in rank_metrics:
+                        df_summary[f'{col}_Rank'] = df_summary[col].rank(pct=True)
+                    df_summary['DD_Rank'] = df_summary['Max DD'].rank(pct=True, ascending=False)
+                    
+                    rank_cols = [c for c in df_summary.columns if c.endswith('_Rank')]
+                    dispersions = {col: df_summary[col].std() for col in rank_cols}
+                    total_disp = sum(dispersions.values()) or 1
+                    weights = {col: disp / total_disp for col, disp in dispersions.items()}
+                    
+                    df_summary['Score'] = sum(df_summary[col] * w for col, w in weights.items())
+                    df_summary = df_summary.sort_values('Score', ascending=False)
+                    
+                    df_display = df_summary[['Strategy', 'Sharpe', 'Sortino', 'Calmar', 'Max DD', 'Win Rate', 'T1 Sharpe', 'Score']].copy()
+                    df_display['Sharpe'] = df_display['Sharpe'].apply(lambda x: f"{x:.2f}")
+                    df_display['Sortino'] = df_display['Sortino'].apply(lambda x: f"{x:.2f}")
+                    df_display['Calmar'] = df_display['Calmar'].apply(lambda x: f"{x:.2f}")
+                    df_display['Max DD'] = df_display['Max DD'].apply(lambda x: f"{x:.1%}")
+                    df_display['Win Rate'] = df_display['Win Rate'].apply(lambda x: f"{x:.0%}")
+                    df_display['T1 Sharpe'] = df_display['T1 Sharpe'].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "-")
+                    df_display['Score'] = df_display['Score'].apply(lambda x: f"{x:.2f}")
+                    
+                    st.dataframe(df_display, width='stretch', hide_index=True)
+
+        # ═══════════════════════════════════════════════════════════════════════════
+        # TAB 5: BACKTEST DATA - Comprehensive Backtest Results
+        # ═══════════════════════════════════════════════════════════════════════════
         with tab5:
-            _render_backtest_data(st.session_state.performance)
+            st.markdown(_section_header("Backtest Data", "Raw walk-forward and trigger-based backtest metrics across all strategies"), unsafe_allow_html=True)
+            
+            strategies_in_performance = list(st.session_state.performance.get('strategy', {}).keys())
+            
+            if not strategies_in_performance:
+                st.warning("No strategy data available. Run analysis first.")
+            else:
+                # ─────────────────────────────────────────────────────────────────
+                # SECTION 1: SELECTED STRATEGY METRICS (from Phase 3 walk-forward)
+                # ─────────────────────────────────────────────────────────────────
+                metrics_data = []
+                for name in strategies_in_performance:
+                    strategy_perf = st.session_state.performance.get('strategy', {}).get(name, {})
+                    metrics = strategy_perf.get('metrics', {})
+                    returns_list = strategy_perf.get('returns', [])
+                    
+                    row = {
+                        'Strategy': name,
+                        'Total Return': metrics.get('total_return', 0),
+                        'CAGR': metrics.get('annual_return', metrics.get('ann_return', 0)),
+                        'Volatility': metrics.get('volatility', 0),
+                        'Sharpe Ratio': metrics.get('sharpe', 0),
+                        'Sortino Ratio': metrics.get('sortino', 0),
+                        'Calmar Ratio': metrics.get('calmar', 0),
+                        'Max Drawdown': metrics.get('max_drawdown', metrics.get('max_dd', 0)),
+                        'Win Rate': metrics.get('win_rate', 0),
+                        'Profit Factor': metrics.get('profit_factor', 0),
+                        'Omega Ratio': metrics.get('omega_ratio', 0),
+                        'Tail Ratio': metrics.get('tail_ratio', 0),
+                        'Gain/Pain': metrics.get('gain_to_pain', 0),
+                        'Trading Days': len(returns_list)
+                    }
+                    metrics_data.append(row)
+                
+                if metrics_data:
+                    # Summary metric cards for the selected strategies
+                    df_metrics = pd.DataFrame(metrics_data)
+                    df_metrics = df_metrics.sort_values('Sharpe Ratio', ascending=False).reset_index(drop=True)
+                    
+                    best_strat = df_metrics.iloc[0]
+                    avg_sharpe = df_metrics['Sharpe Ratio'].mean()
+                    avg_return = df_metrics['Total Return'].mean()
+                    
+                    c1, c2, c3, c4 = st.columns(4)
+                    with c1:
+                        st.markdown(_metric_card("Selected Strategies", str(len(df_metrics)), "Phase 3 walk-forward", "primary"), unsafe_allow_html=True)
+                    with c2:
+                        cls = 'success' if avg_sharpe > 0.5 else 'warning' if avg_sharpe > 0 else 'danger'
+                        st.markdown(_metric_card("Avg Sharpe", f"{avg_sharpe:.2f}", "Cross-strategy mean", cls), unsafe_allow_html=True)
+                    with c3:
+                        cls = 'success' if avg_return > 0 else 'danger'
+                        st.markdown(_metric_card("Avg Return", f"{avg_return:.1%}", "Mean total return", cls), unsafe_allow_html=True)
+                    with c4:
+                        st.markdown(_metric_card("Top Strategy", best_strat['Strategy'][:15], f"Sharpe {best_strat['Sharpe Ratio']:.2f}", "success"), unsafe_allow_html=True)
+                    
+                    _section_divider()
+                    st.markdown(_section_header("Walk-Forward Performance Table", "Phase 3 out-of-sample metrics for selected strategies"), unsafe_allow_html=True)
+                    
+                    styled_cols = {
+                        'Total Return': '{:.2%}', 'CAGR': '{:.2%}', 'Volatility': '{:.2%}',
+                        'Sharpe Ratio': '{:.3f}', 'Sortino Ratio': '{:.3f}', 'Calmar Ratio': '{:.3f}',
+                        'Max Drawdown': '{:.2%}', 'Win Rate': '{:.1%}', 'Profit Factor': '{:.2f}',
+                        'Omega Ratio': '{:.2f}', 'Tail Ratio': '{:.2f}', 'Gain/Pain': '{:.2f}',
+                        'Trading Days': '{:.0f}'
+                    }
+                    
+                    styled_df = df_metrics.style.format(styled_cols)
+                    gradient_cols = ['Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio', 'Total Return']
+                    available_gradient_cols = [c for c in gradient_cols if c in df_metrics.columns]
+                    if available_gradient_cols:
+                        try:
+                            styled_df = styled_df.background_gradient(subset=available_gradient_cols, cmap='RdYlGn')
+                        except ImportError:
+                            pass
+                    
+                    st.dataframe(styled_df, width='stretch', hide_index=True)
+                    
+                    csv_data = df_metrics.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download Selected Strategy Metrics CSV",
+                        data=csv_data,
+                        file_name=f"selected_strategy_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
+                    )
+                
+                # ─────────────────────────────────────────────────────────────────
+                # SECTION 2: ALL STRATEGIES FROM PHASE 2 (Selection Backtest)
+                # ─────────────────────────────────────────────────────────────────
+                _section_divider()
+                st.markdown(_section_header("Phase 2 Strategy Selection — All Strategies", "Trigger-based backtest results used for dynamic strategy selection"), unsafe_allow_html=True)
+                
+                phase2_metrics = st.session_state.get('phase2_strategy_metrics', {})
+                
+                if phase2_metrics:
+                    all_strat_data = []
+                    for name, data in phase2_metrics.items():
+                        if not isinstance(data, dict) or data.get('status') != 'ok':
+                            continue
+                        m = data.get('metrics', {})
+                        all_strat_data.append({
+                            'Strategy': name,
+                            'Total Return': m.get('total_return', 0),
+                            'Ann. Return': m.get('ann_return', 0),
+                            'Volatility': m.get('volatility', 0),
+                            'Sharpe': m.get('sharpe', 0),
+                            'Sortino': m.get('sortino', 0),
+                            'Calmar': m.get('calmar', 0),
+                            'Max DD': m.get('max_dd', 0),
+                            'Win Rate': m.get('win_rate', 0),
+                            'Trades': m.get('trade_events', 0),
+                        })
+                    
+                    if all_strat_data:
+                        df_all = pd.DataFrame(all_strat_data)
+                        df_all = df_all.sort_values('Sharpe', ascending=False).reset_index(drop=True)
+                        
+                        # Summary cards for Phase 2
+                        n_selected = len([k for k in st.session_state.performance.get('strategy', {}).keys() if k != 'System_Curated'])
+                        n_total = len(df_all)
+                        select_rate = n_selected / n_total * 100 if n_total > 0 else 0
+                        
+                        c1, c2, c3, c4 = st.columns(4)
+                        with c1:
+                            st.markdown(_metric_card("Evaluated", str(n_total), "Total strategies", "primary"), unsafe_allow_html=True)
+                        with c2:
+                            st.markdown(_metric_card("Selected", str(n_selected), f"{select_rate:.0f}% selection rate", "success"), unsafe_allow_html=True)
+                        with c3:
+                            avg_p2_sharpe = df_all['Sharpe'].mean()
+                            cls = 'success' if avg_p2_sharpe > 0.5 else 'warning' if avg_p2_sharpe > 0 else 'danger'
+                            st.markdown(_metric_card("Avg Sharpe", f"{avg_p2_sharpe:.2f}", "All strategies", cls), unsafe_allow_html=True)
+                        with c4:
+                            best_p2 = df_all.iloc[0]
+                            st.markdown(_metric_card("Best Strategy", best_p2['Strategy'][:15], f"Sharpe {best_p2['Sharpe']:.2f}", "info"), unsafe_allow_html=True)
+                        
+                        # Mark selected strategies
+                        selected_strats = [k for k in st.session_state.performance.get('strategy', {}).keys() if k != 'System_Curated']
+                        df_all.insert(1, 'Selected', df_all['Strategy'].apply(lambda x: '✅' if x in selected_strats else ''))
+                        
+                        all_styled_cols = {
+                            'Total Return': '{:.2%}', 'Ann. Return': '{:.2%}', 'Volatility': '{:.2%}',
+                            'Sharpe': '{:.2f}', 'Sortino': '{:.2f}', 'Calmar': '{:.2f}',
+                            'Max DD': '{:.2%}', 'Win Rate': '{:.1%}', 'Trades': '{:.0f}'
+                        }
+                        
+                        styled_all = df_all.style.format(all_styled_cols)
+                        try:
+                            styled_all = styled_all.background_gradient(
+                                subset=['Sharpe', 'Sortino', 'Calmar'], cmap='RdYlGn'
+                            )
+                        except ImportError:
+                            pass
+                        
+                        st.dataframe(styled_all, width='stretch', hide_index=True, height=600)
+                        st.caption(f"Showing {len(df_all)} strategies evaluated in Phase 2 (trigger-based backtest). ✅ = selected for portfolio curation.")
+                        
+                        all_csv = df_all.to_csv(index=False)
+                        st.download_button(
+                            label="📥 Download All Strategies CSV",
+                            data=all_csv,
+                            file_name=f"all_strategy_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv"
+                        )
+                else:
+                    st.info("Phase 2 strategy selection metrics not available. Run analysis with dynamic selection enabled.")
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     
