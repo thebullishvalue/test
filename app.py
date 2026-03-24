@@ -628,13 +628,32 @@ class FairValueEngine:
             self.predictions[t] = float(np.mean(y[:t])) if t > 0 else float(y[0])
             self.model_spread[t] = 0.0
 
-        # Dynamically scale refit interval to prevent over-computation on large datasets (Bounds: 5 to 21 days)
-        dynamic_refit = int(np.clip(n // 150, 5, 21))
-        
+        # Adaptive refit chunking based on market volatility
+        # Compute daily absolute differences as a proxy for local market speed
+        dy = np.abs(np.diff(y, prepend=y[0]))
+        # 20-day rolling median of absolute changes (robust against single-day extreme outliers)
+        roll_vol = pd.Series(dy).rolling(window=20, min_periods=5).median().bfill().values
+        global_vol = max(np.median(dy), 1e-8)
+        vol_ratio = roll_vol / global_vol
+
         chunks = []
-        for t_start in range(MIN_TRAIN_SIZE, n, dynamic_refit):
-            t_end = min(t_start + dynamic_refit, n)
+        t_start = MIN_TRAIN_SIZE
+        while t_start < n:
+            # Check volatility at the start of the chunk
+            current_vol = vol_ratio[t_start - 1]
+            
+            # If volatility is high, market is shifting -> refit frequently (5 days)
+            # If volatility is calm, relationships are stable -> refit sparsely (21 days)
+            if current_vol > 1.5:
+                step = 5
+            elif current_vol < 0.8:
+                step = 21
+            else:
+                step = 10
+                
+            t_end = min(t_start + step, n)
             chunks.append((t_start, t_end))
+            t_start = t_end
 
         last_models: dict = {"ridge": None, "huber": None, "ols": None, "elasticnet": None, "pca_wls": None}
         valid_cols = np.ones(X.shape[1], dtype=bool)
@@ -2036,7 +2055,13 @@ def main() -> None:
 
     X = data[active_features].values
     y = data[active_target].values
-    cache_key = f"{active_target}|{'|'.join(sorted(active_features))}|{len(data)}"
+    
+    # Factor in the latest date or value to ensure in-place sheet updates trigger a re-run
+    if active_date != "None" and active_date in data.columns:
+        latest_sig = str(data[active_date].max())
+    else:
+        latest_sig = str(np.sum(y))  # Fallback if no date col exists
+    cache_key = f"{active_target}|{'|'.join(sorted(active_features))}|{len(data)}|{latest_sig}"
 
     if st.session_state.get("engine_cache") != cache_key:
         with st.spinner("Preparing walk-forward engine..."):
