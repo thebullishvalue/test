@@ -629,7 +629,7 @@ class FairValueEngine:
         global_weights = np.exp(-decay_rate * np.arange(MAX_TRAIN_SIZE - 1, -1, -1))
 
         # Dynamically scale refit interval to prevent over-computation on large datasets (Bounds: 5 to 21 days)
-        dynamic_refit = int(np.clip(n // 150, 5, 21))
+        dynamic_refit = int(np.clip(n // 150, 5, 10))
         
         chunks = []
         for t_start in range(MIN_TRAIN_SIZE, n, dynamic_refit):
@@ -760,7 +760,7 @@ class FairValueEngine:
                 # Revert to single-threaded ElasticNet to prevent thread explosion during outer parallelization
                 enet = ElasticNetCV(
                     l1_ratio=[0.5, 0.9, 1.0],
-                    n_alphas=10,
+                    alphas=10,
                     cv=2,
                     max_iter=2000,
                     tol=1e-2,
@@ -2047,6 +2047,11 @@ def main() -> None:
     if len(data) < MIN_DATA_POINTS:
         st.error(f"Need {MIN_DATA_POINTS}+ data points for walk-forward analysis.")
         return
+        
+    active_features = [f for f in active_features if f in data.columns]
+    if not active_features:
+        st.error("No valid features found after data cleaning.")
+        return
 
     X = data[active_features].values
     y = data[active_target].values
@@ -2055,7 +2060,7 @@ def main() -> None:
     if active_date != "None" and active_date in data.columns:
         latest_sig = str(data[active_date].max())
     else:
-        latest_sig = str(np.sum(data.values))  # Monitors all columns to ensure inline predictor edits invalidate cache
+        latest_sig = str(pd.util.hash_pandas_object(data).sum())  # Cryptographic hash prevents sum-neutral mutation bypass
     cache_key = f"{active_target}|{'|'.join(sorted(active_features))}|{len(data)}|{latest_sig}"
 
     if st.session_state.get("engine_cache") != cache_key:
