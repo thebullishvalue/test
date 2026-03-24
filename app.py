@@ -700,7 +700,7 @@ class FairValueEngine:
             try:
                 # ElasticNet combines L1 (feature selection) and L2 (shrinkage).
                 # Testing ratios from 10% L1 to 100% L1 (Pure Lasso).
-                enet = ElasticNetCV(l1_ratio=[0.1, 0.5, 0.9, 1.0], cv=TimeSeriesSplit(n_splits=3), max_iter=50000, tol=1e-2)
+                enet = ElasticNetCV(l1_ratio=[0.1, 0.5, 0.9, 1.0], cv=TimeSeriesSplit(n_splits=3), max_iter=50000, tol=1e-2, n_jobs=-1)
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
                     enet.fit(X_scaled, y_train, sample_weight=weights)
@@ -864,21 +864,19 @@ class FairValueEngine:
             min_periods = max(lb // 2, 5)
 
             # Distribution-free z-equivalents via empirical quantile ranks
-            # (Cont, 2001; Cornish-Fisher, 1938): avoids Gaussian tail assumption.
-            # For each point, compute its percentile rank within the rolling window,
-            # then map through the inverse normal CDF to get a z-equivalent that
-            # preserves ordinal information without assuming Gaussian tails.
+            # Vectorized using cythonized rolling rank equivalent to np.mean(window <= r[t])
+            s_r = pd.Series(r)
+            rank_pct = s_r.rolling(window=lb, min_periods=min_periods).rank(method="max", pct=True).values
+            roll_count = s_r.rolling(window=lb, min_periods=min_periods).count().values
+
             z_scores = np.full(n, np.nan)
-            for t in range(min_periods, n):
-                start = max(0, t - lb)
-                window = r[start:t + 1]
-                if len(window) < min_periods:
-                    continue
-                # Percentile of current value within its own rolling window
-                rank_pct = float(np.mean(window <= r[t]))
-                # Clip to avoid ±inf from ppf at exactly 0 or 1
-                rank_pct = np.clip(rank_pct, 0.5 / len(window), 1.0 - 0.5 / len(window))
-                z_scores[t] = stats.norm.ppf(rank_pct)
+            valid = (roll_count >= min_periods) & ~np.isnan(rank_pct)
+            
+            if np.any(valid):
+                c_lower = 0.5 / roll_count[valid]
+                c_upper = 1.0 - c_lower
+                clipped_pct = np.clip(rank_pct[valid], c_lower, c_upper)
+                z_scores[valid] = stats.norm.ppf(clipped_pct)
 
             zones = self._classify_zones(z_scores, n)
             buy_signals, sell_signals = self._detect_crossover_signals(z_scores, n)
@@ -1110,14 +1108,16 @@ class FairValueEngine:
     def _compute_forward_changes(self) -> None:
         """Forward % change in target variable at multiple horizons."""
         n = len(self.ts_data)
-        y = self.y
+        y_arr = np.asarray(self.y)
         for period in (5, 10, 20):
             fwd = np.full(n, np.nan)
-            for i in range(n - period):
-                if abs(y[i]) > 1e-10:
-                    # FIX: Use absolute value in the denominator to preserve correct 
-                    # directional returns if the target variable drops below zero.
-                    fwd[i] = (y[i + period] - y[i]) / abs(y[i]) * 100
+            y_curr = y_arr[:-period]
+            y_fwd = y_arr[period:]
+            
+            # Vectorized protection against division by zero
+            valid = np.abs(y_curr) > 1e-10
+            fwd[:-period][valid] = (y_fwd[valid] - y_curr[valid]) / np.abs(y_curr[valid]) * 100
+            
             self.ts_data[f"FwdChg_{period}"] = fwd
 
     def _compute_ou_diagnostics(self) -> None:
