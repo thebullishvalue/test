@@ -727,7 +727,7 @@ class FairValueEngine:
                 logging.warning("Ridge fit failed at t=%d: %s", t, e)
 
             try:
-                huber = HuberRegressor(epsilon=HUBER_EPSILON, max_iter=HUBER_MAX_ITER)
+                huber = HuberRegressor(epsilon=HUBER_EPSILON, max_iter=HUBER_MAX_ITER, tol=1e-3)
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
                     huber.fit(X_scaled, y_train, sample_weight=weights)
@@ -739,7 +739,15 @@ class FairValueEngine:
                 # ElasticNet combines L1 (feature selection) and L2 (shrinkage).
                 # Testing ratios from 10% L1 to 100% L1 (Pure Lasso).
                 # Revert to single-threaded ElasticNet to prevent thread explosion during outer parallelization
-                enet = ElasticNetCV(l1_ratio=[0.1, 0.5, 0.9, 1.0], cv=TimeSeriesSplit(n_splits=3), max_iter=50000, tol=1e-2, n_jobs=1)
+                enet = ElasticNetCV(
+                    l1_ratio=[0.5, 0.9, 1.0],
+                    n_alphas=30,
+                    cv=TimeSeriesSplit(n_splits=3),
+                    max_iter=10000,
+                    tol=1e-2,
+                    selection="random",
+                    n_jobs=1
+                )
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
                     enet.fit(X_scaled, y_train, sample_weight=weights)
@@ -747,23 +755,17 @@ class FairValueEngine:
             except Exception as e:
                 logging.warning("ElasticNet fit failed at t=%d: %s", t, e)
 
-        if _HAS_STATSMODELS:
             try:
-                # PCA transformation to orthogonalize features and shield WLS from multicollinearity
-                if _HAS_SKLEARN and scaler is not None:
-                    pca = PCA(n_components=0.95, svd_solver="full")
-                    X_pca = pca.fit_transform(X_scaled)
-                    models["pca_wls"] = pca
-                else:
-                    X_pca = X_train_clean
-                    models["pca_wls"] = None
+                pca = PCA(n_components=0.95, svd_solver="full")
+                X_pca = pca.fit_transform(X_scaled)
+                models["pca_wls"] = pca
                 
-                X_with_const = np.insert(X_pca, 0, 1.0, axis=1)
-                # Use WLS to apply sample weights
-                wls = sm.WLS(y_train, X_with_const, weights=weights).fit()
-                models["ols"] = wls
+                # Swap statsmodels for sklearn LinearRegression (bypasses heavy p-value/t-stat computation)
+                ols = LinearRegression()
+                ols.fit(X_pca, y_train, sample_weight=weights)
+                models["ols"] = ols
             except Exception as e:
-                logging.warning("WLS fit failed at t=%d: %s", t, e)
+                logging.warning("PCA/OLS fit failed at t=%d: %s", t, e)
 
         return models, scaler, valid_cols
 
@@ -773,15 +775,15 @@ class FairValueEngine:
         models: dict,
         scaler: StandardScaler | None,
         valid_cols: np.ndarray,
-        t: int,
-    ) -> list[float]:
-        """Collect predictions from all available ensemble members."""
-        preds: list[float] = []
+        t_start: int,
+    ) -> list[np.ndarray]:
+        """Collect vectorized predictions from all available ensemble members."""
+        preds_list: list[np.ndarray] = []
 
-        def _add_safe_pred(val: float) -> None:
-            """Ensure prediction is finite and within reasonable bounds to prevent downstream cascade failures."""
-            if np.isfinite(val) and abs(val) < 1e10:
-                preds.append(float(val))
+        def _add_safe_pred(arr: np.ndarray) -> None:
+            arr_clean = np.where(np.isfinite(arr) & (np.abs(arr) < 1e10), arr, np.nan)
+            if not np.all(np.isnan(arr_clean)):
+                preds_list.append(arr_clean)
 
         X_pred_clean = X_pred[:, valid_cols]
 
@@ -790,34 +792,29 @@ class FairValueEngine:
                 X_scaled = scaler.transform(X_pred_clean)
                 if models["ridge"] is not None:
                     try:
-                        _add_safe_pred(models["ridge"].predict(X_scaled)[0])
+                        _add_safe_pred(models["ridge"].predict(X_scaled))
                     except Exception as e:
-                        logging.warning("Ridge predict failed at t=%d: %s", t, e)
+                        logging.warning("Ridge predict failed at t=%d: %s", t_start, e)
                 if models["huber"] is not None:
                     try:
-                        _add_safe_pred(models["huber"].predict(X_scaled)[0])
+                        _add_safe_pred(models["huber"].predict(X_scaled))
                     except Exception as e:
-                        logging.warning("Huber predict failed at t=%d: %s", t, e)
+                        logging.warning("Huber predict failed at t=%d: %s", t_start, e)
                 if models.get("elasticnet") is not None:
                     try:
-                        _add_safe_pred(models["elasticnet"].predict(X_scaled)[0])
+                        _add_safe_pred(models["elasticnet"].predict(X_scaled))
                     except Exception as e:
-                        logging.warning("ElasticNet predict failed at t=%d: %s", t, e)
+                        logging.warning("ElasticNet predict failed at t=%d: %s", t_start, e)
+                if models.get("ols") is not None and models.get("pca_wls") is not None:
+                    try:
+                        X_pca_pred = models["pca_wls"].transform(X_scaled)
+                        _add_safe_pred(models["ols"].predict(X_pca_pred))
+                    except Exception as e:
+                        logging.warning("OLS predict failed at t=%d: %s", t_start, e)
             except Exception as e:
-                logging.warning("Scaler transform failed at t=%d: %s", t, e)
+                logging.warning("Prediction cascade failed at t=%d: %s", t_start, e)
 
-        if _HAS_STATSMODELS and models["ols"] is not None:
-            try:
-                if _HAS_SKLEARN and models.get("pca_wls") is not None and scaler is not None:
-                    X_pca_pred = models["pca_wls"].transform(scaler.transform(X_pred_clean))
-                    X_with_const = np.insert(X_pca_pred, 0, 1.0, axis=1)
-                else:
-                    X_with_const = np.insert(X_pred_clean, 0, 1.0, axis=1)
-                _add_safe_pred(models["ols"].predict(X_with_const)[0])
-            except Exception as e:
-                logging.warning("OLS predict failed at t=%d: %s", t, e)
-
-        return preds
+        return preds_list
 
     def _compute_feature_impacts(self, models: dict, valid_cols: np.ndarray) -> None:
         """Map PCA+WLS coefficients back to original features to determine current driving factors."""
@@ -825,10 +822,9 @@ class FairValueEngine:
         wls = models.get("ols")
         pca = models.get("pca_wls")
 
-        if wls is not None and pca is not None and _HAS_SKLEARN:
+        if wls is not None and pca is not None:
             try:
-                # wls.params[0] is intercept, [1:] are the orthogonal PCA components
-                wls_weights = wls.params[1:]
+                wls_weights = wls.coef_
                 # Matrix multiplication: (Components) x (Feature contributions to components)
                 # Yields the effective weight of each original feature in the WLS model
                 feature_weights = np.dot(wls_weights, pca.components_)
