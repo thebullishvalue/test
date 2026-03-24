@@ -79,12 +79,17 @@ def compute_risk_metrics(
         else:
             ann_return = 0.0
 
+    # ── arithmetic annualized return for Sharpe/Sortino ──
+    # CRITICAL FIX: Sharpe/Sortino mathematically demand the Arithmetic Mean.
+    # Using CAGR doubly penalizes volatile assets. Calmar retains CAGR.
+    arithmetic_ann_return = float(np.mean(r) * periods_per_year)
+
     # ── volatility (annualized) ──
     ann_factor = np.sqrt(periods_per_year)
     volatility = float(np.std(r, ddof=1) * ann_factor)
 
     # ── Sharpe ──
-    excess = ann_return - risk_free_rate
+    excess = arithmetic_ann_return - risk_free_rate
     sharpe = excess / volatility if volatility > 1e-6 else 0.0
     sharpe = float(np.clip(sharpe, -100.0, 100.0))
 
@@ -160,7 +165,7 @@ class PerformanceMetrics:
         initial_value = daily_values['investment'].iloc[0]
         final_value = values[-1]
 
-        if initial_value <= 0 or final_value <= 0:
+        if initial_value <= 0:
             return PerformanceMetrics._empty_metrics()
 
         # Modified Dietz TWR to prevent cash-flow return leakage
@@ -182,12 +187,24 @@ class PerformanceMetrics:
         else:
             daily_returns = pd.Series(values).pct_change().replace([np.inf, -np.inf], np.nan).dropna().clip(-1.0, 1.0)
 
-        if daily_returns.empty or len(daily_returns) < 2:
-            return PerformanceMetrics._empty_metrics()
-
         total_return = (final_value - initial_value) / initial_value
         years = len(daily_values) / periods_per_year
-        cagr = (final_value / initial_value) ** (1 / years) - 1 if years > 0 else 0
+        
+        if years > 0:
+            cagr = (final_value / initial_value) ** (1 / years) - 1.0 if final_value > 0 else -1.0
+        else:
+            cagr = 0.0
+
+        if daily_returns.empty or len(daily_returns) < 2 or final_value <= 0:
+            metrics = PerformanceMetrics._empty_metrics()
+            metrics.update({
+                'total_return': total_return,
+                'annualized_return': cagr,
+                'cagr': cagr,
+                'final_value': final_value,
+                'trading_days': len(daily_values)
+            })
+            return metrics
 
         core = compute_risk_metrics(
             daily_returns.values,

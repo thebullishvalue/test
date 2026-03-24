@@ -184,6 +184,7 @@ def compute_portfolio_return(
     next_prices: pd.DataFrame,
     is_rebalance: bool = False,
     prev_portfolio: Optional[pd.DataFrame] = None,
+    current_prices: Optional[pd.DataFrame] = None,
 ) -> float:
     """Compute single-period portfolio return with turnover-proportional costs.
 
@@ -212,8 +213,10 @@ def compute_portfolio_return(
     # Turnover-proportional transaction costs
     if is_rebalance and TRANSACTION_COST_BPS > 0:
         if prev_portfolio is not None and not prev_portfolio.empty and 'value' in prev_portfolio.columns:
-            # Mark previous portfolio to market to capture weight drift
-            drifted_prev = prev_portfolio.merge(next_prices[['symbol', 'price']], on='symbol', how='left')
+            # CRITICAL FIX: Use current_prices (today's prices) to mark-to-market 
+            # the old portfolio to compute exact turnover at the moment of execution.
+            prices_df = current_prices if current_prices is not None else portfolio
+            drifted_prev = prev_portfolio.merge(prices_df[['symbol', 'price']], on='symbol', how='left')
             drifted_prev['price_y'] = drifted_prev['price_y'].fillna(drifted_prev['price_x'])
             drifted_prev['drifted_value'] = drifted_prev['units'] * drifted_prev['price_y']
             
@@ -295,8 +298,12 @@ def calculate_advanced_metrics(returns_with_dates: List[Dict]) -> Tuple[Dict, fl
         # Epistemic Fix: Standard continuous Kelly (μ/σ²) mathematically assumes log-normal diffusion.
         # Under highly skewed, fat-tailed market distributions, this catastrophically over-allocates
         # and ignores crash gap-risk. We inject a 3rd-order Taylor skewness correction.
+        # CRITICAL REFINEMENT: Empirical 3rd moments are violently unstable to outliers. 
+        # By clipping the standard errors (Z-scores) to ±3.0 before cubing, we guarantee mathematical 
+        # stability in the Taylor expansion and prevent a single anomaly from hijacking the bet size.
         std = np.sqrt(var)
-        skewness = float(np.mean(((r - mu) / std) ** 3))
+        z_scores = np.clip((r - mu) / std, -3.0, 3.0)
+        skewness = float(np.mean(z_scores ** 3))
         base_kelly = mu / var
         
         # Epistemic Fix: Bound the skewness penalty at 0.0. Under extreme gap risk 
@@ -398,6 +405,21 @@ def calculate_strategy_weights(
             pass  # Fall through to softmax
 
     if method == 'equal':
+        # Epistemic Warning: Evaluate spectral redundancy before naive 1/N allocation
+        if returns_data and len(returns_data) >= 2:
+            try:
+                from rmt_core import compute_spectral_diagnostics
+                available = [n for n in strat_names if n in returns_data and len(returns_data[n]) >= 20]
+                if len(available) >= 2:
+                    min_len = min(len(returns_data[n]) for n in available)
+                    rm = np.column_stack([returns_data[n][:min_len] for n in available])
+                    diag = compute_spectral_diagnostics(rm)
+                    if diag.effective_rank < len(available) * 0.5:
+                        logger.warning(f"EPISTEMIC RISK: Using 1/N 'equal' allocation on highly redundant strategies. "
+                                       f"Apparent strategies: {len(available)} | Effective independent bets: {diag.effective_rank:.1f}. "
+                                       f"Portfolio variance will scale quadratically for redundant clusters.")
+            except Exception:
+                pass
         return {name: 1.0 / len(strat_names) for name in strat_names}
 
     # Default: softmax_sharpe with ADAPTIVE temperature scaling.
@@ -422,12 +444,18 @@ def calculate_strategy_weights(
     if sharpe_values.size == 0:
         return {name: 1.0 / len(strat_names) for name in strat_names} if strat_names else {}
 
-    # Adaptive temperature: κ = c / σ_Sharpe (clamped to [1, 20])
-    sharpe_std = np.std(sharpe_values)
-    temperature = SOFTMAX_CONCENTRATION / max(sharpe_std, 0.05)
-    temperature = float(np.clip(temperature, 1.0, 20.0))
-
-    stable_sharpes = temperature * (sharpe_values - np.max(sharpe_values))
+    # Epistemic Fix: Robust Adaptive Temperature for Leptokurtic Distributions
+    # np.std() squares outliers, artificially collapsing the temperature for the cluster.
+    # We replace L2 variance with L1 Median Absolute Deviation (MAD) for robust scaling.
+    median_sharpe = np.median(sharpe_values)
+    mad = np.median(np.abs(sharpe_values - median_sharpe))
+    robust_std = mad * 1.4826  # scale factor for normal distribution equivalence
+    
+    # Cap outlier z-scores to prevent winner-take-all softmax degeneration
+    z_scores = (sharpe_values - median_sharpe) / max(robust_std, 0.05)
+    robust_sharpes = np.clip(z_scores, -3.0, 3.0)
+    
+    stable_sharpes = SOFTMAX_CONCENTRATION * (robust_sharpes - np.max(robust_sharpes))
     exp_sharpes = np.exp(stable_sharpes)
     total_score = np.sum(exp_sharpes)
 
@@ -519,18 +547,10 @@ def calculate_trigger_based_metrics(daily_data: pd.DataFrame, deployment_style: 
         total_return_pct = absolute_pnl / total_investment
 
         # Time-Weighted Return (TWR) for SIP — Modified Dietz method
-        # (CRITICAL-5 fix)
-        #
-        # Cash flows are invested at the START of the day (generate_portfolio
-        # is called on the buy day), so cf earns a return during the period.
-        # Correct denominator: prev_val + cf (the capital base that earned
-        # the day's return).
-        #
-        # r_t = (V_t - V_{t-1} - CF_t) / (V_{t-1} + CF_t)
-        #
-        # This avoids the downward bias of the previous formula which used
-        # prev_val alone in the denominator even though cf was already
-        # deployed and earning returns.
+        # Cash flows are invested at the END of the day (generate_portfolio
+        # evaluates using EOD prices), so cf earns NO return during the period.
+        # Standard GIPS-compliant denominator for EOD cash flows: prev_val.
+        # R_t = (V_t - V_{t-1} - CF_{t}) / V_{t-1}
         df = daily_data.copy()
         df['cash_flow'] = df['investment'].diff().fillna(0)
 
@@ -539,16 +559,12 @@ def calculate_trigger_based_metrics(daily_data: pd.DataFrame, deployment_style: 
             prev_val = df['value'].iloc[i - 1]
             curr_val = df['value'].iloc[i]
             cf = df['cash_flow'].iloc[i]
-            base = prev_val  # capital base exposed to the market BEFORE injection
-            if base > 0:
-                # Extract the market-driven value change, divided by exposed base
+            if prev_val > 0:
+                # Market-driven value change divided by exposed base
                 r = (curr_val - cf - prev_val) / prev_val
                 twr_returns.append(r)
-            elif prev_val > 0:
-                # Fallback: no new injection, use prev_val
-                r = (curr_val - prev_val) / prev_val
-                twr_returns.append(r)
             else:
+                # No prior exposure, return is 0
                 twr_returns.append(0.0)
 
         returns = pd.Series(twr_returns).replace([np.inf, -np.inf], 0).clip(-1.0, 1.0)
@@ -1081,7 +1097,7 @@ def evaluate_historical_performance_trigger_based(
                 else:
                     prev_curated = last_curated_port if not last_curated_port.empty else None
                     last_curated_port = curated_port.copy()
-                    oos_ret = compute_portfolio_return(curated_port, next_df, is_rebalance=True, prev_portfolio=prev_curated)
+                    oos_ret = compute_portfolio_return(curated_port, next_df, is_rebalance=True, prev_portfolio=prev_curated, current_prices=test_df)
                     oos_perf['System_Curated']['returns'].append({'return': oos_ret, 'date': next_date})
 
                     # Track weight entropy
@@ -1120,7 +1136,7 @@ def evaluate_historical_performance_trigger_based(
                             prev_strat_port = None
                         last_strategy_ports[name] = portfolio.copy()
                         oos_perf[name]['returns'].append({
-                            'return': compute_portfolio_return(portfolio, next_df, is_rebalance=True, prev_portfolio=prev_strat_port),
+                            'return': compute_portfolio_return(portfolio, next_df, is_rebalance=True, prev_portfolio=prev_strat_port, current_prices=test_df),
                             'date': next_date
                         })
                     else:
@@ -1185,7 +1201,7 @@ def evaluate_historical_performance_trigger_based(
     # Sharpes included OOS data that the walk-forward loop had not yet seen).
     train_cutoff = max(MIN_TRAIN_DAYS, len(historical_data) * 2 // 3)
     full_history_subset_perf = _calculate_performance_on_window(
-        historical_data[:train_cutoff], _strategies, TRAINING_CAPITAL
+        historical_data[:train_cutoff], _strategies, TRAINING_CAPITAL, precomputed_cache=precalc_cache, cache_start_idx=0
     )['subset']
 
     logger.info("=" * 70)
@@ -1343,7 +1359,7 @@ def evaluate_historical_performance(
                 prev_curated = last_curated_port if not last_curated_port.empty else None
                 last_curated_port = curated_port.copy()
                 oos_perf['System_Curated']['returns'].append({
-                    'return': compute_portfolio_return(curated_port, next_df, is_rebalance=True, prev_portfolio=prev_curated),
+                    'return': compute_portfolio_return(curated_port, next_df, is_rebalance=True, prev_portfolio=prev_curated, current_prices=test_df),
                     'date': next_date
                 })
                 weights = curated_port['weightage_pct'] / 100
@@ -1363,7 +1379,7 @@ def evaluate_historical_performance(
                     prev_strat_port = None
                 last_strategy_ports[name] = portfolio.copy() if not portfolio.empty else pd.DataFrame()
                 oos_perf[name]['returns'].append({
-                    'return': compute_portfolio_return(portfolio, next_df, is_rebalance=True, prev_portfolio=prev_strat_port),
+                    'return': compute_portfolio_return(portfolio, next_df, is_rebalance=True, prev_portfolio=prev_strat_port, current_prices=test_df),
                     'date': next_date
                 })
             except Exception as e:
@@ -1415,7 +1431,7 @@ def evaluate_historical_performance(
     # CRITICAL-2 fix: use train-only window for tier Sharpe calculation
     train_cutoff = max(MIN_TRAIN_FILES, len(historical_data) * 2 // 3)
     full_history_subset_perf = _calculate_performance_on_window(
-        historical_data[:train_cutoff], _strategies, TRAINING_CAPITAL, precalc_cache
+        historical_data[:train_cutoff], _strategies, TRAINING_CAPITAL, precomputed_cache=precalc_cache, cache_start_idx=0
     )['subset']
 
     # Spectral summary (market correlation regime)

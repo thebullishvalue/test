@@ -5,7 +5,6 @@ import warnings
 import os
 from typing import List, Tuple, Dict, Any
 import logging
-import numpy as np
 
 logging.basicConfig(
     level=logging.INFO,
@@ -16,40 +15,35 @@ logger = logging.getLogger("backdata")
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 
-class WaveTrendOscillator:
-    """Calculates the WaveTrend Oscillator (wt1) [LazyBear]."""
+class LiquidityOscillator:
+    """Calculates the Liquidity Oscillator indicator."""
 
-    def __init__(self, n1: int = 10, n2: int = 21):
-        if n1 <= 0 or n2 <= 0:
-            raise ValueError("n1 and n2 must be positive integers.")
-        self.n1 = n1
-        self.n2 = n2
+    def __init__(self, length: int = 20, impact_window: int = 3):
+        if length <= 0 or impact_window <= 0:
+            raise ValueError("length and impact_window must be positive integers.")
+        self.length = length
+        self.impact_window = impact_window
 
     def calculate(self, data: pd.DataFrame) -> pd.Series:
-        required_columns = {'high', 'low', 'close'}
+        required_columns = {'open', 'high', 'low', 'close', 'volume'}
         if not required_columns.issubset(data.columns):
             return pd.Series(dtype=float)
 
         df = data.copy()
-        
-        # ap = hlc3
-        df['ap'] = (df['high'] + df['low'] + df['close']) / 3.0
-        
-        # esa = ema(ap, n1)
-        df['esa'] = df['ap'].ewm(span=self.n1, adjust=False).mean()
-        
-        # d = ema(abs(ap - esa), n1)
-        df['d'] = (df['ap'] - df['esa']).abs().ewm(span=self.n1, adjust=False).mean()
-        
-        # ci = (ap - esa) / (0.015 * d)
-        safe_d = df['d'].replace(0, np.nan)
-        df['ci'] = (df['ap'] - df['esa']) / (0.015 * safe_d)
-        
-        # tci = ema(ci, n2)
-        df['tci'] = df['ci'].ewm(span=self.n2, adjust=False).mean()
-        
-        # wt1 = tci
-        return df['tci'].rename('wavetrend_oscillator')
+        df['spread'] = (df['high'] + df['low']) / 2 - df['open']
+        df['vol_ma'] = df['volume'].rolling(window=self.length).mean()
+        safe_vol_ma = df['vol_ma'].replace(0, pd.NA)
+        df['vwap_spread'] = (df['spread'] * df['volume'] / safe_vol_ma).rolling(window=self.length).mean()
+        close_shifted = df['close'].shift(self.impact_window)
+        df['price_impact'] = ((df['close'] - close_shifted) * df['volume'] / safe_vol_ma).rolling(window=self.length).mean()
+        df['liquidity_score'] = df['vwap_spread'] - df['price_impact']
+        df['source_value'] = df['close'] + df['liquidity_score']
+        df['lowest_value'] = df['source_value'].rolling(window=self.length).min()
+        df['highest_value'] = df['source_value'].rolling(window=self.length).max()
+        range_value = df['highest_value'] - df['lowest_value']
+        safe_range_value = range_value.replace(0, pd.NA)
+        oscillator = 200 * (df['source_value'] - df['lowest_value']) / safe_range_value - 100
+        return oscillator.rename('liquidity_oscillator')
 
 def resample_data(df: pd.DataFrame, rule: str = 'W-FRI') -> pd.DataFrame:
     """Resample daily OHLCV data to a different timeframe.
@@ -61,7 +55,6 @@ def resample_data(df: pd.DataFrame, rule: str = 'W-FRI') -> pd.DataFrame:
     if df.empty or not isinstance(df.index, pd.DatetimeIndex):
         return pd.DataFrame()
     agg_map = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
-    agg_map = {k: v for k, v in agg_map.items() if k in df.columns}
     resampled = df.resample(rule).agg(agg_map).dropna()
     # Drop weeks with too few trading days (< 2) to avoid noisy single-day bars
     counts = df['close'].resample(rule).count()
@@ -81,14 +74,14 @@ def calculate_rsi(data: pd.DataFrame, period: int = 14) -> pd.Series:
     avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
     avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
 
-    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rs = avg_gain / avg_loss.replace(0, pd.NA)
     rsi = 100.0 - (100.0 / (1.0 + rs))
     rsi = rsi.fillna(100.0)  # avg_loss == 0 means all gains → RSI = 100
     return rsi
 
 def calculate_all_indicators(
     symbol_data: pd.DataFrame,
-    oscillator_calculator: WaveTrendOscillator
+    oscillator_calculator: LiquidityOscillator
 ) -> pd.DataFrame | None:
     """
     Calculate all indicators for a single symbol's full history.
@@ -122,7 +115,7 @@ def calculate_all_indicators(
             if len(osc.dropna()) >= 20:
                 osc_sma20 = osc.rolling(window=20).mean()
                 osc_std20 = osc.rolling(window=20).std()
-                safe_std20 = osc_std20.replace(0, np.nan)
+                safe_std20 = osc_std20.replace(0, pd.NA)
                 all_results_df[f'zscore {tf_name}'] = (osc - osc_sma20) / safe_std20
 
         rsi_series = calculate_rsi(df)
@@ -242,9 +235,7 @@ def generate_historical_data(
     logger.info("Download OK. Shape: %s, tickers: %d", all_data.shape, len(symbols_to_process))
 
     all_data.columns.names = ['Indicator', 'Symbol']
-    
-    # Updated to WaveTrendOscillator with n1=10, n2=21 parameters
-    oscillator_calculator = WaveTrendOscillator(n1=10, n2=21)
+    oscillator_calculator = LiquidityOscillator(length=20, impact_window=3)
     
     # 2. --- Pre-calculate all indicators for all symbols ---
     ticker_indicator_cache = {}
@@ -274,47 +265,44 @@ def generate_historical_data(
 
     # 3. --- Generate Daily Snapshots in Memory ---
     pragati_data_list: List[Tuple[datetime, pd.DataFrame]] = []
-    # Use the index of the downloaded data as the authoritative date range
-    date_range = all_data.index.normalize().unique()
+    
+    if not ticker_indicator_cache:
+        return []
 
-    for snapshot_date in date_range:
-        # --- NEW: Only start generating snapshots *after* the indicator period
-        # We also only care about dates *within* the requested range (end_date)
-        if snapshot_date < (start_date + timedelta(days=MAX_INDICATOR_PERIOD)) or snapshot_date > end_date:
-            continue
-
-        daily_results: List[Dict[str, Any]] = []
-        for ticker in symbols_to_process:
-            if ticker not in ticker_indicator_cache:
-                continue
+    # Memory Optimization: Apply temporal boundary before concatenation.
+    # Prevents O(N * Warmup) memory bloat by strictly joining required rows.
+    all_ticker_dfs = []
+    valid_start = start_date + timedelta(days=MAX_INDICATOR_PERIOD)
+    
+    for ticker, df in ticker_indicator_cache.items():
+        mask = (df.index >= valid_start) & (df.index <= end_date)
+        sliced_df = df.loc[mask]
+        if not sliced_df.empty:
+            # .assign() creates a rapid shallow copy to prevent memory fragmentation
+            all_ticker_dfs.append(sliced_df.assign(symbol=ticker.replace('.NS', '')))
             
-            full_indicator_df = ticker_indicator_cache[ticker]
-            
-            if snapshot_date not in full_indicator_df.index:
-                continue
-                
-            try:
-                indicator_row = full_indicator_df.loc[snapshot_date]
-                if indicator_row.isnull().all() or pd.isna(indicator_row.get('price')):
-                    continue # Skip if all data is NaN or price is NaN
-
-                indicators = indicator_row.to_dict()
-                indicators['symbol'] = ticker.replace('.NS', '')
-                indicators['date'] = snapshot_date.strftime('%d %b')
-                indicators['% change'] = indicators['% change'] * 100
-                
-                daily_results.append(indicators)
-            except KeyError:
-                continue
+    if not all_ticker_dfs:
+        return []
         
-        if daily_results:
-            final_df = pd.DataFrame(daily_results)
-            for col in COLUMN_ORDER:
-                if col not in final_df.columns:
-                    final_df[col] = np.nan
-            
-            final_df = final_df[COLUMN_ORDER]
-            pragati_data_list.append((snapshot_date, final_df))
+    master_df = pd.concat(all_ticker_dfs)
+    master_df = master_df.dropna(subset=['price'])
+    
+    # Vectorized formatting
+    master_df['date'] = master_df.index.strftime('%d %b')
+    master_df['% change'] = master_df['% change'] * 100
+    
+    # Ensure column contract
+    for col in COLUMN_ORDER:
+        if col not in master_df.columns:
+            master_df[col] = pd.NA
+    master_df = master_df[COLUMN_ORDER]
+    
+    # Group by index (date) and build the final list
+    for snapshot_date, group_df in master_df.groupby(master_df.index):
+        pragati_data_list.append((snapshot_date, group_df.reset_index(drop=True)))
+        
+    # Ensure chronological order
+    pragati_data_list.sort(key=lambda x: x[0])
 
     return pragati_data_list
 
@@ -430,7 +418,7 @@ def main():
                 st.warning("No data was generated for the selected date range.")
 
 __all__ = [
-    'WaveTrendOscillator',
+    'LiquidityOscillator',
     'resample_data',
     'calculate_rsi',
     'calculate_all_indicators',
