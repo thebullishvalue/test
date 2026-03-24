@@ -70,9 +70,20 @@ def compute_adaptive_thresholds(breadth_series: 'pd.Series', buy_pct: float = 25
         return SIP_TRIGGER, SWING_SELL_TRIGGER
     buy_thresh = float(np.percentile(clean, buy_pct))
     sell_thresh = float(np.percentile(clean, sell_pct))
-    # Sanity: buy must be below sell
-    if buy_thresh >= sell_thresh:
-        return SIP_TRIGGER, SWING_SELL_TRIGGER
+    
+    # Epistemic Fix: Absolute Reality Bounds
+    # Prevent absurd thresholds during heavily skewed/multimodal regimes (e.g. buying at 0.80).
+    buy_thresh = max(0.10, min(buy_thresh, 0.48))
+    sell_thresh = max(0.40, min(sell_thresh, 0.85))
+    
+    # Ensure a strict minimum mathematical spread to prevent whipsaw clustering
+    if sell_thresh - buy_thresh < 0.05:
+        midpoint = (buy_thresh + sell_thresh) / 2.0
+        buy_thresh = max(0.10, midpoint - 0.05)
+        sell_thresh = min(0.85, midpoint + 0.05)
+        if buy_thresh >= sell_thresh: # Ultimate fallback
+            return SIP_TRIGGER, SWING_SELL_TRIGGER
+            
     return round(buy_thresh, 3), round(sell_thresh, 3)
 
 BREADTH_SHEET_ID = "1po7z42n3dYIQGAvn0D1-a4pmyxpnGPQ13TrNi3DB5_c"
@@ -806,8 +817,15 @@ def rank_strategies(metrics: Dict[str, Dict]) -> pd.DataFrame:
         df['score'] = 0
         return df
     
-    # Compute dispersion-weighted score
-    dispersions = {col: max(df[col].std(), 0.01) for col in rank_cols}
+    # Compute dispersion-weighted score with absolute safety against NaN and negative values
+    dispersions = {}
+    for col in rank_cols:
+        s = df[col].std()
+        if pd.isna(s) or s <= 0:
+            dispersions[col] = 0.01
+        else:
+            dispersions[col] = max(float(s), 0.01)
+            
     total_disp = sum(dispersions.values())
     weights = {col: disp / total_disp for col, disp in dispersions.items()}
     
@@ -1071,14 +1089,17 @@ class SPRTRegimeTrigger:
         alpha: float = 0.05,   # P(false buy signal) — Type I error
         beta: float = 0.10,    # P(missed buy opportunity) — Type II error
         stress_shift: float = -0.5,  # how many σ below mean constitutes stress
+        decay: float = 0.95,   # Leakage factor to prevent lock-out in chop
     ):
-        self.alpha = alpha
-        self.beta = beta
+        # Strictly clamp error probabilities to prevent boundary calculation blow-ups
+        self.alpha = max(1e-5, min(alpha, 0.5))
+        self.beta = max(1e-5, min(beta, 0.5))
         self.stress_shift = stress_shift
+        self.decay = decay
 
         # Wald boundaries (log scale)
-        self.upper_bound = np.log((1 - beta) / alpha)   # accept H1 (BUY)
-        self.lower_bound = np.log(beta / (1 - alpha))   # accept H0 (SELL)
+        self.upper_bound = np.log((1 - self.beta) / self.alpha)   # accept H1 (BUY)
+        self.lower_bound = np.log(self.beta / (1 - self.alpha))   # accept H0 (SELL)
 
         # Distribution parameters (fitted from data)
         self.mu0 = 0.5   # neutral mean
@@ -1141,7 +1162,8 @@ class SPRTRegimeTrigger:
         # log(f(x|H1) / f(x|H0)) for Gaussian
         ll_h1 = -0.5 * ((breadth_value - self.mu1) / self.sigma) ** 2
         ll_h0 = -0.5 * ((breadth_value - self.mu0) / self.sigma) ** 2
-        self.log_lr += (ll_h1 - ll_h0)
+        # Clip increment and apply decay to prevent explosive non-convergence and lock-outs in chop regimes
+        self.log_lr = (self.log_lr * self.decay) + np.clip(ll_h1 - ll_h0, -50.0, 50.0)
 
         if self.log_lr >= self.upper_bound:
             # Evidence confirms stress → BUY

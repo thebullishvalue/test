@@ -74,8 +74,8 @@ def compute_risk_metrics(
     n = len(r)
     years = n / periods_per_year
     if ann_return is None:
-        if years > 0 and total_return > -1:
-            ann_return = (1 + total_return) ** (1 / years) - 1
+        if years > 0 and total_return >= -1.0:
+            ann_return = float(max(0.0, 1.0 + total_return) ** (1.0 / years) - 1.0)
         else:
             ann_return = 0.0
 
@@ -232,7 +232,8 @@ class DataCacheManager:
     """
     In-memory data cache to avoid redundant API calls.
 
-    Implements a singleton pattern so every caller shares one cache.
+    Handles Streamlit session isolation to prevent data bleeding across users.
+    Falls back to a standard singleton if not running in a Streamlit context.
     """
 
     _instance: Optional["DataCacheManager"] = None
@@ -240,10 +241,23 @@ class DataCacheManager:
     _MAX_CACHE_KEYS: int = 10
 
     def __new__(cls) -> "DataCacheManager":
+        try:
+            import streamlit as st
+            from streamlit.runtime.scriptrunner import get_script_run_ctx
+            if get_script_run_ctx() is not None:
+                if "pragyam_data_cache" not in st.session_state:
+                    instance = super().__new__(cls)
+                    instance._cache = {}
+                    instance._cache_timestamps = {}
+                    st.session_state["pragyam_data_cache"] = instance
+                return st.session_state["pragyam_data_cache"]
+        except Exception:
+            pass
+
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._cache: Dict[str, Any] = {}
-            cls._instance._cache_timestamps: Dict[str, datetime] = {}
+            cls._instance._cache = {}
+            cls._instance._cache_timestamps = {}
         return cls._instance
 
     @staticmethod

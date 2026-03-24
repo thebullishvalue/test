@@ -293,223 +293,222 @@ class PRStrategy(BaseStrategy):
 # CL_v1 Strategy Implementation
 # =====================================
 
+class _CL1QuantitativeETFAnalyzer:
+    """
+    Advanced Quantitative ETF Analysis Engine
+
+    Implements sophisticated multi-factor models for ETF selection based on:
+    1. Statistical Anomaly Detection
+    2. Multi-Timeframe Momentum Convergence
+    3. Volatility-Adjusted Risk Assessment
+    4. Cross-Asset Correlation Analysis
+    5. Regime-Aware Factor Rotation
+    """
+
+    def __init__(self):
+        self.factor_weights = {}
+        self.regime_indicators = {}
+        self.quality_threshold = 0.6  # Minimum quality score for selection
+
+    def validate_and_prepare_data(self, df):
+        """Enhanced data validation with quality scoring"""
+        required_columns = ['symbol', 'price', 'rsi latest', 'rsi weekly',
+                        'osc latest', 'osc weekly', '9ema osc latest', '9ema osc weekly',
+                        '21ema osc latest', '21ema osc weekly', 'zscore latest', 'zscore weekly',
+                        'date', 'ma90 latest', 'ma200 latest', 'ma90 weekly', 'ma200 weekly',
+                        'dev20 latest', 'dev20 weekly']
+
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            raise ValueError(f"Missing required columns: {missing_columns}")
+
+        # Handle NaN values intelligently
+        df = self._intelligent_nan_handling(df)
+
+        # Calculate data quality score for each ETF
+        df['data_quality_score'] = self._calculate_data_quality(df)
+
+        # Filter out low-quality data points
+        df = df[df['data_quality_score'] >= self.quality_threshold]
+
+        return df
+
+    def _intelligent_nan_handling(self, df):
+        """Intelligent NaN handling preserving statistical properties"""
+        # RSI columns: use neutral 50 for missing values
+        rsi_columns = ['rsi latest', 'rsi weekly']
+        for col in rsi_columns:
+            df[col] = df[col].fillna(50)
+
+        # Oscillator columns: use sector/market median if available, otherwise 0
+        osc_columns = [col for col in df.columns if 'osc' in col.lower()]
+        for col in osc_columns:
+            df[col] = df[col].fillna(df[col].median())
+
+        # Z-score: use 0 (neutral) for missing values
+        zscore_columns = [col for col in df.columns if 'zscore' in col.lower()]
+        for col in zscore_columns:
+            df[col] = df[col].fillna(0)
+
+        # Moving averages: use price if available
+        ma_columns = [col for col in df.columns if col.startswith('ma')]
+        for col in ma_columns:
+            df[col] = df[col].fillna(df['price'])
+
+        # Other columns: forward fill then backward fill
+        for col in df.columns:
+            if col not in rsi_columns + osc_columns + zscore_columns + ma_columns:
+                df[col] = df[col].ffill().bfill().fillna(0)
+
+        return df
+
+    def _calculate_data_quality(self, df):
+        """Calculate comprehensive data quality score"""
+        quality_factors = []
+
+        # Completeness factor (penalize excessive zeros/NaNs)
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        completeness = 1 - (df[numeric_cols] == 0).sum(axis=1) / len(numeric_cols)
+        quality_factors.append(completeness)
+
+        # Consistency factor (check for outliers in key metrics)
+        key_metrics = ['rsi latest', 'rsi weekly', 'osc latest', 'osc weekly']
+        for metric in key_metrics:
+            if metric in df.columns:
+                z_scores = np.abs(stats.zscore(df[metric].fillna(0)))
+                consistency = np.clip(1 - z_scores / 5, 0, 1)  # Penalize extreme outliers
+                quality_factors.append(consistency)
+
+        # Average all quality factors
+        return np.mean(quality_factors, axis=0)
+
+    def detect_market_regime(self, df):
+        """Advanced regime detection using multiple indicators"""
+        # Calculate aggregate market indicators
+        avg_rsi = df['rsi latest'].mean()
+        avg_osc = df['osc latest'].mean()
+        volatility_regime = df['dev20 latest'].mean() / df['price'].mean()
+
+        # Cross-timeframe momentum consistency
+        momentum_consistency = np.corrcoef(df['osc latest'], df['osc weekly'])[0, 1]
+
+        # Regime classification with confidence score
+        if avg_rsi < 35 and avg_osc < -40 and volatility_regime > 0.02:
+            regime = "CRISIS"
+            confidence = 0.9
+        elif avg_rsi < 45 and avg_osc < -20 and momentum_consistency > 0.7:
+            regime = "BEAR_TREND"
+            confidence = 0.8
+        elif avg_rsi > 65 and avg_osc > 30 and volatility_regime < 0.015:
+            regime = "BULL_EUPHORIA"
+            confidence = 0.85
+        elif avg_rsi > 55 and avg_osc > 10 and momentum_consistency > 0.6:
+            regime = "BULL_TREND"
+            confidence = 0.75
+        else:
+            regime = "NEUTRAL_RANGE"
+            confidence = 0.6
+
+        self.regime_indicators = {
+            'regime': regime,
+            'confidence': confidence,
+            'avg_rsi': avg_rsi,
+            'avg_osc': avg_osc,
+            'volatility': volatility_regime,
+            'momentum_consistency': momentum_consistency
+        }
+
+        return regime, confidence
+
+    def calculate_statistical_anomaly_score(self, df):
+        """Identify statistical anomalies across multiple dimensions"""
+        anomaly_components = []
+
+        # 1. Multi-timeframe RSI divergence
+        rsi_divergence = np.abs(df['rsi latest'] - df['rsi weekly']) / (df['rsi latest'] + df['rsi weekly'] + 1e-6)
+        rsi_anomaly = np.where((df['rsi latest'] < 30) & (df['rsi weekly'] < 35) & (rsi_divergence < 0.2),
+                            3.0 - (df['rsi latest'] + df['rsi weekly']) / 20, 0)
+        anomaly_components.append(rsi_anomaly)
+
+        # 2. Oscillator cascade effect (multiple timeframes aligned)
+        osc_cascade = np.where((df['osc latest'] < -70) & (df['osc weekly'] < -60) &
+                            (df['9ema osc latest'] < df['21ema osc latest']),
+                            2.5 + np.abs(df['osc latest'] + df['osc weekly']) / 100, 0)
+        anomaly_components.append(osc_cascade)
+
+        # 3. Z-score statistical significance
+        zscore_significance = np.where((df['zscore latest'] < -2.0) & (df['zscore weekly'] < -1.5),
+                                    np.minimum(np.abs(df['zscore latest']) + np.abs(df['zscore weekly']), 5.0), 0)
+        anomaly_components.append(zscore_significance)
+
+        # Combine anomaly scores
+        df['anomaly_score'] = np.sum(anomaly_components, axis=0)
+        return df
+
+    def calculate_momentum_score(self, df):
+        """Calculate momentum convergence score"""
+        momentum_score = (
+            (df['rsi latest'] < 40).astype(int) * 1.5 +
+            (df['rsi weekly'] < 45).astype(int) * 1.0 +
+            (df['osc latest'] < -50).astype(int) * 1.2 +
+            (df['osc weekly'] < -40).astype(int) * 0.8
+        )
+        df['momentum_score'] = momentum_score
+        return df
+
+    def calculate_risk_adjusted_score(self, df):
+        """Calculate risk-adjusted score using volatility and z-scores"""
+        df['risk_score'] = np.where(
+            (df['dev20 latest'] / df['price'] < 0.015) & (np.abs(df['zscore latest']) < 2.0),
+            2.0,
+            np.where((df['dev20 latest'] / df['price'] < 0.03) & (np.abs(df['zscore latest']) < 3.0), 1.0, 0.5)
+        )
+        return df
+
+    def calculate_composite_score(self, df):
+        """Combine all factors into a composite score"""
+        # Dynamic factor weights based on regime
+        regime, _ = self.detect_market_regime(df)
+        if regime == "CRISIS":
+            self.factor_weights = {'anomaly': 0.4, 'momentum': 0.2, 'risk_adjusted': 0.2, 'consistency': 0.1, 'quality': 0.1}
+        elif regime == "BEAR_TREND":
+            self.factor_weights = {'anomaly': 0.3, 'momentum': 0.3, 'risk_adjusted': 0.2, 'consistency': 0.1, 'quality': 0.1}
+        else:
+            self.factor_weights = {'anomaly': 0.25, 'momentum': 0.25, 'risk_adjusted': 0.2, 'consistency': 0.15, 'quality': 0.15}
+
+        # Calculate consistency score
+        df['consistency_score'] = np.where(
+            np.abs(df['rsi latest'] - df['rsi weekly']) < 10,
+            2.0,
+            np.where(np.abs(df['rsi latest'] - df['rsi weekly']) < 20, 1.0, 0.5)
+        )
+
+        # Normalize scores
+        scaler = StandardScaler()
+        score_columns = ['anomaly_score', 'momentum_score', 'risk_score', 'consistency_score', 'data_quality_score']
+        normalized_scores = scaler.fit_transform(df[score_columns])
+
+        # Apply weights
+        df['composite_score'] = np.sum(normalized_scores * list(self.factor_weights.values()), axis=1)
+
+        return df
+
+    def allocate_portfolio(self, df, sip_amount):
+        """Allocate portfolio based on composite scores"""
+        df = df.sort_values('composite_score', ascending=False)
+        total_score = df['composite_score'].sum()
+        if total_score > 0:
+            df['weightage'] = df['composite_score'] / total_score
+        else:
+            df['weightage'] = 1 / len(df) if len(df) > 0 else 0
+        
+        # The parent class's _allocate_portfolio handles capping and unit calculation
+        return df
+
 class CL1Strategy(BaseStrategy):
     def generate_portfolio(self, df: pd.DataFrame, sip_amount: float = 100000.0) -> pd.DataFrame:
-        # Extracted from CL_v1.py: QuantitativeETFAnalyzer class
-        class QuantitativeETFAnalyzer:
-            """
-            Advanced Quantitative ETF Analysis Engine
-
-            Implements sophisticated multi-factor models for ETF selection based on:
-            1. Statistical Anomaly Detection
-            2. Multi-Timeframe Momentum Convergence
-            3. Volatility-Adjusted Risk Assessment
-            4. Cross-Asset Correlation Analysis
-            5. Regime-Aware Factor Rotation
-            """
-
-            def __init__(self):
-                self.factor_weights = {}
-                self.regime_indicators = {}
-                self.quality_threshold = 0.6  # Minimum quality score for selection
-
-            def validate_and_prepare_data(self, df):
-                """Enhanced data validation with quality scoring"""
-                required_columns = ['symbol', 'price', 'rsi latest', 'rsi weekly',
-                                'osc latest', 'osc weekly', '9ema osc latest', '9ema osc weekly',
-                                '21ema osc latest', '21ema osc weekly', 'zscore latest', 'zscore weekly',
-                                'date', 'ma90 latest', 'ma200 latest', 'ma90 weekly', 'ma200 weekly',
-                                'dev20 latest', 'dev20 weekly']
-
-                missing_columns = [col for col in required_columns if col not in df.columns]
-                if missing_columns:
-                    raise ValueError(f"Missing required columns: {missing_columns}")
-
-                # Handle NaN values intelligently
-                df = self._intelligent_nan_handling(df)
-
-                # Calculate data quality score for each ETF
-                df['data_quality_score'] = self._calculate_data_quality(df)
-
-                # Filter out low-quality data points
-                df = df[df['data_quality_score'] >= self.quality_threshold]
-
-                return df
-
-            def _intelligent_nan_handling(self, df):
-                """Intelligent NaN handling preserving statistical properties"""
-                # RSI columns: use neutral 50 for missing values
-                rsi_columns = ['rsi latest', 'rsi weekly']
-                for col in rsi_columns:
-                    df[col] = df[col].fillna(50)
-
-                # Oscillator columns: use sector/market median if available, otherwise 0
-                osc_columns = [col for col in df.columns if 'osc' in col.lower()]
-                for col in osc_columns:
-                    df[col] = df[col].fillna(df[col].median())
-
-                # Z-score: use 0 (neutral) for missing values
-                zscore_columns = [col for col in df.columns if 'zscore' in col.lower()]
-                for col in zscore_columns:
-                    df[col] = df[col].fillna(0)
-
-                # Moving averages: use price if available
-                ma_columns = [col for col in df.columns if col.startswith('ma')]
-                for col in ma_columns:
-                    df[col] = df[col].fillna(df['price'])
-
-                # Other columns: forward fill then backward fill
-                for col in df.columns:
-                    if col not in rsi_columns + osc_columns + zscore_columns + ma_columns:
-                        df[col] = df[col].ffill().bfill().fillna(0)
-
-                return df
-
-            def _calculate_data_quality(self, df):
-                """Calculate comprehensive data quality score"""
-                quality_factors = []
-
-                # Completeness factor (penalize excessive zeros/NaNs)
-                numeric_cols = df.select_dtypes(include=[np.number]).columns
-                completeness = 1 - (df[numeric_cols] == 0).sum(axis=1) / len(numeric_cols)
-                quality_factors.append(completeness)
-
-                # Consistency factor (check for outliers in key metrics)
-                key_metrics = ['rsi latest', 'rsi weekly', 'osc latest', 'osc weekly']
-                for metric in key_metrics:
-                    if metric in df.columns:
-                        z_scores = np.abs(stats.zscore(df[metric].fillna(0)))
-                        consistency = np.clip(1 - z_scores / 5, 0, 1)  # Penalize extreme outliers
-                        quality_factors.append(consistency)
-
-                # Average all quality factors
-                return np.mean(quality_factors, axis=0)
-
-            def detect_market_regime(self, df):
-                """Advanced regime detection using multiple indicators"""
-                # Calculate aggregate market indicators
-                avg_rsi = df['rsi latest'].mean()
-                avg_osc = df['osc latest'].mean()
-                volatility_regime = df['dev20 latest'].mean() / df['price'].mean()
-
-                # Cross-timeframe momentum consistency
-                momentum_consistency = np.corrcoef(df['osc latest'], df['osc weekly'])[0, 1]
-
-                # Regime classification with confidence score
-                if avg_rsi < 35 and avg_osc < -40 and volatility_regime > 0.02:
-                    regime = "CRISIS"
-                    confidence = 0.9
-                elif avg_rsi < 45 and avg_osc < -20 and momentum_consistency > 0.7:
-                    regime = "BEAR_TREND"
-                    confidence = 0.8
-                elif avg_rsi > 65 and avg_osc > 30 and volatility_regime < 0.015:
-                    regime = "BULL_EUPHORIA"
-                    confidence = 0.85
-                elif avg_rsi > 55 and avg_osc > 10 and momentum_consistency > 0.6:
-                    regime = "BULL_TREND"
-                    confidence = 0.75
-                else:
-                    regime = "NEUTRAL_RANGE"
-                    confidence = 0.6
-
-                self.regime_indicators = {
-                    'regime': regime,
-                    'confidence': confidence,
-                    'avg_rsi': avg_rsi,
-                    'avg_osc': avg_osc,
-                    'volatility': volatility_regime,
-                    'momentum_consistency': momentum_consistency
-                }
-
-                return regime, confidence
-
-            def calculate_statistical_anomaly_score(self, df):
-                """Identify statistical anomalies across multiple dimensions"""
-                anomaly_components = []
-
-                # 1. Multi-timeframe RSI divergence
-                rsi_divergence = np.abs(df['rsi latest'] - df['rsi weekly']) / (df['rsi latest'] + df['rsi weekly'] + 1e-6)
-                rsi_anomaly = np.where((df['rsi latest'] < 30) & (df['rsi weekly'] < 35) & (rsi_divergence < 0.2),
-                                    3.0 - (df['rsi latest'] + df['rsi weekly']) / 20, 0)
-                anomaly_components.append(rsi_anomaly)
-
-                # 2. Oscillator cascade effect (multiple timeframes aligned)
-                osc_cascade = np.where((df['osc latest'] < -70) & (df['osc weekly'] < -60) &
-                                    (df['9ema osc latest'] < df['21ema osc latest']),
-                                    2.5 + np.abs(df['osc latest'] + df['osc weekly']) / 100, 0)
-                anomaly_components.append(osc_cascade)
-
-                # 3. Z-score statistical significance
-                zscore_significance = np.where((df['zscore latest'] < -2.0) & (df['zscore weekly'] < -1.5),
-                                            np.minimum(np.abs(df['zscore latest']) + np.abs(df['zscore weekly']), 5.0), 0)
-                anomaly_components.append(zscore_significance)
-
-                # Combine anomaly scores
-                df['anomaly_score'] = np.sum(anomaly_components, axis=0)
-                return df
-
-            def calculate_momentum_score(self, df):
-                """Calculate momentum convergence score"""
-                momentum_score = (
-                    (df['rsi latest'] < 40).astype(int) * 1.5 +
-                    (df['rsi weekly'] < 45).astype(int) * 1.0 +
-                    (df['osc latest'] < -50).astype(int) * 1.2 +
-                    (df['osc weekly'] < -40).astype(int) * 0.8
-                )
-                df['momentum_score'] = momentum_score
-                return df
-
-            def calculate_risk_adjusted_score(self, df):
-                """Calculate risk-adjusted score using volatility and z-scores"""
-                df['risk_score'] = np.where(
-                    (df['dev20 latest'] / df['price'] < 0.015) & (np.abs(df['zscore latest']) < 2.0),
-                    2.0,
-                    np.where((df['dev20 latest'] / df['price'] < 0.03) & (np.abs(df['zscore latest']) < 3.0), 1.0, 0.5)
-                )
-                return df
-
-            def calculate_composite_score(self, df):
-                """Combine all factors into a composite score"""
-                # Dynamic factor weights based on regime
-                regime, _ = self.detect_market_regime(df)
-                if regime == "CRISIS":
-                    self.factor_weights = {'anomaly': 0.4, 'momentum': 0.2, 'risk_adjusted': 0.2, 'consistency': 0.1, 'quality': 0.1}
-                elif regime == "BEAR_TREND":
-                    self.factor_weights = {'anomaly': 0.3, 'momentum': 0.3, 'risk_adjusted': 0.2, 'consistency': 0.1, 'quality': 0.1}
-                else:
-                    self.factor_weights = {'anomaly': 0.25, 'momentum': 0.25, 'risk_adjusted': 0.2, 'consistency': 0.15, 'quality': 0.15}
-
-                # Calculate consistency score
-                df['consistency_score'] = np.where(
-                    np.abs(df['rsi latest'] - df['rsi weekly']) < 10,
-                    2.0,
-                    np.where(np.abs(df['rsi latest'] - df['rsi weekly']) < 20, 1.0, 0.5)
-                )
-
-                # Normalize scores
-                scaler = StandardScaler()
-                score_columns = ['anomaly_score', 'momentum_score', 'risk_score', 'consistency_score', 'data_quality_score']
-                normalized_scores = scaler.fit_transform(df[score_columns])
-
-                # Apply weights
-                df['composite_score'] = np.sum(normalized_scores * list(self.factor_weights.values()), axis=1)
-
-                return df
-
-            def allocate_portfolio(self, df, sip_amount):
-                """Allocate portfolio based on composite scores"""
-                df = df.sort_values('composite_score', ascending=False)
-                total_score = df['composite_score'].sum()
-                if total_score > 0:
-                    df['weightage'] = df['composite_score'] / total_score
-                else:
-                    df['weightage'] = 1 / len(df) if len(df) > 0 else 0
-                
-                # The parent class's _allocate_portfolio handles capping and unit calculation
-                return df
-
         try:
-            analyzer = QuantitativeETFAnalyzer()
+            analyzer = _CL1QuantitativeETFAnalyzer()
             df_prepared = analyzer.validate_and_prepare_data(df.copy())
             if df_prepared.empty:
                 return pd.DataFrame()
@@ -528,406 +527,406 @@ class CL1Strategy(BaseStrategy):
 # CL_v2 Strategy Implementation
 # =====================================
 
+class _CL2QuantitativeETFAnalyzer:
+    """
+    Advanced Quantitative ETF Analysis Engine
+    Implements sophisticated multi-factor models for ETF selection based on:
+    1. Statistical Anomaly Detection
+    2. Multi-Timeframe Momentum Convergence
+    3. Volatility-Adjusted Risk Assessment
+    4. Cross-Asset Correlation Analysis
+    5. Regime-Aware Factor Rotation
+    """
+    def __init__(self):
+        self.factor_weights = {}
+        self.regime_indicators = {}
+        self.quality_threshold = 0.6
+
+    def validate_and_prepare_data(self, df):
+        required_columns = ['symbol', 'price', 'rsi latest', 'rsi weekly',
+                           'osc latest', 'osc weekly', '9ema osc latest', '9ema osc weekly',
+                           '21ema osc latest', '21ema osc weekly', 'zscore latest', 'zscore weekly',
+                           'date', 'ma90 latest', 'ma200 latest', 'ma90 weekly', 'ma200 weekly',
+                           'dev20 latest', 'dev20 weekly']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            raise ValueError(f"Missing required columns: {missing_columns}")
+        df = self._intelligent_nan_handling(df)
+        df['data_quality_score'] = self._calculate_data_quality(df)
+        return df
+
+    def _intelligent_nan_handling(self, df):
+        rsi_columns = ['rsi latest', 'rsi weekly']
+        for col in rsi_columns:
+            df[col] = df[col].fillna(50)
+        osc_columns = [col for col in df.columns if 'osc' in col.lower()]
+        for col in osc_columns:
+            df[col] = df[col].fillna(df[col].median())
+        zscore_columns = [col for col in df.columns if 'zscore' in col.lower()]
+        for col in zscore_columns:
+            df[col] = df[col].fillna(0)
+        ma_columns = [col for col in df.columns if col.startswith('ma')]
+        for col in ma_columns:
+            df[col] = df[col].fillna(df['price'])
+        for col in df.columns:
+            if col not in rsi_columns + osc_columns + zscore_columns + ma_columns:
+                df[col] = df[col].ffill().bfill().fillna(0)
+        return df
+
+    def _calculate_data_quality(self, df):
+        quality_factors = []
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        completeness = 1 - (df[numeric_cols] == 0).sum(axis=1) / len(numeric_cols)
+        quality_factors.append(completeness)
+        key_metrics = ['rsi latest', 'rsi weekly', 'osc latest', 'osc weekly']
+        for metric in key_metrics:
+            if metric in df.columns:
+                z_scores = np.abs(stats.zscore(df[metric].fillna(0)))
+                consistency = np.clip(1 - z_scores / 5, 0, 1)
+                quality_factors.append(consistency)
+        return np.mean(quality_factors, axis=0)
+
+    def detect_market_regime(self, df):
+        avg_rsi = df['rsi latest'].mean()
+        avg_osc = df['osc latest'].mean()
+        volatility_regime = df['dev20 latest'].mean() / df['price'].mean()
+        momentum_consistency = np.corrcoef(df['osc latest'], df['osc weekly'])[0, 1]
+        if avg_rsi < 35 and avg_osc < -40 and volatility_regime > 0.02:
+            regime, confidence = "CRISIS", 0.9
+        elif avg_rsi < 45 and avg_osc < -20 and momentum_consistency > 0.7:
+            regime, confidence = "BEAR_TREND", 0.8
+        elif avg_rsi > 65 and avg_osc > 30 and volatility_regime < 0.015:
+            regime, confidence = "BULL_EUPHORIA", 0.85
+        elif avg_rsi > 55 and avg_osc > 10 and momentum_consistency > 0.6:
+            regime, confidence = "BULL_TREND", 0.75
+        else:
+            regime, confidence = "NEUTRAL_RANGE", 0.6
+        self.regime_indicators = {
+            'regime': regime,
+            'confidence': confidence,
+            'avg_rsi': avg_rsi,
+            'avg_osc': avg_osc,
+            'volatility': volatility_regime,
+            'momentum_consistency': momentum_consistency
+        }
+        return regime, confidence
+
+    def calculate_enhanced_technical_multipliers(self, df):
+        wrsi = df['rsi weekly'] * 0.55 + df['rsi latest'] * 0.45
+        base_mult = np.select(
+            [wrsi < 30, wrsi < 50, wrsi < 70],
+            [3.5 - (wrsi / 30) * 1.5, 2 - (wrsi - 30) / 20, 1 - (wrsi - 50) / 20],
+            default=0.3 + (100 - wrsi) / 30,
+        )
+        consistency = np.where(np.abs(df['rsi latest'] - df['rsi weekly']) < 10, 1.1, 1.0)
+        df['rsi_mult'] = base_mult * consistency
+
+        ow, ol = df['osc weekly'], df['osc latest']
+        df['osc_mult'] = np.select(
+            [
+                (ow < -80) & (ol < -95), ow < -80,
+                (ow < -70) & (ol < -90), ow < -70,
+                (ow < -60) & (ol < -85), (ow < -50) & (ol < -80),
+                (ow < -40) & (ol < -70), (ow < -30) & (ol < -60),
+                (ow < -20) & (ol < -50), (ow < -10) & (ol < -40),
+                (ow < 0) & (ol < -30), ol < -95,
+                (ol > 80) & (ow > 70),
+            ],
+            [3.5, 3.2, 2.8, 2.5, 2.3, 2.0, 1.8, 1.6, 1.5, 1.4, 1.3, 2.0, 0.2],
+            default=0.1,
+        )
+
+        for col_w, col_d, target in [
+            ('9ema osc weekly', '9ema osc latest', 'ema9_osc_mult'),
+            ('21ema osc weekly', '21ema osc latest', 'ema21_osc_mult'),
+        ]:
+            w, d = df[col_w], df[col_d]
+            df[target] = np.select(
+                [
+                    (w < -80) & (d < -90), w < -80,
+                    (w < -70) & (d < -80), w < -70,
+                    (w < -60) & (d < -70), (w < -50) & (d < -60),
+                    (w < -40) & (d < -50), (w < -30) & (d < -40),
+                    d < -90,
+                ],
+                [3.5, 3.2, 2.8, 2.5, 2.3, 2.0, 1.8, 1.6, 2.0],
+                default=0.1,
+            )
+
+        zw, zd = df['zscore weekly'], df['zscore latest']
+        df['zscore_mult'] = np.select(
+            [
+                (zw < -2.5) & (zd < -3), zw < -2.5,
+                (zw < -2) & (zd < -2.5), (zw < -1.5) & (zd < -2),
+                (zw < -1.2) & (zd < -1.8), (zw < -1) & (zd < -1.5),
+                zd < -3,
+            ],
+            [3.5, 3.2, 2.8, 2.5, 2.2, 2.0, 2.0],
+            default=0.1,
+        )
+
+        e9l, e21l, ol_ = df['9ema osc latest'], df['21ema osc latest'], df['osc latest']
+        e9w, e21w, ow_ = df['9ema osc weekly'], df['21ema osc weekly'], df['osc weekly']
+        df['trend_strength'] = np.select(
+            [
+                (e9l > e21l) & (ol_ < -50),
+                (e9w > e21w) & (ow_ < -50),
+                (e9l > 0) & (e21l > 0) & (ol_ > 0),
+            ],
+            [1.3, 1.5, 0.7],
+            default=1.0,
+        )
+
+        eps = 1e-6
+        s90l = (df['ma90 latest'] - df['price']) * 100 / df['ma90 latest'].replace(0, eps)
+        s200l = (df['ma200 latest'] - df['price']) * 100 / df['ma200 latest'].replace(0, eps)
+        s90w = (df['ma90 weekly'] - df['price']) * 100 / df['ma90 weekly'].replace(0, eps)
+        s200w = (df['ma200 weekly'] - df['price']) * 100 / df['ma200 weekly'].replace(0, eps)
+        ws90 = s90l * 0.60 + s90w * 0.40
+        ws200 = s200l * 0.60 + s200w * 0.40
+        df['spread_mult'] = np.select(
+            [
+                (ws90 > 1.5) & (ws200 > 1.5) & (df['rsi latest'] < 40),
+                (ws90 < -1.5) & (ws200 < -1.5) & (df['rsi latest'] > 70),
+            ],
+            [3.5, 0.5],
+            default=1.0,
+        )
+
+        dev_l = 2.0 * df['dev20 latest']
+        dev_w = 2.0 * df['dev20 weekly']
+        wlower = (df['ma90 latest'] - dev_l) * 0.60 + (df['ma90 weekly'] - dev_w) * 0.40
+        wupper = (df['ma90 latest'] + dev_l) * 0.60 + (df['ma90 weekly'] + dev_w) * 0.40
+        df['bollinger_mult'] = np.select(
+            [
+                (df['price'] < wlower) & (df['rsi latest'] < 40),
+                (df['price'] > wupper) & (df['rsi latest'] > 70),
+            ],
+            [3.0, 0.5],
+            default=1.0,
+        )
+        return df
+
+    def calculate_momentum_convergence(self, df):
+        ema_9_21_latest = df['9ema osc latest'] - df['21ema osc latest']
+        ema_9_21_weekly = df['9ema osc weekly'] - df['21ema osc weekly']
+        momentum_strength = np.abs(ema_9_21_latest) + np.abs(ema_9_21_weekly)
+        convergence_quality = np.where(
+            (np.sign(ema_9_21_latest) == np.sign(ema_9_21_weekly)) & (momentum_strength > 10),
+            np.minimum(momentum_strength / 50, 2.0), 0
+        )
+        trend_exhaustion = np.where(
+            ((df['osc latest'] < -90) & (ema_9_21_latest > 0)) |
+            ((df['osc weekly'] < -80) & (ema_9_21_weekly > 0)),
+            2.0 + np.abs(df['osc latest']) / 100, 0
+        )
+        momentum_persistence = np.where(
+            (convergence_quality > 0) & (trend_exhaustion > 0),
+            np.minimum(convergence_quality + trend_exhaustion, 3.0),
+            convergence_quality + trend_exhaustion
+        )
+        df['momentum_score'] = momentum_persistence
+        return df
+
+    def calculate_risk_adjusted_attractiveness(self, df):
+        vol_latest = df['dev20 latest'] / (df['price'] + 1e-6)
+        vol_weekly = df['dev20 weekly'] / (df['price'] + 1e-6)
+        avg_volatility = (vol_latest + vol_weekly) / 2
+        risk_adj_factor = np.where(
+            avg_volatility < 0.01, 0.8,
+            np.where(avg_volatility < 0.03, 1.2,
+                    np.where(avg_volatility < 0.05, 1.0,
+                            np.maximum(0.5, 1 - (avg_volatility - 0.05) * 10)))
+        )
+        ma_spread_90 = (df['ma90 latest'] - df['price']) / (df['ma90 latest'] + 1e-6)
+        ma_spread_200 = (df['ma200 latest'] - df['price']) / (df['ma200 latest'] + 1e-6)
+        mean_reversion_prob = np.where(
+            (ma_spread_90 > 0.1) & (ma_spread_200 > 0.15) & (df['rsi latest'] < 40),
+            np.minimum((ma_spread_90 + ma_spread_200) * 5, 2.5), 0
+        )
+        bb_basis = (df['ma90 latest'] + df['ma200 latest']) / 2
+        bb_lower = bb_basis - 2 * df['dev20 latest']
+        bb_position = (df['price'] - bb_lower) / (bb_basis - bb_lower + 1e-6)
+        bb_score = np.where(
+            bb_position < 0.2, 2.0,
+            np.where(bb_position < 0.4, 1.5,
+                    np.where(bb_position < 0.6, 1.0, 0.5))
+        )
+        df['risk_adjusted_score'] = (mean_reversion_prob + bb_score) * risk_adj_factor
+        return df
+
+    def calculate_adaptive_factor_weights(self, regime, confidence):
+        base_weights = {'anomaly': 0.25, 'momentum': 0.20, 'risk_adjusted': 0.25, 'quality': 0.15, 'consistency': 0.15}
+        if regime == "CRISIS":
+            self.factor_weights = {'anomaly': 0.35, 'momentum': 0.15, 'risk_adjusted': 0.30, 'quality': 0.15, 'consistency': 0.05}
+        elif regime == "BEAR_TREND":
+            self.factor_weights = {'anomaly': 0.25, 'momentum': 0.30, 'risk_adjusted': 0.25, 'quality': 0.10, 'consistency': 0.10}
+        elif regime in ["BULL_TREND", "BULL_EUPHORIA"]:
+            self.factor_weights = {'anomaly': 0.15, 'momentum': 0.20, 'risk_adjusted': 0.20, 'quality': 0.25, 'consistency': 0.20}
+        else:
+            self.factor_weights = base_weights
+        confidence_factor = 0.7 + 0.3 * confidence
+        for k in self.factor_weights:
+            self.factor_weights[k] *= confidence_factor
+
+    def calculate_consistency_score(self, df):
+        latest_weekly_corr = []
+        metrics_pairs = [('rsi latest', 'rsi weekly'), ('osc latest', 'osc weekly'),
+                        ('9ema osc latest', '9ema osc weekly'), ('21ema osc latest', '21ema osc weekly')]
+        for latest_col, weekly_col in metrics_pairs:
+            if len(df) > 1:
+                corr = np.corrcoef(df[latest_col], df[weekly_col])[0, 1]
+                latest_weekly_corr.append(max(0, corr))
+        avg_correlation = np.mean(latest_weekly_corr) if latest_weekly_corr else 0
+        oversold_signals = (
+            (df['rsi latest'] < 35).astype(int) +
+            (df['osc latest'] < -60).astype(int) +
+            (df['zscore latest'] < -1.5).astype(int) +
+            (df['rsi weekly'] < 40).astype(int) +
+            (df['osc weekly'] < -50).astype(int)
+        )
+        signal_coherence = oversold_signals / 5
+        temporal_stability = 1 - np.minimum(np.abs(df['rsi latest'] - df['rsi weekly']) / 100, 1)
+        df['consistency_score'] = avg_correlation * 0.4 + signal_coherence * 0.4 + temporal_stability * 0.2
+        return df
+
+    def calculate_original_base_score(self, df):
+        original_weights = {'rsi': 0.15, 'osc': 0.20, 'ema_osc': 0.15, '21ema_osc': 0.10, 'zscore': 0.15, 'spread': 0.15, 'bollinger': 0.10}
+        df['original_base_mult'] = (
+            df['rsi_mult'] * original_weights['rsi'] +
+            df['osc_mult'] * original_weights['osc'] +
+            df['ema9_osc_mult'] * original_weights['ema_osc'] +
+            df['ema21_osc_mult'] * original_weights['21ema_osc'] +
+            df['zscore_mult'] * original_weights['zscore'] +
+            df['spread_mult'] * original_weights['spread'] +
+            df['bollinger_mult'] * original_weights['bollinger']
+        )
+        df['original_final_mult'] = df['original_base_mult'] * df['trend_strength']
+        df['weekly_oversold_boost'] = df['osc weekly'].apply(lambda x: 1.2 if x < -20 else 0.8)
+        df['original_final_mult'] = df['original_final_mult'] * df['weekly_oversold_boost']
+        return df
+
+    def generate_hybrid_composite_score(self, df):
+        if 'momentum_score' not in df.columns: df['momentum_score'] = 1.0
+        if 'risk_adjusted_score' not in df.columns: df['risk_adjusted_score'] = 1.0
+        if 'consistency_score' not in df.columns: df['consistency_score'] = 1.0
+        max_original = df['original_final_mult'].max()
+        df['normalized_original'] = (df['original_final_mult'] / max_original) * 5.0 if max_original > 0 else 0
+        df['composite_score'] = (
+            df['normalized_original'] * 0.70 +
+            (df['momentum_score'] + df['risk_adjusted_score'] + df['consistency_score']) / 3 * 1.5 * 0.30
+        )
+        return df
+
+    def intelligent_portfolio_construction(self, df, concentration_limit=0.10):
+        selected_etfs = df.sort_values('composite_score', ascending=False).reset_index(drop=True)
+        selected_etfs = self._calculate_dynamic_weights(selected_etfs, concentration_limit)
+        return selected_etfs
+
+    def _calculate_dynamic_weights(self, df, max_weight=0.10):
+        n_etfs = len(df)
+        equal_weight = 1.0 / n_etfs
+        min_weight = 0.01 # Fixed minimum weight
+        max_weight_limit = 0.10 # Fixed maximum weight
+        scores = df['composite_score'].values
+        if n_etfs == 1:
+            df['tier_multiplier'] = [1.0]
+        else:
+            percentile_80 = np.percentile(scores, 80)
+            percentile_60 = np.percentile(scores, 60)
+            percentile_40 = np.percentile(scores, 40)
+            percentile_20 = np.percentile(scores, 20)
+            tier_multipliers = []
+            for score in scores:
+                if score >= percentile_80:
+                    multiplier = 2.5 + (score - percentile_80) / max(scores.max() - percentile_80, 1e-6) * 0.5
+                elif score >= percentile_60:
+                    multiplier = 1.8 + (score - percentile_60) / max(percentile_80 - percentile_60, 1e-6) * 0.7
+                elif score >= percentile_40:
+                    multiplier = 1.2 + (score - percentile_40) / max(percentile_60 - percentile_40, 1e-6) * 0.6
+                elif score >= percentile_20:
+                    multiplier = 0.8 + (score - percentile_20) / max(percentile_40 - percentile_20, 1e-6) * 0.4
+                else:
+                    multiplier = 0.5 + (score - scores.min()) / max(percentile_20 - scores.min(), 1e-6) * 0.3
+                tier_multipliers.append(multiplier)
+            df['tier_multiplier'] = tier_multipliers
+        raw_weights = np.array(df['tier_multiplier']) * equal_weight
+        df['raw_weight'] = raw_weights / raw_weights.sum() if raw_weights.sum() > 0 else raw_weights
+        df = self._apply_concentration_limits(df, max_weight_limit, min_weight)
+        df['optimized_weight'] = df['final_weight']
+        df['weightage_pct'] = df['optimized_weight'] * 100
+        return df
+
+    def _apply_concentration_limits(self, df, max_weight, min_weight):
+        max_iterations = 20
+        iteration = 0
+        df['final_weight'] = df['raw_weight'].copy()
+        while iteration < max_iterations:
+            over_weight_mask = df['final_weight'] > max_weight
+            under_weight_mask = df['final_weight'] < min_weight
+            if not (over_weight_mask.any() or under_weight_mask.any()):
+                break
+            if under_weight_mask.any():
+                shortfall = (min_weight - df.loc[under_weight_mask, 'final_weight']).sum()
+                df.loc[under_weight_mask, 'final_weight'] = min_weight
+                eligible_for_reduction = df['final_weight'] > min_weight
+                if eligible_for_reduction.sum() > 0:
+                    reduction_capacity = (df.loc[eligible_for_reduction, 'final_weight'] - min_weight).sum()
+                    if reduction_capacity > shortfall:
+                        excess_weights = df.loc[eligible_for_reduction, 'final_weight'] - min_weight
+                        reduction_factors = excess_weights / excess_weights.sum() * shortfall
+                        df.loc[eligible_for_reduction, 'final_weight'] -= reduction_factors
+            if over_weight_mask.any():
+                excess = (df.loc[over_weight_mask, 'final_weight'] - max_weight).sum()
+                df.loc[over_weight_mask, 'final_weight'] = max_weight
+                eligible_for_increase = (df['final_weight'] < max_weight) & (df['final_weight'] >= min_weight)
+                if eligible_for_increase.sum() > 0:
+                    available_capacity = max_weight - df.loc[eligible_for_increase, 'final_weight']
+                    score_weights = df.loc[eligible_for_increase, 'composite_score'] / df.loc[eligible_for_increase, 'composite_score'].sum()
+                    capacity_weights = available_capacity / available_capacity.sum()
+                    allocation_factors = (score_weights * 0.5 + capacity_weights * 0.5)
+                    allocation_factors = allocation_factors / allocation_factors.sum()
+                    additional_weights = allocation_factors * excess
+                    new_weights = df.loc[eligible_for_increase, 'final_weight'] + additional_weights
+                    new_weights = np.minimum(new_weights, max_weight)
+                    df.loc[eligible_for_increase, 'final_weight'] = new_weights
+            iteration += 1
+        total = df['final_weight'].sum()
+        if total > 0:
+            df['final_weight'] = df['final_weight'] / total
+        return df
+
+    def _allocate_remaining_cash(self, portfolio_df, remaining_cash):
+        allocation_priority = portfolio_df.sort_values('composite_score', ascending=False)
+        max_iterations = 100
+        iteration = 0
+        while remaining_cash > 0 and iteration < max_iterations:
+            allocated = False
+            for idx in allocation_priority.index:
+                etf_price = portfolio_df.at[idx, 'price']
+                total_value = (portfolio_df['units'] * portfolio_df['price']).sum()
+                if total_value == 0:
+                    current_weight = 0
+                else:
+                    current_weight = (portfolio_df.at[idx, 'units'] * etf_price) / total_value
+                if remaining_cash >= etf_price and current_weight < 0.12:
+                    portfolio_df.at[idx, 'units'] += 1
+                    remaining_cash -= etf_price
+                    allocated = True
+                    break
+            iteration += 1
+            if not allocated:
+                break
+        return portfolio_df
+
 class CL2Strategy(BaseStrategy):
     def generate_portfolio(self, df: pd.DataFrame, sip_amount: float = 100000.0) -> pd.DataFrame:
         """
         CL_v2 Strategy: Hybrid Pragati + Advanced Enhancements
         Analyzes all entries and allocates with intelligent tiered weighting.
         """
-        class QuantitativeETFAnalyzer:
-            """
-            Advanced Quantitative ETF Analysis Engine
-            Implements sophisticated multi-factor models for ETF selection based on:
-            1. Statistical Anomaly Detection
-            2. Multi-Timeframe Momentum Convergence
-            3. Volatility-Adjusted Risk Assessment
-            4. Cross-Asset Correlation Analysis
-            5. Regime-Aware Factor Rotation
-            """
-            def __init__(self):
-                self.factor_weights = {}
-                self.regime_indicators = {}
-                self.quality_threshold = 0.6
-
-            def validate_and_prepare_data(self, df):
-                required_columns = ['symbol', 'price', 'rsi latest', 'rsi weekly',
-                                   'osc latest', 'osc weekly', '9ema osc latest', '9ema osc weekly',
-                                   '21ema osc latest', '21ema osc weekly', 'zscore latest', 'zscore weekly',
-                                   'date', 'ma90 latest', 'ma200 latest', 'ma90 weekly', 'ma200 weekly',
-                                   'dev20 latest', 'dev20 weekly']
-                missing_columns = [col for col in required_columns if col not in df.columns]
-                if missing_columns:
-                    raise ValueError(f"Missing required columns: {missing_columns}")
-                df = self._intelligent_nan_handling(df)
-                df['data_quality_score'] = self._calculate_data_quality(df)
-                return df
-
-            def _intelligent_nan_handling(self, df):
-                rsi_columns = ['rsi latest', 'rsi weekly']
-                for col in rsi_columns:
-                    df[col] = df[col].fillna(50)
-                osc_columns = [col for col in df.columns if 'osc' in col.lower()]
-                for col in osc_columns:
-                    df[col] = df[col].fillna(df[col].median())
-                zscore_columns = [col for col in df.columns if 'zscore' in col.lower()]
-                for col in zscore_columns:
-                    df[col] = df[col].fillna(0)
-                ma_columns = [col for col in df.columns if col.startswith('ma')]
-                for col in ma_columns:
-                    df[col] = df[col].fillna(df['price'])
-                for col in df.columns:
-                    if col not in rsi_columns + osc_columns + zscore_columns + ma_columns:
-                        df[col] = df[col].ffill().bfill().fillna(0)
-                return df
-
-            def _calculate_data_quality(self, df):
-                quality_factors = []
-                numeric_cols = df.select_dtypes(include=[np.number]).columns
-                completeness = 1 - (df[numeric_cols] == 0).sum(axis=1) / len(numeric_cols)
-                quality_factors.append(completeness)
-                key_metrics = ['rsi latest', 'rsi weekly', 'osc latest', 'osc weekly']
-                for metric in key_metrics:
-                    if metric in df.columns:
-                        z_scores = np.abs(stats.zscore(df[metric].fillna(0)))
-                        consistency = np.clip(1 - z_scores / 5, 0, 1)
-                        quality_factors.append(consistency)
-                return np.mean(quality_factors, axis=0)
-
-            def detect_market_regime(self, df):
-                avg_rsi = df['rsi latest'].mean()
-                avg_osc = df['osc latest'].mean()
-                volatility_regime = df['dev20 latest'].mean() / df['price'].mean()
-                momentum_consistency = np.corrcoef(df['osc latest'], df['osc weekly'])[0, 1]
-                if avg_rsi < 35 and avg_osc < -40 and volatility_regime > 0.02:
-                    regime, confidence = "CRISIS", 0.9
-                elif avg_rsi < 45 and avg_osc < -20 and momentum_consistency > 0.7:
-                    regime, confidence = "BEAR_TREND", 0.8
-                elif avg_rsi > 65 and avg_osc > 30 and volatility_regime < 0.015:
-                    regime, confidence = "BULL_EUPHORIA", 0.85
-                elif avg_rsi > 55 and avg_osc > 10 and momentum_consistency > 0.6:
-                    regime, confidence = "BULL_TREND", 0.75
-                else:
-                    regime, confidence = "NEUTRAL_RANGE", 0.6
-                self.regime_indicators = {
-                    'regime': regime,
-                    'confidence': confidence,
-                    'avg_rsi': avg_rsi,
-                    'avg_osc': avg_osc,
-                    'volatility': volatility_regime,
-                    'momentum_consistency': momentum_consistency
-                }
-                return regime, confidence
-
-            def calculate_enhanced_technical_multipliers(self, df):
-                wrsi = df['rsi weekly'] * 0.55 + df['rsi latest'] * 0.45
-                base_mult = np.select(
-                    [wrsi < 30, wrsi < 50, wrsi < 70],
-                    [3.5 - (wrsi / 30) * 1.5, 2 - (wrsi - 30) / 20, 1 - (wrsi - 50) / 20],
-                    default=0.3 + (100 - wrsi) / 30,
-                )
-                consistency = np.where(np.abs(df['rsi latest'] - df['rsi weekly']) < 10, 1.1, 1.0)
-                df['rsi_mult'] = base_mult * consistency
-
-                ow, ol = df['osc weekly'], df['osc latest']
-                df['osc_mult'] = np.select(
-                    [
-                        (ow < -80) & (ol < -95), ow < -80,
-                        (ow < -70) & (ol < -90), ow < -70,
-                        (ow < -60) & (ol < -85), (ow < -50) & (ol < -80),
-                        (ow < -40) & (ol < -70), (ow < -30) & (ol < -60),
-                        (ow < -20) & (ol < -50), (ow < -10) & (ol < -40),
-                        (ow < 0) & (ol < -30), ol < -95,
-                        (ol > 80) & (ow > 70),
-                    ],
-                    [3.5, 3.2, 2.8, 2.5, 2.3, 2.0, 1.8, 1.6, 1.5, 1.4, 1.3, 2.0, 0.2],
-                    default=0.1,
-                )
-
-                for col_w, col_d, target in [
-                    ('9ema osc weekly', '9ema osc latest', 'ema9_osc_mult'),
-                    ('21ema osc weekly', '21ema osc latest', 'ema21_osc_mult'),
-                ]:
-                    w, d = df[col_w], df[col_d]
-                    df[target] = np.select(
-                        [
-                            (w < -80) & (d < -90), w < -80,
-                            (w < -70) & (d < -80), w < -70,
-                            (w < -60) & (d < -70), (w < -50) & (d < -60),
-                            (w < -40) & (d < -50), (w < -30) & (d < -40),
-                            d < -90,
-                        ],
-                        [3.5, 3.2, 2.8, 2.5, 2.3, 2.0, 1.8, 1.6, 2.0],
-                        default=0.1,
-                    )
-
-                zw, zd = df['zscore weekly'], df['zscore latest']
-                df['zscore_mult'] = np.select(
-                    [
-                        (zw < -2.5) & (zd < -3), zw < -2.5,
-                        (zw < -2) & (zd < -2.5), (zw < -1.5) & (zd < -2),
-                        (zw < -1.2) & (zd < -1.8), (zw < -1) & (zd < -1.5),
-                        zd < -3,
-                    ],
-                    [3.5, 3.2, 2.8, 2.5, 2.2, 2.0, 2.0],
-                    default=0.1,
-                )
-
-                e9l, e21l, ol_ = df['9ema osc latest'], df['21ema osc latest'], df['osc latest']
-                e9w, e21w, ow_ = df['9ema osc weekly'], df['21ema osc weekly'], df['osc weekly']
-                df['trend_strength'] = np.select(
-                    [
-                        (e9l > e21l) & (ol_ < -50),
-                        (e9w > e21w) & (ow_ < -50),
-                        (e9l > 0) & (e21l > 0) & (ol_ > 0),
-                    ],
-                    [1.3, 1.5, 0.7],
-                    default=1.0,
-                )
-
-                eps = 1e-6
-                s90l = (df['ma90 latest'] - df['price']) * 100 / df['ma90 latest'].replace(0, eps)
-                s200l = (df['ma200 latest'] - df['price']) * 100 / df['ma200 latest'].replace(0, eps)
-                s90w = (df['ma90 weekly'] - df['price']) * 100 / df['ma90 weekly'].replace(0, eps)
-                s200w = (df['ma200 weekly'] - df['price']) * 100 / df['ma200 weekly'].replace(0, eps)
-                ws90 = s90l * 0.60 + s90w * 0.40
-                ws200 = s200l * 0.60 + s200w * 0.40
-                df['spread_mult'] = np.select(
-                    [
-                        (ws90 > 1.5) & (ws200 > 1.5) & (df['rsi latest'] < 40),
-                        (ws90 < -1.5) & (ws200 < -1.5) & (df['rsi latest'] > 70),
-                    ],
-                    [3.5, 0.5],
-                    default=1.0,
-                )
-
-                dev_l = 2.0 * df['dev20 latest']
-                dev_w = 2.0 * df['dev20 weekly']
-                wlower = (df['ma90 latest'] - dev_l) * 0.60 + (df['ma90 weekly'] - dev_w) * 0.40
-                wupper = (df['ma90 latest'] + dev_l) * 0.60 + (df['ma90 weekly'] + dev_w) * 0.40
-                df['bollinger_mult'] = np.select(
-                    [
-                        (df['price'] < wlower) & (df['rsi latest'] < 40),
-                        (df['price'] > wupper) & (df['rsi latest'] > 70),
-                    ],
-                    [3.0, 0.5],
-                    default=1.0,
-                )
-                return df
-
-            def calculate_momentum_convergence(self, df):
-                ema_9_21_latest = df['9ema osc latest'] - df['21ema osc latest']
-                ema_9_21_weekly = df['9ema osc weekly'] - df['21ema osc weekly']
-                momentum_strength = np.abs(ema_9_21_latest) + np.abs(ema_9_21_weekly)
-                convergence_quality = np.where(
-                    (np.sign(ema_9_21_latest) == np.sign(ema_9_21_weekly)) & (momentum_strength > 10),
-                    np.minimum(momentum_strength / 50, 2.0), 0
-                )
-                trend_exhaustion = np.where(
-                    ((df['osc latest'] < -90) & (ema_9_21_latest > 0)) |
-                    ((df['osc weekly'] < -80) & (ema_9_21_weekly > 0)),
-                    2.0 + np.abs(df['osc latest']) / 100, 0
-                )
-                momentum_persistence = np.where(
-                    (convergence_quality > 0) & (trend_exhaustion > 0),
-                    np.minimum(convergence_quality + trend_exhaustion, 3.0),
-                    convergence_quality + trend_exhaustion
-                )
-                df['momentum_score'] = momentum_persistence
-                return df
-
-            def calculate_risk_adjusted_attractiveness(self, df):
-                vol_latest = df['dev20 latest'] / (df['price'] + 1e-6)
-                vol_weekly = df['dev20 weekly'] / (df['price'] + 1e-6)
-                avg_volatility = (vol_latest + vol_weekly) / 2
-                risk_adj_factor = np.where(
-                    avg_volatility < 0.01, 0.8,
-                    np.where(avg_volatility < 0.03, 1.2,
-                            np.where(avg_volatility < 0.05, 1.0,
-                                    np.maximum(0.5, 1 - (avg_volatility - 0.05) * 10)))
-                )
-                ma_spread_90 = (df['ma90 latest'] - df['price']) / (df['ma90 latest'] + 1e-6)
-                ma_spread_200 = (df['ma200 latest'] - df['price']) / (df['ma200 latest'] + 1e-6)
-                mean_reversion_prob = np.where(
-                    (ma_spread_90 > 0.1) & (ma_spread_200 > 0.15) & (df['rsi latest'] < 40),
-                    np.minimum((ma_spread_90 + ma_spread_200) * 5, 2.5), 0
-                )
-                bb_basis = (df['ma90 latest'] + df['ma200 latest']) / 2
-                bb_lower = bb_basis - 2 * df['dev20 latest']
-                bb_position = (df['price'] - bb_lower) / (bb_basis - bb_lower + 1e-6)
-                bb_score = np.where(
-                    bb_position < 0.2, 2.0,
-                    np.where(bb_position < 0.4, 1.5,
-                            np.where(bb_position < 0.6, 1.0, 0.5))
-                )
-                df['risk_adjusted_score'] = (mean_reversion_prob + bb_score) * risk_adj_factor
-                return df
-
-            def calculate_adaptive_factor_weights(self, regime, confidence):
-                base_weights = {'anomaly': 0.25, 'momentum': 0.20, 'risk_adjusted': 0.25, 'quality': 0.15, 'consistency': 0.15}
-                if regime == "CRISIS":
-                    self.factor_weights = {'anomaly': 0.35, 'momentum': 0.15, 'risk_adjusted': 0.30, 'quality': 0.15, 'consistency': 0.05}
-                elif regime == "BEAR_TREND":
-                    self.factor_weights = {'anomaly': 0.25, 'momentum': 0.30, 'risk_adjusted': 0.25, 'quality': 0.10, 'consistency': 0.10}
-                elif regime in ["BULL_TREND", "BULL_EUPHORIA"]:
-                    self.factor_weights = {'anomaly': 0.15, 'momentum': 0.20, 'risk_adjusted': 0.20, 'quality': 0.25, 'consistency': 0.20}
-                else:
-                    self.factor_weights = base_weights
-                confidence_factor = 0.7 + 0.3 * confidence
-                for k in self.factor_weights:
-                    self.factor_weights[k] *= confidence_factor
-
-            def calculate_consistency_score(self, df):
-                latest_weekly_corr = []
-                metrics_pairs = [('rsi latest', 'rsi weekly'), ('osc latest', 'osc weekly'),
-                                ('9ema osc latest', '9ema osc weekly'), ('21ema osc latest', '21ema osc weekly')]
-                for latest_col, weekly_col in metrics_pairs:
-                    if len(df) > 1:
-                        corr = np.corrcoef(df[latest_col], df[weekly_col])[0, 1]
-                        latest_weekly_corr.append(max(0, corr))
-                avg_correlation = np.mean(latest_weekly_corr) if latest_weekly_corr else 0
-                oversold_signals = (
-                    (df['rsi latest'] < 35).astype(int) +
-                    (df['osc latest'] < -60).astype(int) +
-                    (df['zscore latest'] < -1.5).astype(int) +
-                    (df['rsi weekly'] < 40).astype(int) +
-                    (df['osc weekly'] < -50).astype(int)
-                )
-                signal_coherence = oversold_signals / 5
-                temporal_stability = 1 - np.minimum(np.abs(df['rsi latest'] - df['rsi weekly']) / 100, 1)
-                df['consistency_score'] = avg_correlation * 0.4 + signal_coherence * 0.4 + temporal_stability * 0.2
-                return df
-
-            def calculate_original_base_score(self, df):
-                original_weights = {'rsi': 0.15, 'osc': 0.20, 'ema_osc': 0.15, '21ema_osc': 0.10, 'zscore': 0.15, 'spread': 0.15, 'bollinger': 0.10}
-                df['original_base_mult'] = (
-                    df['rsi_mult'] * original_weights['rsi'] +
-                    df['osc_mult'] * original_weights['osc'] +
-                    df['ema9_osc_mult'] * original_weights['ema_osc'] +
-                    df['ema21_osc_mult'] * original_weights['21ema_osc'] +
-                    df['zscore_mult'] * original_weights['zscore'] +
-                    df['spread_mult'] * original_weights['spread'] +
-                    df['bollinger_mult'] * original_weights['bollinger']
-                )
-                df['original_final_mult'] = df['original_base_mult'] * df['trend_strength']
-                df['weekly_oversold_boost'] = df['osc weekly'].apply(lambda x: 1.2 if x < -20 else 0.8)
-                df['original_final_mult'] = df['original_final_mult'] * df['weekly_oversold_boost']
-                return df
-
-            def generate_hybrid_composite_score(self, df):
-                if 'momentum_score' not in df.columns: df['momentum_score'] = 1.0
-                if 'risk_adjusted_score' not in df.columns: df['risk_adjusted_score'] = 1.0
-                if 'consistency_score' not in df.columns: df['consistency_score'] = 1.0
-                max_original = df['original_final_mult'].max()
-                df['normalized_original'] = (df['original_final_mult'] / max_original) * 5.0 if max_original > 0 else 0
-                df['composite_score'] = (
-                    df['normalized_original'] * 0.70 +
-                    (df['momentum_score'] + df['risk_adjusted_score'] + df['consistency_score']) / 3 * 1.5 * 0.30
-                )
-                return df
-
-            def intelligent_portfolio_construction(self, df, concentration_limit=0.10):
-                selected_etfs = df.sort_values('composite_score', ascending=False).reset_index(drop=True)
-                selected_etfs = self._calculate_dynamic_weights(selected_etfs, concentration_limit)
-                return selected_etfs
-
-            def _calculate_dynamic_weights(self, df, max_weight=0.10):
-                n_etfs = len(df)
-                equal_weight = 1.0 / n_etfs
-                min_weight = 0.01 # Fixed minimum weight
-                max_weight_limit = 0.10 # Fixed maximum weight
-                scores = df['composite_score'].values
-                if n_etfs == 1:
-                    df['tier_multiplier'] = [1.0]
-                else:
-                    percentile_80 = np.percentile(scores, 80)
-                    percentile_60 = np.percentile(scores, 60)
-                    percentile_40 = np.percentile(scores, 40)
-                    percentile_20 = np.percentile(scores, 20)
-                    tier_multipliers = []
-                    for score in scores:
-                        if score >= percentile_80:
-                            multiplier = 2.5 + (score - percentile_80) / max(scores.max() - percentile_80, 1e-6) * 0.5
-                        elif score >= percentile_60:
-                            multiplier = 1.8 + (score - percentile_60) / max(percentile_80 - percentile_60, 1e-6) * 0.7
-                        elif score >= percentile_40:
-                            multiplier = 1.2 + (score - percentile_40) / max(percentile_60 - percentile_40, 1e-6) * 0.6
-                        elif score >= percentile_20:
-                            multiplier = 0.8 + (score - percentile_20) / max(percentile_40 - percentile_20, 1e-6) * 0.4
-                        else:
-                            multiplier = 0.5 + (score - scores.min()) / max(percentile_20 - scores.min(), 1e-6) * 0.3
-                        tier_multipliers.append(multiplier)
-                    df['tier_multiplier'] = tier_multipliers
-                raw_weights = np.array(df['tier_multiplier']) * equal_weight
-                df['raw_weight'] = raw_weights / raw_weights.sum() if raw_weights.sum() > 0 else raw_weights
-                df = self._apply_concentration_limits(df, max_weight_limit, min_weight)
-                df['optimized_weight'] = df['final_weight']
-                df['weightage_pct'] = df['optimized_weight'] * 100
-                return df
-
-            def _apply_concentration_limits(self, df, max_weight, min_weight):
-                max_iterations = 20
-                iteration = 0
-                df['final_weight'] = df['raw_weight'].copy()
-                while iteration < max_iterations:
-                    over_weight_mask = df['final_weight'] > max_weight
-                    under_weight_mask = df['final_weight'] < min_weight
-                    if not (over_weight_mask.any() or under_weight_mask.any()):
-                        break
-                    if under_weight_mask.any():
-                        shortfall = (min_weight - df.loc[under_weight_mask, 'final_weight']).sum()
-                        df.loc[under_weight_mask, 'final_weight'] = min_weight
-                        eligible_for_reduction = df['final_weight'] > min_weight
-                        if eligible_for_reduction.sum() > 0:
-                            reduction_capacity = (df.loc[eligible_for_reduction, 'final_weight'] - min_weight).sum()
-                            if reduction_capacity > shortfall:
-                                excess_weights = df.loc[eligible_for_reduction, 'final_weight'] - min_weight
-                                reduction_factors = excess_weights / excess_weights.sum() * shortfall
-                                df.loc[eligible_for_reduction, 'final_weight'] -= reduction_factors
-                    if over_weight_mask.any():
-                        excess = (df.loc[over_weight_mask, 'final_weight'] - max_weight).sum()
-                        df.loc[over_weight_mask, 'final_weight'] = max_weight
-                        eligible_for_increase = (df['final_weight'] < max_weight) & (df['final_weight'] >= min_weight)
-                        if eligible_for_increase.sum() > 0:
-                            available_capacity = max_weight - df.loc[eligible_for_increase, 'final_weight']
-                            score_weights = df.loc[eligible_for_increase, 'composite_score'] / df.loc[eligible_for_increase, 'composite_score'].sum()
-                            capacity_weights = available_capacity / available_capacity.sum()
-                            allocation_factors = (score_weights * 0.5 + capacity_weights * 0.5)
-                            allocation_factors = allocation_factors / allocation_factors.sum()
-                            additional_weights = allocation_factors * excess
-                            new_weights = df.loc[eligible_for_increase, 'final_weight'] + additional_weights
-                            new_weights = np.minimum(new_weights, max_weight)
-                            df.loc[eligible_for_increase, 'final_weight'] = new_weights
-                    iteration += 1
-                total = df['final_weight'].sum()
-                if total > 0:
-                    df['final_weight'] = df['final_weight'] / total
-                return df
-
-            def _allocate_remaining_cash(self, portfolio_df, remaining_cash):
-                allocation_priority = portfolio_df.sort_values('composite_score', ascending=False)
-                max_iterations = 100
-                iteration = 0
-                while remaining_cash > 0 and iteration < max_iterations:
-                    allocated = False
-                    for idx in allocation_priority.index:
-                        etf_price = portfolio_df.at[idx, 'price']
-                        total_value = (portfolio_df['units'] * portfolio_df['price']).sum()
-                        if total_value == 0:
-                            current_weight = 0
-                        else:
-                            current_weight = (portfolio_df.at[idx, 'units'] * etf_price) / total_value
-                        if remaining_cash >= etf_price and current_weight < 0.12:
-                            portfolio_df.at[idx, 'units'] += 1
-                            remaining_cash -= etf_price
-                            allocated = True
-                            break
-                    iteration += 1
-                    if not allocated:
-                        break
-                return portfolio_df
-
         try:
-            analyzer = QuantitativeETFAnalyzer()
+            analyzer = _CL2QuantitativeETFAnalyzer()
             df_prepared = analyzer.validate_and_prepare_data(df.copy())
             if df_prepared.empty:
                 return pd.DataFrame()
@@ -959,282 +958,282 @@ class CL2Strategy(BaseStrategy):
 # CL_v3 Strategy Implementation
 # =====================================
 
+class _CL3UltimateETFAnalyzer:
+    """
+    Ultimate ETF Analysis Engine - Renaissance Technologies Grade
+    Architecture:
+    - Layer 1: Original Pragati Technical Indicators (60% weight)
+    - Layer 2: Statistical Validation & Conviction Scoring (25% weight)
+    - Layer 3: Market Regime & Risk Management (15% weight)
+    """
+    def __init__(self):
+        self.market_regime = None
+        self.regime_confidence = 0.5
+        self.conviction_threshold = 0.65
+        self.position_limits = {'min': 0.01, 'max': 0.10}
+
+    def prepare_and_validate_data(self, df):
+        required_columns = [
+            'symbol', 'price', 'date',
+            'rsi latest', 'rsi weekly',
+            'osc latest', 'osc weekly',
+            '9ema osc latest', '9ema osc weekly',
+            '21ema osc latest', '21ema osc weekly',
+            'zscore latest', 'zscore weekly',
+            'ma90 latest', 'ma200 latest',
+            'ma90 weekly', 'ma200 weekly',
+            'dev20 latest', 'dev20 weekly'
+        ]
+        missing = [col for col in required_columns if col not in df.columns]
+        if missing:
+            raise ValueError(f"Missing columns: {missing}")
+        df = self._handle_missing_values(df)
+        df['data_quality'] = self._calculate_data_quality(df)
+        df = self._handle_outliers(df)
+        return df
+
+    def _handle_missing_values(self, df):
+        for col in ['rsi latest', 'rsi weekly']:
+            df[col] = df[col].fillna(50)
+        osc_cols = [c for c in df.columns if 'osc' in c.lower()]
+        for col in osc_cols:
+            median_val = df[col].median()
+            df[col] = df[col].fillna(median_val if not np.isnan(median_val) else 0)
+        zscore_cols = [c for c in df.columns if 'zscore' in c.lower()]
+        for col in zscore_cols:
+            df[col] = df[col].fillna(0)
+        ma_cols = [c for c in df.columns if c.startswith('ma')]
+        for col in ma_cols:
+            df[col] = df[col].fillna(df['price'])
+        dev_cols = [c for c in df.columns if 'dev' in c.lower()]
+        for col in dev_cols:
+            df[col] = df[col].fillna(df['price'] * 0.01)
+        return df
+
+    def _calculate_data_quality(self, df):
+        quality_scores = []
+        for idx, row in df.iterrows():
+            score = 1.0
+            if row['rsi latest'] == 50 and row['rsi weekly'] == 50:
+                score -= 0.2
+            if row['osc latest'] == 0 or row['osc weekly'] == 0:
+                score -= 0.1
+            if row['price'] <= 0 or row['price'] > 10000:
+                score -= 0.3
+            quality_scores.append(max(0.3, score))
+        return quality_scores
+
+    def _handle_outliers(self, df):
+        numerical_cols = df.select_dtypes(include=[np.number]).columns
+        for col in numerical_cols:
+            if col not in ['price', 'symbol', 'data_quality']:
+                mean = df[col].mean()
+                std = df[col].std()
+                if std > 0:
+                    df[col] = df[col].clip(mean - 3*std, mean + 3*std)
+        return df
+
+    def detect_market_regime(self, df):
+        metrics = {
+            'avg_rsi': df['rsi latest'].mean(),
+            'avg_osc': df['osc latest'].mean(),
+            'volatility': df['dev20 latest'].mean() / df['price'].mean(),
+            'breadth': len(df[df['rsi latest'] < 50]) / len(df),
+            'momentum_consistency': np.corrcoef(df['osc latest'], df['osc weekly'])[0, 1]
+        }
+        if metrics['avg_rsi'] < 35 and metrics['avg_osc'] < -40:
+            self.market_regime, self.regime_confidence = "OVERSOLD_EXTREME", 0.9
+        elif metrics['avg_rsi'] < 45 and metrics['breadth'] > 0.6:
+            self.market_regime, self.regime_confidence = "BEARISH", 0.8
+        elif metrics['avg_rsi'] > 65 and metrics['avg_osc'] > 30:
+            self.market_regime, self.regime_confidence = "OVERBOUGHT", 0.85
+        elif metrics['avg_rsi'] > 55 and metrics['breadth'] < 0.4:
+            self.market_regime, self.regime_confidence = "BULLISH", 0.75
+        else:
+            self.market_regime, self.regime_confidence = "NEUTRAL", 0.6
+        return self.market_regime, self.regime_confidence, metrics
+
+    def calculate_technical_suite(self, df):
+        wrsi = df['rsi weekly'] * 0.55 + df['rsi latest'] * 0.45
+        df['rsi_mult'] = np.select(
+            [wrsi < 30, wrsi < 50, wrsi < 70],
+            [3.5 - (wrsi / 30) * 1.5, 2 - (wrsi - 30) / 20, 1 - (wrsi - 50) / 20],
+            default=0.3 + (100 - wrsi) / 30,
+        )
+
+        ow, ol = df['osc weekly'], df['osc latest']
+        df['osc_mult'] = np.select(
+            [
+                (ow < -80) & (ol < -95), ow < -80,
+                (ow < -70) & (ol < -90), ow < -70,
+                (ow < -60) & (ol < -85), (ow < -50) & (ol < -80),
+                (ow < -40) & (ol < -70), (ow < -30) & (ol < -60),
+                (ow < -20) & (ol < -50), (ow < -10) & (ol < -40),
+                (ow < 0) & (ol < -30), ol < -95,
+                (ol > 80) & (ow > 70),
+            ],
+            [3.5, 3.2, 2.8, 2.5, 2.3, 2.0, 1.8, 1.6, 1.5, 1.4, 1.3, 2.0, 0.2],
+            default=0.1,
+        )
+
+        for col_w, col_d, target in [
+            ('9ema osc weekly', '9ema osc latest', 'ema9_mult'),
+            ('21ema osc weekly', '21ema osc latest', 'ema21_mult'),
+        ]:
+            w, d = df[col_w], df[col_d]
+            df[target] = np.select(
+                [
+                    (w < -80) & (d < -90), w < -80,
+                    (w < -70) & (d < -80), w < -70,
+                    (w < -60) & (d < -70), (w < -50) & (d < -60),
+                    (w < -40) & (d < -50), (w < -30) & (d < -40),
+                    d < -90,
+                ],
+                [3.5, 3.2, 2.8, 2.5, 2.3, 2.0, 1.8, 1.6, 2.0],
+                default=0.1,
+            )
+
+        zw, zd = df['zscore weekly'], df['zscore latest']
+        df['zscore_mult'] = np.select(
+            [
+                (zw < -2.5) & (zd < -3), zw < -2.5,
+                (zw < -2) & (zd < -2.5), (zw < -1.5) & (zd < -2),
+                (zw < -1.2) & (zd < -1.8), (zw < -1) & (zd < -1.5),
+                zd < -3,
+            ],
+            [3.5, 3.2, 2.8, 2.5, 2.2, 2.0, 2.0],
+            default=0.1,
+        )
+
+        e9l, e21l, ol_ = df['9ema osc latest'], df['21ema osc latest'], df['osc latest']
+        e9w, e21w, ow_ = df['9ema osc weekly'], df['21ema osc weekly'], df['osc weekly']
+        df['trend_strength'] = np.select(
+            [
+                (e9l > e21l) & (ol_ < -50),
+                (e9w > e21w) & (ow_ < -50),
+                (e9l > 0) & (e21l > 0) & (ol_ > 0),
+            ],
+            [1.3, 1.5, 0.7],
+            default=1.0,
+        )
+
+        eps = 1e-6
+        s90l = (df['ma90 latest'] - df['price']) * 100 / df['ma90 latest'].replace(0, eps)
+        s200l = (df['ma200 latest'] - df['price']) * 100 / df['ma200 latest'].replace(0, eps)
+        s90w = (df['ma90 weekly'] - df['price']) * 100 / df['ma90 weekly'].replace(0, eps)
+        s200w = (df['ma200 weekly'] - df['price']) * 100 / df['ma200 weekly'].replace(0, eps)
+        ws90 = s90l * 0.6 + s90w * 0.4
+        ws200 = s200l * 0.6 + s200w * 0.4
+        df['spread_mult'] = np.select(
+            [
+                (ws90 > 1.5) & (ws200 > 1.5) & (df['rsi latest'] < 40),
+                (ws90 < -1.5) & (ws200 < -1.5) & (df['rsi latest'] > 70),
+            ],
+            [3.5, 0.5],
+            default=1.0,
+        )
+
+        dev_l = 2.0 * df['dev20 latest']
+        dev_w = 2.0 * df['dev20 weekly']
+        wlower = (df['ma90 latest'] - dev_l) * 0.6 + (df['ma90 weekly'] - dev_w) * 0.4
+        wupper = (df['ma90 latest'] + dev_l) * 0.6 + (df['ma90 weekly'] + dev_w) * 0.4
+        df['bollinger_mult'] = np.select(
+            [
+                (df['price'] < wlower) & (df['rsi latest'] < 40),
+                (df['price'] > wupper) & (df['rsi latest'] > 70),
+            ],
+            [3.0, 0.5],
+            default=1.0,
+        )
+
+        df['weekly_boost'] = np.where(df['osc weekly'] < -20, 1.2, 0.8)
+        return df
+
+    def calculate_conviction_scores(self, df):
+        rl, rw = df['rsi latest'], df['rsi weekly']
+        ol, ow = df['osc latest'], df['osc weekly']
+        zl, zw = df['zscore latest'], df['zscore weekly']
+
+        rsi_sig = np.select([(rl < 30) & (rw < 35), (rl < 35) | (rw < 40)], [2, 1], default=0)
+        osc_sig = np.select([(ol < -80) & (ow < -60), (ol < -60) | (ow < -40)], [2, 1], default=0)
+        z_sig = np.select([(zl < -2) & (zw < -1.5), (zl < -1.5) | (zw < -1)], [2, 1], default=0)
+        df['signal_alignment'] = np.minimum(2.0, (rsi_sig + osc_sig + z_sig) / 3)
+
+        price_low = df['price'] < df['ma90 latest'] * 0.95
+        osc_improving = df['9ema osc latest'] > df['21ema osc latest']
+        df['divergence_score'] = np.select(
+            [price_low & osc_improving & (ol < -50), price_low & osc_improving, osc_improving & (ol < -30)],
+            [2.0, 1.5, 1.2],
+            default=1.0,
+        )
+
+        dist = np.where(df['ma200 latest'] > 0, (df['ma200 latest'] - df['price']) / df['ma200 latest'], 0)
+        df['mean_reversion'] = np.select(
+            [(dist > 0.2) & (zl < -2), (dist > 0.15) & (zl < -1.5), dist > 0.1],
+            [2.5, 2.0, 1.5],
+            default=1.0,
+        )
+
+        avg_vol = np.where(df['price'] > 0, (df['dev20 latest'] + df['dev20 weekly']) / (2 * df['price']), 0.05)
+        df['vol_quality'] = np.select(
+            [(avg_vol > 0.01) & (avg_vol < 0.03), avg_vol < 0.01, avg_vol < 0.05],
+            [1.5, 0.8, 1.0],
+            default=0.7,
+        )
+
+        df['conviction'] = (
+            df['signal_alignment'] * 0.35 +
+            df['divergence_score'] * 0.25 +
+            df['mean_reversion'] * 0.25 +
+            df['vol_quality'] * 0.15
+        )
+        return df
+
+    def calculate_composite_scores(self, df):
+        weights = {'rsi': 0.15, 'osc': 0.20, 'ema9': 0.15, 'ema21': 0.10, 'zscore': 0.15, 'spread': 0.15, 'bollinger': 0.10}
+        df['base_score'] = (
+            df['rsi_mult'] * weights['rsi'] +
+            df['osc_mult'] * weights['osc'] +
+            df['ema9_mult'] * weights['ema9'] +
+            df['ema21_mult'] * weights['ema21'] +
+            df['zscore_mult'] * weights['zscore'] +
+            df['spread_mult'] * weights['spread'] +
+            df['bollinger_mult'] * weights['bollinger']
+        )
+        df['base_score'] = df['base_score'] * df['trend_strength'] * df['weekly_boost']
+        max_base = df['base_score'].max()
+        df['base_score_norm'] = (df['base_score'] / max_base * 5) if max_base > 0 else df['base_score']
+        df['composite_score'] = (
+            df['base_score_norm'] * 0.60 +
+            df['conviction'] * 1.5 * 0.25 +
+            df['data_quality'] * 2 * 0.15
+        )
+        if self.market_regime == "OVERSOLD_EXTREME":
+            df['composite_score'] *= 1.2
+        elif self.market_regime == "BEARISH":
+            df['composite_score'] *= 1.1
+        elif self.market_regime == "OVERBOUGHT":
+            df['composite_score'] *= 0.8
+        return df
+
+    def construct_portfolio(self, df, capital):
+        portfolio = df.sort_values('composite_score', ascending=False).reset_index(drop=True)
+        
+        total_score = portfolio['composite_score'].sum()
+        if total_score > 0:
+            portfolio['weightage'] = portfolio['composite_score'] / total_score
+        else:
+            portfolio['weightage'] = 1 / len(portfolio) if len(portfolio) > 0 else 0
+        return portfolio
+
 class CL3Strategy(BaseStrategy):
     def generate_portfolio(self, df: pd.DataFrame, sip_amount: float = 100000.0) -> pd.DataFrame:
         """
         CL_v3 Strategy: Pragati Ultimate – Renaissance-Grade Quantitative Engine
         Always selects top 30 ETFs (or all if <30) with conviction-based dynamic allocation.
         """
-        class UltimateETFAnalyzer:
-            """
-            Ultimate ETF Analysis Engine - Renaissance Technologies Grade
-            Architecture:
-            - Layer 1: Original Pragati Technical Indicators (60% weight)
-            - Layer 2: Statistical Validation & Conviction Scoring (25% weight)
-            - Layer 3: Market Regime & Risk Management (15% weight)
-            """
-            def __init__(self):
-                self.market_regime = None
-                self.regime_confidence = 0.5
-                self.conviction_threshold = 0.65
-                self.position_limits = {'min': 0.01, 'max': 0.10}
-
-            def prepare_and_validate_data(self, df):
-                required_columns = [
-                    'symbol', 'price', 'date',
-                    'rsi latest', 'rsi weekly',
-                    'osc latest', 'osc weekly',
-                    '9ema osc latest', '9ema osc weekly',
-                    '21ema osc latest', '21ema osc weekly',
-                    'zscore latest', 'zscore weekly',
-                    'ma90 latest', 'ma200 latest',
-                    'ma90 weekly', 'ma200 weekly',
-                    'dev20 latest', 'dev20 weekly'
-                ]
-                missing = [col for col in required_columns if col not in df.columns]
-                if missing:
-                    raise ValueError(f"Missing columns: {missing}")
-                df = self._handle_missing_values(df)
-                df['data_quality'] = self._calculate_data_quality(df)
-                df = self._handle_outliers(df)
-                return df
-
-            def _handle_missing_values(self, df):
-                for col in ['rsi latest', 'rsi weekly']:
-                    df[col] = df[col].fillna(50)
-                osc_cols = [c for c in df.columns if 'osc' in c.lower()]
-                for col in osc_cols:
-                    median_val = df[col].median()
-                    df[col] = df[col].fillna(median_val if not np.isnan(median_val) else 0)
-                zscore_cols = [c for c in df.columns if 'zscore' in c.lower()]
-                for col in zscore_cols:
-                    df[col] = df[col].fillna(0)
-                ma_cols = [c for c in df.columns if c.startswith('ma')]
-                for col in ma_cols:
-                    df[col] = df[col].fillna(df['price'])
-                dev_cols = [c for c in df.columns if 'dev' in c.lower()]
-                for col in dev_cols:
-                    df[col] = df[col].fillna(df['price'] * 0.01)
-                return df
-
-            def _calculate_data_quality(self, df):
-                quality_scores = []
-                for idx, row in df.iterrows():
-                    score = 1.0
-                    if row['rsi latest'] == 50 and row['rsi weekly'] == 50:
-                        score -= 0.2
-                    if row['osc latest'] == 0 or row['osc weekly'] == 0:
-                        score -= 0.1
-                    if row['price'] <= 0 or row['price'] > 10000:
-                        score -= 0.3
-                    quality_scores.append(max(0.3, score))
-                return quality_scores
-
-            def _handle_outliers(self, df):
-                numerical_cols = df.select_dtypes(include=[np.number]).columns
-                for col in numerical_cols:
-                    if col not in ['price', 'symbol', 'data_quality']:
-                        mean = df[col].mean()
-                        std = df[col].std()
-                        if std > 0:
-                            df[col] = df[col].clip(mean - 3*std, mean + 3*std)
-                return df
-
-            def detect_market_regime(self, df):
-                metrics = {
-                    'avg_rsi': df['rsi latest'].mean(),
-                    'avg_osc': df['osc latest'].mean(),
-                    'volatility': df['dev20 latest'].mean() / df['price'].mean(),
-                    'breadth': len(df[df['rsi latest'] < 50]) / len(df),
-                    'momentum_consistency': np.corrcoef(df['osc latest'], df['osc weekly'])[0, 1]
-                }
-                if metrics['avg_rsi'] < 35 and metrics['avg_osc'] < -40:
-                    self.market_regime, self.regime_confidence = "OVERSOLD_EXTREME", 0.9
-                elif metrics['avg_rsi'] < 45 and metrics['breadth'] > 0.6:
-                    self.market_regime, self.regime_confidence = "BEARISH", 0.8
-                elif metrics['avg_rsi'] > 65 and metrics['avg_osc'] > 30:
-                    self.market_regime, self.regime_confidence = "OVERBOUGHT", 0.85
-                elif metrics['avg_rsi'] > 55 and metrics['breadth'] < 0.4:
-                    self.market_regime, self.regime_confidence = "BULLISH", 0.75
-                else:
-                    self.market_regime, self.regime_confidence = "NEUTRAL", 0.6
-                return self.market_regime, self.regime_confidence, metrics
-
-            def calculate_technical_suite(self, df):
-                wrsi = df['rsi weekly'] * 0.55 + df['rsi latest'] * 0.45
-                df['rsi_mult'] = np.select(
-                    [wrsi < 30, wrsi < 50, wrsi < 70],
-                    [3.5 - (wrsi / 30) * 1.5, 2 - (wrsi - 30) / 20, 1 - (wrsi - 50) / 20],
-                    default=0.3 + (100 - wrsi) / 30,
-                )
-
-                ow, ol = df['osc weekly'], df['osc latest']
-                df['osc_mult'] = np.select(
-                    [
-                        (ow < -80) & (ol < -95), ow < -80,
-                        (ow < -70) & (ol < -90), ow < -70,
-                        (ow < -60) & (ol < -85), (ow < -50) & (ol < -80),
-                        (ow < -40) & (ol < -70), (ow < -30) & (ol < -60),
-                        (ow < -20) & (ol < -50), (ow < -10) & (ol < -40),
-                        (ow < 0) & (ol < -30), ol < -95,
-                        (ol > 80) & (ow > 70),
-                    ],
-                    [3.5, 3.2, 2.8, 2.5, 2.3, 2.0, 1.8, 1.6, 1.5, 1.4, 1.3, 2.0, 0.2],
-                    default=0.1,
-                )
-
-                for col_w, col_d, target in [
-                    ('9ema osc weekly', '9ema osc latest', 'ema9_mult'),
-                    ('21ema osc weekly', '21ema osc latest', 'ema21_mult'),
-                ]:
-                    w, d = df[col_w], df[col_d]
-                    df[target] = np.select(
-                        [
-                            (w < -80) & (d < -90), w < -80,
-                            (w < -70) & (d < -80), w < -70,
-                            (w < -60) & (d < -70), (w < -50) & (d < -60),
-                            (w < -40) & (d < -50), (w < -30) & (d < -40),
-                            d < -90,
-                        ],
-                        [3.5, 3.2, 2.8, 2.5, 2.3, 2.0, 1.8, 1.6, 2.0],
-                        default=0.1,
-                    )
-
-                zw, zd = df['zscore weekly'], df['zscore latest']
-                df['zscore_mult'] = np.select(
-                    [
-                        (zw < -2.5) & (zd < -3), zw < -2.5,
-                        (zw < -2) & (zd < -2.5), (zw < -1.5) & (zd < -2),
-                        (zw < -1.2) & (zd < -1.8), (zw < -1) & (zd < -1.5),
-                        zd < -3,
-                    ],
-                    [3.5, 3.2, 2.8, 2.5, 2.2, 2.0, 2.0],
-                    default=0.1,
-                )
-
-                e9l, e21l, ol_ = df['9ema osc latest'], df['21ema osc latest'], df['osc latest']
-                e9w, e21w, ow_ = df['9ema osc weekly'], df['21ema osc weekly'], df['osc weekly']
-                df['trend_strength'] = np.select(
-                    [
-                        (e9l > e21l) & (ol_ < -50),
-                        (e9w > e21w) & (ow_ < -50),
-                        (e9l > 0) & (e21l > 0) & (ol_ > 0),
-                    ],
-                    [1.3, 1.5, 0.7],
-                    default=1.0,
-                )
-
-                eps = 1e-6
-                s90l = (df['ma90 latest'] - df['price']) * 100 / df['ma90 latest'].replace(0, eps)
-                s200l = (df['ma200 latest'] - df['price']) * 100 / df['ma200 latest'].replace(0, eps)
-                s90w = (df['ma90 weekly'] - df['price']) * 100 / df['ma90 weekly'].replace(0, eps)
-                s200w = (df['ma200 weekly'] - df['price']) * 100 / df['ma200 weekly'].replace(0, eps)
-                ws90 = s90l * 0.6 + s90w * 0.4
-                ws200 = s200l * 0.6 + s200w * 0.4
-                df['spread_mult'] = np.select(
-                    [
-                        (ws90 > 1.5) & (ws200 > 1.5) & (df['rsi latest'] < 40),
-                        (ws90 < -1.5) & (ws200 < -1.5) & (df['rsi latest'] > 70),
-                    ],
-                    [3.5, 0.5],
-                    default=1.0,
-                )
-
-                dev_l = 2.0 * df['dev20 latest']
-                dev_w = 2.0 * df['dev20 weekly']
-                wlower = (df['ma90 latest'] - dev_l) * 0.6 + (df['ma90 weekly'] - dev_w) * 0.4
-                wupper = (df['ma90 latest'] + dev_l) * 0.6 + (df['ma90 weekly'] + dev_w) * 0.4
-                df['bollinger_mult'] = np.select(
-                    [
-                        (df['price'] < wlower) & (df['rsi latest'] < 40),
-                        (df['price'] > wupper) & (df['rsi latest'] > 70),
-                    ],
-                    [3.0, 0.5],
-                    default=1.0,
-                )
-
-                df['weekly_boost'] = np.where(df['osc weekly'] < -20, 1.2, 0.8)
-                return df
-
-            def calculate_conviction_scores(self, df):
-                rl, rw = df['rsi latest'], df['rsi weekly']
-                ol, ow = df['osc latest'], df['osc weekly']
-                zl, zw = df['zscore latest'], df['zscore weekly']
-
-                rsi_sig = np.select([(rl < 30) & (rw < 35), (rl < 35) | (rw < 40)], [2, 1], default=0)
-                osc_sig = np.select([(ol < -80) & (ow < -60), (ol < -60) | (ow < -40)], [2, 1], default=0)
-                z_sig = np.select([(zl < -2) & (zw < -1.5), (zl < -1.5) | (zw < -1)], [2, 1], default=0)
-                df['signal_alignment'] = np.minimum(2.0, (rsi_sig + osc_sig + z_sig) / 3)
-
-                price_low = df['price'] < df['ma90 latest'] * 0.95
-                osc_improving = df['9ema osc latest'] > df['21ema osc latest']
-                df['divergence_score'] = np.select(
-                    [price_low & osc_improving & (ol < -50), price_low & osc_improving, osc_improving & (ol < -30)],
-                    [2.0, 1.5, 1.2],
-                    default=1.0,
-                )
-
-                dist = np.where(df['ma200 latest'] > 0, (df['ma200 latest'] - df['price']) / df['ma200 latest'], 0)
-                df['mean_reversion'] = np.select(
-                    [(dist > 0.2) & (zl < -2), (dist > 0.15) & (zl < -1.5), dist > 0.1],
-                    [2.5, 2.0, 1.5],
-                    default=1.0,
-                )
-
-                avg_vol = np.where(df['price'] > 0, (df['dev20 latest'] + df['dev20 weekly']) / (2 * df['price']), 0.05)
-                df['vol_quality'] = np.select(
-                    [(avg_vol > 0.01) & (avg_vol < 0.03), avg_vol < 0.01, avg_vol < 0.05],
-                    [1.5, 0.8, 1.0],
-                    default=0.7,
-                )
-
-                df['conviction'] = (
-                    df['signal_alignment'] * 0.35 +
-                    df['divergence_score'] * 0.25 +
-                    df['mean_reversion'] * 0.25 +
-                    df['vol_quality'] * 0.15
-                )
-                return df
-
-            def calculate_composite_scores(self, df):
-                weights = {'rsi': 0.15, 'osc': 0.20, 'ema9': 0.15, 'ema21': 0.10, 'zscore': 0.15, 'spread': 0.15, 'bollinger': 0.10}
-                df['base_score'] = (
-                    df['rsi_mult'] * weights['rsi'] +
-                    df['osc_mult'] * weights['osc'] +
-                    df['ema9_mult'] * weights['ema9'] +
-                    df['ema21_mult'] * weights['ema21'] +
-                    df['zscore_mult'] * weights['zscore'] +
-                    df['spread_mult'] * weights['spread'] +
-                    df['bollinger_mult'] * weights['bollinger']
-                )
-                df['base_score'] = df['base_score'] * df['trend_strength'] * df['weekly_boost']
-                max_base = df['base_score'].max()
-                df['base_score_norm'] = (df['base_score'] / max_base * 5) if max_base > 0 else df['base_score']
-                df['composite_score'] = (
-                    df['base_score_norm'] * 0.60 +
-                    df['conviction'] * 1.5 * 0.25 +
-                    df['data_quality'] * 2 * 0.15
-                )
-                if self.market_regime == "OVERSOLD_EXTREME":
-                    df['composite_score'] *= 1.2
-                elif self.market_regime == "BEARISH":
-                    df['composite_score'] *= 1.1
-                elif self.market_regime == "OVERBOUGHT":
-                    df['composite_score'] *= 0.8
-                return df
-
-            def construct_portfolio(self, df, capital):
-                portfolio = df.sort_values('composite_score', ascending=False).reset_index(drop=True)
-                
-                total_score = portfolio['composite_score'].sum()
-                if total_score > 0:
-                    portfolio['weightage'] = portfolio['composite_score'] / total_score
-                else:
-                    portfolio['weightage'] = 1 / len(portfolio) if len(portfolio) > 0 else 0
-                return portfolio
-
         try:
-            analyzer = UltimateETFAnalyzer()
+            analyzer = _CL3UltimateETFAnalyzer()
             df_prepared = analyzer.prepare_and_validate_data(df.copy())
             if df_prepared.empty:
                 return pd.DataFrame()

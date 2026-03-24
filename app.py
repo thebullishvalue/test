@@ -145,7 +145,7 @@ def load_historical_data(end_date: datetime, lookback_files: int) -> List[Tuple[
     """
     logger.info(f"--- START: Live Data Generation (End Date: {end_date.date()}, Training Lookback: {lookback_files}) ---")
     
-    total_days_to_fetch = int((lookback_files + MAX_INDICATOR_PERIOD) * 12)
+    total_days_to_fetch = int((lookback_files + MAX_INDICATOR_PERIOD) * 1.5) + 30
     fetch_start_date = end_date - timedelta(days=total_days_to_fetch)
     
     logger.info(f"Calculated fetch start date: {fetch_start_date.date()} (Total days: {total_days_to_fetch})")
@@ -291,7 +291,21 @@ def calculate_advanced_metrics(returns_with_dates: List[Dict]) -> Tuple[Dict, fl
     # Betting and the Stock Market".
     mu = r.mean()
     var = r.var()
-    kelly = mu / var if var > 1e-8 else 0.0
+    if var > 1e-8:
+        # Epistemic Fix: Standard continuous Kelly (μ/σ²) mathematically assumes log-normal diffusion.
+        # Under highly skewed, fat-tailed market distributions, this catastrophically over-allocates
+        # and ignores crash gap-risk. We inject a 3rd-order Taylor skewness correction.
+        std = np.sqrt(var)
+        skewness = float(np.mean(((r - mu) / std) ** 3))
+        base_kelly = mu / var
+        
+        # Epistemic Fix: Bound the skewness penalty at 0.0. Under extreme gap risk 
+        # (massive negative skew), the linear approximation can incorrectly evaluate 
+        # to a negative multiplier, flipping a long signal into an unintended short.
+        skew_penalty = max(0.0, 1.0 + (mu * skewness) / std)
+        kelly = base_kelly * skew_penalty
+    else:
+        kelly = 0.0
     kelly = float(np.clip(kelly, -1, 1))
 
     # Omega Ratio
@@ -423,18 +437,24 @@ def calculate_strategy_weights(
     weights = exp_sharpes / total_score
     return {name: weights[i] for i, name in enumerate(strat_names)}
 
-def _calculate_performance_on_window(window_data: List[Tuple[datetime, pd.DataFrame]], strategies: Dict[str, BaseStrategy], training_capital: float, precomputed_cache: Dict = None) -> Dict:
+def _calculate_performance_on_window(
+    window_data: List[Tuple[datetime, pd.DataFrame]], 
+    strategies: Dict[str, BaseStrategy], 
+    training_capital: float, 
+    precomputed_cache: Dict = None,
+    cache_start_idx: int = 0
+) -> Dict:
     performance = {name: {'returns': []} for name in strategies}
     subset_performance = {name: {} for name in strategies}
     
     if precomputed_cache:
         # O(1) Cache slice retrieval instead of O(T^2) regeneration
-        window_end_idx = len(window_data) - 1
+        window_end_idx = cache_start_idx + len(window_data) - 1
         for name in strategies:
-            performance[name]['returns'] = precomputed_cache['strategy'][name][:window_end_idx]
+            performance[name]['returns'] = precomputed_cache['strategy'][name][cache_start_idx:window_end_idx]
             for tier_name, rets in precomputed_cache['subset'].get(name, {}).items():
                 if tier_name not in subset_performance[name]: subset_performance[name][tier_name] = []
-                subset_performance[name][tier_name] = rets[:window_end_idx]
+                subset_performance[name][tier_name] = rets[cache_start_idx:window_end_idx]
     else:
         for i in range(len(window_data) - 1):
             date, df = window_data[i]
@@ -716,7 +736,7 @@ def run_trigger_based_backtest(
                     # Execute buy
                     if actual_buy_trigger:
                         trade_log.append({'Event': 'BUY', 'Date': sim_date})
-                        buy_portfolio = strategy.generate_portfolio(df.copy(), capital)
+                        buy_portfolio = strategy.generate_portfolio(df, capital)
                         
                         if not buy_portfolio.empty and 'value' in buy_portfolio.columns:
                             total_investment += buy_portfolio['value'].sum()
@@ -772,7 +792,7 @@ def run_trigger_based_backtest(
                     # Execute buy (only if no position)
                     if actual_buy_trigger and not portfolio_units and current_capital > 1000:
                         trade_log.append({'Event': 'BUY', 'Date': sim_date})
-                        buy_portfolio = strategy.generate_portfolio(df.copy(), current_capital)
+                        buy_portfolio = strategy.generate_portfolio(df, current_capital)
                         
                         if not buy_portfolio.empty and 'units' in buy_portfolio.columns:
                             portfolio_units = pd.Series(
@@ -880,7 +900,8 @@ def evaluate_historical_performance_trigger_based(
     historical_data: List[Tuple[datetime, pd.DataFrame]],
     trigger_df: Optional[pd.DataFrame] = None,
     deployment_style: str = 'SIP Investment',
-    trigger_config: Optional[Dict] = None
+    trigger_config: Optional[Dict] = None,
+    test_window_size: int = 50
 ) -> Dict:
     """
     Walk-forward evaluation of strategies using trigger-based buy/sell signals.
@@ -1018,8 +1039,9 @@ def evaluate_historical_performance_trigger_based(
     last_curated_port = pd.DataFrame()
     last_strategy_ports = {}  # strategy_name -> portfolio DataFrame
     
+    start_idx = max(MIN_TRAIN_DAYS + EMBARGO_DAYS, len(historical_data) - test_window_size - 1)
     progress_bar = st.progress(0, text="Initializing walk-forward...")
-    total_steps = len(historical_data) - MIN_TRAIN_DAYS - EMBARGO_DAYS - 1
+    total_steps = len(historical_data) - start_idx - 1
 
     if total_steps <= 0:
         progress_bar.empty()
@@ -1027,9 +1049,10 @@ def evaluate_historical_performance_trigger_based(
         return {}
 
     step_count = 0
-    for i in range(MIN_TRAIN_DAYS + EMBARGO_DAYS, len(historical_data) - 1):
+    for i in range(start_idx, len(historical_data) - 1):
         # REC-2: train on data[:i-EMBARGO], skip embargo gap, test at i
-        train_window = historical_data[:i - EMBARGO_DAYS]
+        train_start = max(0, i - 50 - EMBARGO_DAYS)
+        train_window = historical_data[train_start : i - EMBARGO_DAYS]
         test_date, test_df = historical_data[i]
         next_date, next_df = historical_data[i + 1]
         
@@ -1044,7 +1067,7 @@ def evaluate_historical_performance_trigger_based(
         if is_buy_day or (not is_sip and is_sell_day):
             try:
                 # Train on historical window to get performance-based weights
-                in_sample_perf = _calculate_performance_on_window(train_window, _strategies, TRAINING_CAPITAL, precalc_cache)
+                in_sample_perf = _calculate_performance_on_window(train_window, _strategies, TRAINING_CAPITAL, precalc_cache, cache_start_idx=train_start)
                 
                 curated_port, strat_wts, sub_wts, _ = curate_final_portfolio(
                     _strategies, in_sample_perf, test_df, TRAINING_CAPITAL, 30, 1.0, 10.0
@@ -1235,7 +1258,8 @@ def evaluate_historical_performance_trigger_based(
 
 def evaluate_historical_performance(
     _strategies: Dict[str, BaseStrategy],
-    historical_data: List[Tuple[datetime, pd.DataFrame]]
+    historical_data: List[Tuple[datetime, pd.DataFrame]],
+    test_window_size: int = 50
 ) -> Dict:
     """
     Standard walk-forward evaluation WITHOUT trigger signals.
@@ -1283,25 +1307,27 @@ def evaluate_historical_performance(
     last_curated_port = pd.DataFrame()
     last_strategy_ports: Dict[str, pd.DataFrame] = {}
 
+    start_idx = max(MIN_TRAIN_FILES + EMBARGO_DAYS, len(historical_data) - test_window_size - 1)
     progress_bar = st.progress(0, text="Initializing backtest...")
-    total_steps = len(historical_data) - MIN_TRAIN_FILES - EMBARGO_DAYS - 1
+    total_steps = len(historical_data) - start_idx - 1
 
     if total_steps <= 0:
         st.error(f"Not enough data for backtest steps. Need at least {MIN_TRAIN_FILES + EMBARGO_DAYS + 2} days.")
         progress_bar.empty()
         return {}
 
-    for i in range(MIN_TRAIN_FILES + EMBARGO_DAYS, len(historical_data) - 1):
+    for i in range(start_idx, len(historical_data) - 1):
         # REC-2: train on data[:i-EMBARGO], skip embargo gap, test at i
-        train_window = historical_data[:i - EMBARGO_DAYS]
+        train_start = max(0, i - 50 - EMBARGO_DAYS)
+        train_window = historical_data[train_start : i - EMBARGO_DAYS]
         test_date, test_df = historical_data[i]
         next_date, next_df = historical_data[i + 1]
 
-        step_idx = i - MIN_TRAIN_FILES - EMBARGO_DAYS + 1
+        step_idx = i - start_idx + 1
         progress_text = f"Processing step {step_idx}/{total_steps}"
         progress_bar.progress(step_idx / total_steps, text=progress_text)
 
-        in_sample_perf = _calculate_performance_on_window(train_window, _strategies, TRAINING_CAPITAL, precalc_cache)
+        in_sample_perf = _calculate_performance_on_window(train_window, _strategies, TRAINING_CAPITAL, precalc_cache, cache_start_idx=train_start)
 
         try:
             curated_port, strat_wts, sub_wts, _ = curate_final_portfolio(
@@ -2806,7 +2832,7 @@ def _run_dynamic_strategy_selection(
                     # Step 4: Execute SIP buy (does NOT affect nav_index — TWR principle)
                     if actual_buy_trigger:
                         trade_log.append({'Event': 'BUY', 'Date': sim_date})
-                        buy_portfolio = strategy.generate_portfolio(df.copy(), sip_amount)
+                        buy_portfolio = strategy.generate_portfolio(df, sip_amount)
                         
                         if buy_portfolio is not None and not buy_portfolio.empty and 'value' in buy_portfolio.columns:
                             for _, row in buy_portfolio.iterrows():
@@ -2857,7 +2883,7 @@ def _run_dynamic_strategy_selection(
                     # Execute buy (only if no position)
                     if actual_buy_trigger and not portfolio_units and current_capital > 1000:
                         trade_log.append({'Event': 'BUY', 'Date': sim_date})
-                        buy_portfolio = strategy.generate_portfolio(df.copy(), current_capital)
+                        buy_portfolio = strategy.generate_portfolio(df, current_capital)
                         
                         if buy_portfolio is not None and not buy_portfolio.empty and 'units' in buy_portfolio.columns:
                             portfolio_units = pd.Series(
@@ -3250,7 +3276,7 @@ def main():
 
         if st.button("Run Analysis", width='stretch', type="primary"):
             
-            lookback_files = 100
+            lookback_files = 200
             
             selected_date_obj = st.session_state.get('analysis_date_str')
             if not selected_date_obj:
@@ -3321,12 +3347,7 @@ def main():
 
             # CRITICAL: Prevent Lookahead Bias by strictly separating Phase 2 (Selection) and Phase 3 (Validation) data
             PHASE3_LOOKBACK = 50
-            if len(training_data_window_with_current) > PHASE3_LOOKBACK + 10:
-                phase2_data = training_data_window_with_current[:-PHASE3_LOOKBACK]
-                phase3_data = training_data_window_with_current[-PHASE3_LOOKBACK:]
-            else:
-                phase2_data = training_data_window_with_current
-                phase3_data = training_data_window_with_current
+            phase2_data = training_data_window_with_current[:-PHASE3_LOOKBACK] if len(training_data_window_with_current) > PHASE3_LOOKBACK + 10 else training_data_window_with_current
             
             # ═══════════════════════════════════════════════════════════════════
             # PHASE 2: DYNAMIC STRATEGY SELECTION (TRIGGER-BASED)
@@ -3400,16 +3421,20 @@ def main():
             # MaxDD) measure stock-picking ability, not timing ability.
             
             progress_bar.progress(0.65, text="Running walk-forward portfolio curation...")
-            status_text.text(f"Walk-forward: {len(strategies_to_run)} strategies over {len(phase3_data)} days...")
+            status_text.text(f"Walk-forward: {len(strategies_to_run)} strategies over {PHASE3_LOOKBACK} days...")
             
             logger.info("-" * 70)
             logger.info(f"[PHASE 3/4] WALK-FORWARD PORTFOLIO CURATION (PURE)")
             logger.info(f"  Mode: {selected_main_branch}")
             logger.info(f"  Strategies: {list(strategies_to_run.keys())}")
-            logger.info(f"  Phase 3 Window: {len(phase3_data)} days (of {len(training_data_window_with_current)} total)")
+            logger.info(f"  Phase 3 Window: {PHASE3_LOOKBACK} days (of {len(training_data_window_with_current)} total)")
             logger.info(f"  Method: Daily rebalancing walk-forward (no trigger dependency)")
             
-            st.session_state.performance = evaluate_historical_performance(strategies_to_run, phase3_data)
+            st.session_state.performance = evaluate_historical_performance(
+                strategies_to_run, 
+                training_data_window_with_current,
+                test_window_size=PHASE3_LOOKBACK
+            )
             
             # ═══════════════════════════════════════════════════════════════════
             # PHASE 4: PORTFOLIO CURATION
