@@ -629,7 +629,7 @@ class FairValueEngine:
         global_weights = np.exp(-decay_rate * np.arange(MAX_TRAIN_SIZE - 1, -1, -1))
 
         # Dynamically scale refit interval to prevent over-computation on large datasets (Bounds: 5 to 21 days)
-        dynamic_refit = int(np.clip(n // 150, 1, 5))
+        dynamic_refit = int(np.clip(n // 150, 5, 21))
         
         chunks = []
         for t_start in range(MIN_TRAIN_SIZE, n, dynamic_refit):
