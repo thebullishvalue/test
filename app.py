@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-AARAMBH (आरंभ) v2.2 — Fair Value Breadth
+AARAMBH (आरंभ) v2.2.1 — Fair Value Breadth
 A Hemrek Capital Product
 
 Walk-forward valuation analysis for market reversals.
@@ -54,7 +54,7 @@ except ImportError:
 
 try:
     from sklearn.decomposition import PCA
-    from sklearn.linear_model import ElasticNetCV, HuberRegressor, RidgeCV
+    from sklearn.linear_model import ElasticNetCV, HuberRegressor, LinearRegression, RidgeCV
     from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
     from sklearn.model_selection import TimeSeriesSplit
     from sklearn.preprocessing import StandardScaler
@@ -68,7 +68,7 @@ except ImportError:
 # CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════
 
-VERSION = "v2.2.0"
+VERSION = "v2.2.1"
 PRODUCT_NAME = "Aarambh"
 COMPANY = "Hemrek Capital"
 
@@ -1957,6 +1957,8 @@ def main() -> None:
             if not staging_features:
                 st.warning("⚠️ Select at least one predictor.")
                 staging_features = [f for f in st.session_state["active_features"] if f in available]
+                if not staging_features:  # Hard fallback if state completely mismatches a newly loaded dataset
+                    staging_features = available[:3]
 
             staging_set = set(staging_features)
             active_set = set(st.session_state["active_features"])
@@ -2053,7 +2055,7 @@ def main() -> None:
     if active_date != "None" and active_date in data.columns:
         latest_sig = str(data[active_date].max())
     else:
-        latest_sig = str(np.sum(y))  # Fallback if no date col exists
+        latest_sig = str(np.sum(data.values))  # Monitors all columns to ensure inline predictor edits invalidate cache
     cache_key = f"{active_target}|{'|'.join(sorted(active_features))}|{len(data)}|{latest_sig}"
 
     if st.session_state.get("engine_cache") != cache_key:
