@@ -1,4 +1,4 @@
-# PRAGYAM v3.6.0 - Dependencies
+# PRAGYAM v3.7.0 - Dependencies
 # Hemrek Capital Portfolio Intelligence System
 # Python 3.10+ required
 

@@ -90,7 +90,7 @@ except ImportError:
 st.set_page_config(page_title="PRAGYAM | Portfolio Intelligence", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
 
 # --- Constants ---
-VERSION = "v3.6.0"  # Quantitative hardening: HRP allocation, SPRT triggers, conformal intervals, RMT factor decomposition
+VERSION = "v3.7.0"  # Quantitative hardening: HRP allocation, SPRT triggers, conformal intervals, RMT factor decomposition
 PRODUCT_NAME = "Pragyam"
 COMPANY = "Hemrek Capital"
 
