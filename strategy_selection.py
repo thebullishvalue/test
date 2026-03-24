@@ -839,7 +839,7 @@ def rank_strategies(metrics: Dict[str, Dict]) -> pd.DataFrame:
     # Compute dispersion-weighted score with absolute safety against NaN and negative values
     dispersions = {}
     for col in rank_cols:
-        s = df[col].std()
+        s = df[col].std(ddof=0)
         if pd.isna(s) or s <= 0:
             dispersions[col] = 0.01
         else:

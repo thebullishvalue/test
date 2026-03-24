@@ -380,7 +380,7 @@ class _CL1QuantitativeETFAnalyzer:
         key_metrics = ['rsi latest', 'rsi weekly', 'osc latest', 'osc weekly']
         for metric in key_metrics:
             if metric in df.columns:
-                    z_scores = np.abs(np.nan_to_num(stats.zscore(df[metric].fillna(0))))
+                z_scores = np.abs(np.nan_to_num(stats.zscore(df[metric].fillna(0))))
                 consistency = np.clip(1 - z_scores / 5, 0, 1)  # Penalize extreme outliers
                 quality_factors.append(consistency)
 
@@ -586,7 +586,7 @@ class _CL2QuantitativeETFAnalyzer:
         key_metrics = ['rsi latest', 'rsi weekly', 'osc latest', 'osc weekly']
         for metric in key_metrics:
             if metric in df.columns:
-                    z_scores = np.abs(np.nan_to_num(stats.zscore(df[metric].fillna(0))))
+                z_scores = np.abs(np.nan_to_num(stats.zscore(df[metric].fillna(0))))
                 consistency = np.clip(1 - z_scores / 5, 0, 1)
                 quality_factors.append(consistency)
         return np.mean(quality_factors, axis=0)

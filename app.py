@@ -5,10 +5,17 @@ Walk-forward portfolio curation with regime-aware strategy allocation.
 Multi-strategy backtesting and capital optimization engine.
 """
 
+import os
+# --- Optimization: Prevent NumPy from thread-thrashing under Streamlit multiprocessing ---
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os
 from datetime import datetime, timedelta, timezone
 import plotly.graph_objects as go
 import logging
@@ -207,7 +214,9 @@ def compute_portfolio_return(
         return 0.0
     # Missing symbols (delisted/halted) get 0 return instead of being silently dropped
     merged['price_next'] = merged['price_next'].fillna(merged['price_prev'])
-    returns = (merged['price_next'] - merged['price_prev']) / merged['price_prev']
+    # Math Soundness: Guard against corrupt price_prev = 0 creating Inf returns
+    safe_prev = np.where(merged['price_prev'] > 0, merged['price_prev'], 1e-10)
+    returns = (merged['price_next'] - safe_prev) / safe_prev
     gross_return = np.average(returns, weights=merged['value'])
 
     # Turnover-proportional transaction costs
@@ -862,7 +871,7 @@ def run_trigger_based_backtest(
                     buy_df = date_to_df[buy_date]
                     next_df = date_to_df[next_date]
 
-                    tier_port = strategy.generate_portfolio(buy_df.copy(), capital)
+                    tier_port = strategy.generate_portfolio(buy_df, capital)
                     if tier_port.empty:
                         continue
 
@@ -879,10 +888,11 @@ def run_trigger_based_backtest(
                 # Compute actual Sharpe per tier
                 for tier_name, rets in tier_returns_accum.items():
                     arr = np.array(rets)
-                    if len(arr) > 1 and arr.std() > 0.001:
-                        subset_performance[tier_name] = float((arr.mean() / arr.std()) * np.sqrt(252.0))
+                    if len(arr) > 1:
+                        metrics = compute_risk_metrics(arr, periods_per_year=252.0)
+                        subset_performance[tier_name] = metrics['sharpe']
                     else:
-                        subset_performance[tier_name] = float(arr.mean() * np.sqrt(252.0)) if len(arr) > 0 else 0.0
+                        subset_performance[tier_name] = 0.0
             
             all_results[name] = {
                 'metrics': metrics,
@@ -1591,10 +1601,19 @@ def curate_final_portfolio(strategies: Dict[str, BaseStrategy], performance: Dic
         
     final_port = pd.DataFrame([{'symbol': s, **d} for s, d in aggregated_holdings.items()]).sort_values('weight', ascending=False).head(num_positions)
     total_weight = final_port['weight'].sum()
-    final_port['weightage_pct'] = final_port['weight'] * 100 / total_weight
+    
+    if total_weight > 0:
+        final_port['weightage_pct'] = final_port['weight'] * 100 / total_weight
+    else:
+        final_port['weightage_pct'] = 100.0 / len(final_port)
+        
     final_port['weightage_pct'] = final_port['weightage_pct'].clip(lower=min_pos_pct, upper=max_pos_pct)
-    final_port['weightage_pct'] = (final_port['weightage_pct'] / final_port['weightage_pct'].sum()) * 100
-    final_port['units'] = np.floor((sip_amount * final_port['weightage_pct'] / 100) / final_port['price'])
+    weight_sum = final_port['weightage_pct'].sum()
+    if weight_sum > 0:
+        final_port['weightage_pct'] = (final_port['weightage_pct'] / weight_sum) * 100
+        
+    safe_price = np.where(final_port['price'] > 0, final_port['price'], 1e-10)
+    final_port['units'] = np.floor((sip_amount * final_port['weightage_pct'] / 100) / safe_price)
     final_port['value'] = final_port['units'] * final_port['price']
     
     final_port_df = final_port.sort_values('weightage_pct', ascending=False).reset_index(drop=True)
