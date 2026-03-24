@@ -619,47 +619,85 @@ class FairValueEngine:
         self.predictions = np.full(n, np.nan)
         self.model_spread = np.zeros(n)
 
-        last_models: dict = {"ridge": None, "huber": None, "ols": None}
-        current_scaler = None
+        # Pre-fill initial minimum train size
+        for t in range(MIN_TRAIN_SIZE):
+            self.predictions[t] = float(np.mean(y[:t])) if t > 0 else float(y[0])
+            self.model_spread[t] = 0.0
+
+        chunks = []
+        for t_start in range(MIN_TRAIN_SIZE, n, REFIT_INTERVAL):
+            t_end = min(t_start + REFIT_INTERVAL, n)
+            chunks.append((t_start, t_end))
+
+        last_models: dict = {"ridge": None, "huber": None, "ols": None, "elasticnet": None, "pca_wls": None}
         valid_cols = np.ones(X.shape[1], dtype=bool)
 
-        for t in range(n):
-            if progress_callback and t % max(1, n // 20) == 0:
-                progress_callback(t / n, f"Walking forward: {t}/{n} data points...")
+        import os
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        # Using ThreadPoolExecutor because scikit-learn & numpy release the GIL during heavy math
+        # This yields significant speedups without ProcessPool/Streamlit serialization overhead
+        max_workers = min(len(chunks), (os.cpu_count() or 1) * 2)
 
-            if t < MIN_TRAIN_SIZE:
-                self.predictions[t] = float(np.mean(y[:t])) if t > 0 else float(y[0])
-                self.model_spread[t] = 0.0
-                continue
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_chunk = {
+                executor.submit(self._process_wf_chunk, start, end, X, y): (start, end)
+                for start, end in chunks
+            }
+            
+            completed = 0
+            for future in as_completed(future_to_chunk):
+                start, end = future_to_chunk[future]
+                completed += 1
+                if progress_callback and completed % max(1, len(chunks) // 20) == 0:
+                    progress_callback(completed / len(chunks), f"Walking forward... ({completed}/{len(chunks)} blocks)")
 
-            # Periodic refit
-            if t == MIN_TRAIN_SIZE or t % REFIT_INTERVAL == 0:
-                start_idx = max(0, t - MAX_TRAIN_SIZE)
-                last_models, current_scaler, valid_cols = self._fit_ensemble(
-                    X[start_idx:t], y[start_idx:t], t,
-                )
-
-            # Predict with latest ensemble
-            preds_at_t = self._predict_ensemble(
-                X[t : t + 1], last_models, current_scaler, valid_cols, t,
-            )
-
-            if preds_at_t:
-                pred_mean = float(np.mean(preds_at_t))
-                pred_spread = float(np.std(preds_at_t)) if len(preds_at_t) > 1 else 1e-6
-                self.predictions[t] = pred_mean
-                self.model_spread[t] = max(pred_spread, 1e-6)
-            else:
-                logging.warning("All models failed at t=%d, using windowed mean fallback", t)
-                start_idx = max(0, t - MAX_TRAIN_SIZE)
-                self.predictions[t] = float(np.mean(y[start_idx:t]))
-                self.model_spread[t] = 1e-6
+                try:
+                    t_start, t_end, preds, spreads, models, v_cols = future.result()
+                    self.predictions[t_start:t_end] = preds
+                    self.model_spread[t_start:t_end] = spreads
+                    
+                    # Keep the models from the very last chunk for feature impact extraction
+                    if t_end == n:
+                        last_models = models
+                        valid_cols = v_cols
+                except Exception as e:
+                    logging.error("Chunk [%d:%d] failed: %s", start, end, e)
                 
         # Extract driving features from the final fitted ensemble matrix
         self._compute_feature_impacts(last_models, valid_cols)
 
+    @staticmethod
+    def _process_wf_chunk(
+        t_start: int,
+        t_end: int,
+        X: np.ndarray,
+        y: np.ndarray,
+    ) -> tuple[int, int, np.ndarray, np.ndarray, dict, np.ndarray]:
+        """Process a single walk-forward block (fit at start, predict up to end)."""
+        start_idx = max(0, t_start - MAX_TRAIN_SIZE)
+        models, scaler, valid_cols = FairValueEngine._fit_ensemble(
+            X[start_idx:t_start], y[start_idx:t_start], t_start
+        )
+
+        preds = []
+        spreads = []
+        for t in range(t_start, t_end):
+            preds_at_t = FairValueEngine._predict_ensemble(
+                X[t : t + 1], models, scaler, valid_cols, t
+            )
+            if preds_at_t:
+                preds.append(float(np.mean(preds_at_t)))
+                spreads.append(max(float(np.std(preds_at_t)), 1e-6) if len(preds_at_t) > 1 else 1e-6)
+            else:
+                preds.append(float(np.mean(y[max(0, t - MAX_TRAIN_SIZE):t])))
+                spreads.append(1e-6)
+
+        return t_start, t_end, np.array(preds), np.array(spreads), models, valid_cols
+
+    @staticmethod
     def _fit_ensemble(
-        self, X_train: np.ndarray, y_train: np.ndarray, t: int,
+        X_train: np.ndarray, y_train: np.ndarray, t: int,
     ) -> tuple[dict, StandardScaler | None, np.ndarray]:
         """Fit Ridge + Huber + WLS ensemble on training data with exponential decay weighting."""
         models: dict = {"ridge": None, "huber": None, "ols": None, "elasticnet": None, "pca_wls": None}
@@ -700,7 +738,8 @@ class FairValueEngine:
             try:
                 # ElasticNet combines L1 (feature selection) and L2 (shrinkage).
                 # Testing ratios from 10% L1 to 100% L1 (Pure Lasso).
-                enet = ElasticNetCV(l1_ratio=[0.1, 0.5, 0.9, 1.0], cv=TimeSeriesSplit(n_splits=3), max_iter=50000, tol=1e-2, n_jobs=-1)
+                # Revert to single-threaded ElasticNet to prevent thread explosion during outer parallelization
+                enet = ElasticNetCV(l1_ratio=[0.1, 0.5, 0.9, 1.0], cv=TimeSeriesSplit(n_splits=3), max_iter=50000, tol=1e-2, n_jobs=1)
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
                     enet.fit(X_scaled, y_train, sample_weight=weights)
@@ -1040,7 +1079,8 @@ class FairValueEngine:
         last_high_idx = -1
         
         # Precompute expanding standard deviation of residuals to avoid O(n^2) loop computation
-        expanding_std = pd.Series(residual).expanding(min_periods=20).std().bfill().values
+        min_periods = min(20, max(2, len(residual) // 3))
+        expanding_std = pd.Series(residual).expanding(min_periods=min_periods).std().bfill().values
 
         for i in range(order * 2, n):
             window_price = price[i - 2 * order : i + 1]
