@@ -472,10 +472,6 @@ class FairValueEngine:
         self.n_samples = len(y)
         self.y = y.copy()
 
-        # Precompute global exponential decay weights to avoid repeated np.exp() calculations
-        decay_rate = np.log(2) / 252.0
-        self._global_weights = np.exp(-decay_rate * np.arange(MAX_TRAIN_SIZE - 1, -1, -1))
-
         self._walk_forward_regression(X, y, progress_callback)
 
         if progress_callback:
@@ -636,6 +632,14 @@ class FairValueEngine:
         global_vol = max(np.median(dy), 1e-8)
         vol_ratio = roll_vol / global_vol
 
+        self.high_volatility = vol_ratio > 1.5
+
+        # Precompute exponential decay curves for different volatility regimes
+        arr = np.arange(MAX_TRAIN_SIZE - 1, -1, -1)
+        w_fast = np.exp(-(np.log(2) / 63.0) * arr)   # 3-month half-life: Extreme panic, prioritize recent data
+        w_norm = np.exp(-(np.log(2) / 252.0) * arr)  # 1-year half-life: Normal conditions
+        w_slow = np.exp(-(np.log(2) / 504.0) * arr)  # 2-year half-life: Lethargic trends
+
         chunks = []
         t_start = MIN_TRAIN_SIZE
         while t_start < n:
@@ -646,13 +650,16 @@ class FairValueEngine:
             # If volatility is calm, relationships are stable -> refit sparsely (21 days)
             if current_vol > 1.5:
                 step = 5
+                chunk_weights = w_fast
             elif current_vol < 0.8:
                 step = 21
+                chunk_weights = w_slow
             else:
                 step = 10
+                chunk_weights = w_norm
                 
             t_end = min(t_start + step, n)
-            chunks.append((t_start, t_end))
+            chunks.append((t_start, t_end, chunk_weights))
             t_start = t_end
 
         last_models: dict = {"ridge": None, "huber": None, "ols": None, "elasticnet": None, "pca_wls": None}
@@ -667,8 +674,8 @@ class FairValueEngine:
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_chunk = {
-                executor.submit(self._process_wf_chunk, start, end, X, y, self._global_weights): (start, end)
-                for start, end in chunks
+                executor.submit(self._process_wf_chunk, start, end, X, y, weights): (start, end)
+                for start, end, weights in chunks
             }
             
             completed = 0
@@ -699,32 +706,44 @@ class FairValueEngine:
         t_end: int,
         X: np.ndarray,
         y: np.ndarray,
-        global_weights: np.ndarray,
+        chunk_weights: np.ndarray,
     ) -> tuple[int, int, np.ndarray, np.ndarray, dict, np.ndarray]:
         """Process a single walk-forward block (fit at start, predict up to end)."""
         start_idx = max(0, t_start - MAX_TRAIN_SIZE)
         models, scaler, valid_cols = FairValueEngine._fit_ensemble(
-            X[start_idx:t_start], y[start_idx:t_start], t_start, global_weights
+            X[start_idx:t_start], y[start_idx:t_start], t_start, chunk_weights
         )
 
-        preds = []
-        spreads = []
-        for t in range(t_start, t_end):
-            preds_at_t = FairValueEngine._predict_ensemble(
-                X[t : t + 1], models, scaler, valid_cols, t
-            )
-            if preds_at_t:
-                preds.append(float(np.mean(preds_at_t)))
-                spreads.append(max(float(np.std(preds_at_t)), 1e-6) if len(preds_at_t) > 1 else 1e-6)
-            else:
-                preds.append(float(np.mean(y[max(0, t - MAX_TRAIN_SIZE):t])))
-                spreads.append(1e-6)
+        X_chunk = X[t_start:t_end]
+        if len(X_chunk) == 0:
+            return t_start, t_end, np.array([]), np.array([]), models, valid_cols
 
-        return t_start, t_end, np.array(preds), np.array(spreads), models, valid_cols
+        preds_matrix = FairValueEngine._predict_ensemble(
+            X_chunk, models, scaler, valid_cols, t_start
+        )
+
+        if preds_matrix:
+            preds_stacked = np.vstack(preds_matrix)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                preds = np.nanmean(preds_stacked, axis=0)
+                spreads = np.maximum(np.nanstd(preds_stacked, axis=0), 1e-6) if len(preds_matrix) > 1 else np.full(len(preds), 1e-6)
+                
+                # Fallback for any NaN projections
+                nans = np.isnan(preds)
+                if np.any(nans):
+                    preds[nans] = float(np.mean(y[start_idx:t_start]))
+                    spreads[nans] = 1e-6
+        else:
+            fallback = float(np.mean(y[start_idx:t_start]))
+            preds = np.full(t_end - t_start, fallback)
+            spreads = np.full(t_end - t_start, 1e-6)
+
+        return t_start, t_end, preds, spreads, models, valid_cols
 
     @staticmethod
     def _fit_ensemble(
-        X_train: np.ndarray, y_train: np.ndarray, t: int, global_weights: np.ndarray,
+        X_train: np.ndarray, y_train: np.ndarray, t: int, chunk_weights: np.ndarray,
     ) -> tuple[dict, StandardScaler | None, np.ndarray]:
         """Fit Ridge + Huber + WLS ensemble on training data with exponential decay weighting."""
         models: dict = {"ridge": None, "huber": None, "ols": None, "elasticnet": None, "pca_wls": None}
@@ -739,7 +758,7 @@ class FairValueEngine:
 
         n_samples = len(y_train)
         # Slice precomputed weights directly from memory
-        weights = global_weights[-n_samples:]
+        weights = chunk_weights[-n_samples:]
 
         if _HAS_SKLEARN:
             scaler = StandardScaler()
@@ -960,6 +979,7 @@ class FairValueEngine:
             "FairValue": self.predictions,
             "Residual": self.residuals,
             "ModelSpread": self.model_spread,
+            "HighVolatility": self.high_volatility,
         })
         for lb, data in self.lookback_data.items():
             self.ts_data[f"Z_{lb}"] = data["z_scores"]
@@ -1569,8 +1589,8 @@ def _render_tab_regime(engine, ts_filtered, x_axis, x_title, signal, model_stats
         f'<div style="margin-top: 1.5rem; padding: 1.25rem; border-left: 3px solid {COLOR_CYAN}; background: rgba(6, 182, 212, 0.05); border-radius: 8px;">'
         f'<h4 style="color: {COLOR_CYAN}; font-size: 0.95rem; margin-top: 0; margin-bottom: 0.5rem; font-weight: 700;">🧠 Time-Weighted Fair Value</h4>'
         f'<p style="color: var(--text-muted); font-size: 0.85rem; margin: 0; line-height: 1.6;">'
-        f'The underlying mathematical engine utilizes <b>Exponential Decay Weighting</b> (252-day half-life) for its regression ensemble. '
-        f'This mathematically forces the models to prioritize the current market regime and safely '
+        f'The underlying mathematical engine utilizes <b>Adaptive Exponential Decay Weighting</b> (63 to 504-day half-lives) for its regression ensemble. '
+        f'This mathematically forces the models to prioritize the current market regime dynamically based on local volatility and safely '
         f'discount distant historical relationships.</p></div>',
         unsafe_allow_html=True,
     )
@@ -1719,6 +1739,38 @@ def _render_tab_signal(
             mode="lines", name="OU Projection",
             line=dict(color=COLOR_GOLD, width=1.5, dash="dot"), opacity=0.5,
         ), row=2, col=1)
+
+    # Add High Volatility background highlights spanning both subplots
+    if "HighVolatility" in ts_filtered.columns and ts_filtered["HighVolatility"].any():
+        # Add empty trace strictly for legend generation
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(color="rgba(239, 68, 68, 0.5)", size=10, symbol="square"),
+            name="High Volatility Regime",
+        ), row=1, col=1)
+
+        high_vol = ts_filtered["HighVolatility"].values
+        x_vals = x_axis.values
+        in_block = False
+        start_x = None
+        
+        # Combine contiguous periods into single shaded blocks to optimize Plotly rendering
+        for i, is_high in enumerate(high_vol):
+            if is_high and not in_block:
+                start_x = x_vals[i]
+                in_block = True
+            elif not is_high and in_block:
+                end_x = x_vals[i-1]
+                fig.add_vrect(
+                    x0=start_x, x1=end_x, fillcolor="rgba(239, 68, 68, 0.1)",
+                    layer="below", line_width=0, row="all", col=1
+                )
+                in_block = False
+        if in_block:
+            fig.add_vrect(
+                x0=start_x, x1=x_vals[-1], fillcolor="rgba(239, 68, 68, 0.1)",
+                layer="below", line_width=0, row="all", col=1
+            )
 
     fig.update_layout(height=500, legend=dict(orientation="h", yanchor="bottom", y=1.02))
     fig.update_yaxes(title_text=active_target, row=1, col=1)
