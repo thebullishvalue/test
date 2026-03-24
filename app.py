@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-AARAMBH (आरंभ) v2.0 — Fair Value Breadth
+AARAMBH (आरंभ) v2.2 — Fair Value Breadth
 A Hemrek Capital Product
 
 Walk-forward valuation analysis for market reversals.
@@ -68,7 +68,7 @@ except ImportError:
 # CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════
 
-VERSION = "v2.1.0"
+VERSION = "v2.2.0"
 PRODUCT_NAME = "Aarambh"
 COMPANY = "Hemrek Capital"
 
@@ -472,6 +472,10 @@ class FairValueEngine:
         self.n_samples = len(y)
         self.y = y.copy()
 
+        # Precompute global exponential decay weights to avoid repeated np.exp() calculations
+        decay_rate = np.log(2) / 252.0
+        self._global_weights = np.exp(-decay_rate * np.arange(MAX_TRAIN_SIZE - 1, -1, -1))
+
         self._walk_forward_regression(X, y, progress_callback)
 
         if progress_callback:
@@ -624,9 +628,12 @@ class FairValueEngine:
             self.predictions[t] = float(np.mean(y[:t])) if t > 0 else float(y[0])
             self.model_spread[t] = 0.0
 
+        # Dynamically scale refit interval to prevent over-computation on large datasets (Bounds: 5 to 21 days)
+        dynamic_refit = int(np.clip(n // 150, 5, 21))
+        
         chunks = []
-        for t_start in range(MIN_TRAIN_SIZE, n, REFIT_INTERVAL):
-            t_end = min(t_start + REFIT_INTERVAL, n)
+        for t_start in range(MIN_TRAIN_SIZE, n, dynamic_refit):
+            t_end = min(t_start + dynamic_refit, n)
             chunks.append((t_start, t_end))
 
         last_models: dict = {"ridge": None, "huber": None, "ols": None, "elasticnet": None, "pca_wls": None}
@@ -641,7 +648,7 @@ class FairValueEngine:
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_chunk = {
-                executor.submit(self._process_wf_chunk, start, end, X, y): (start, end)
+                executor.submit(self._process_wf_chunk, start, end, X, y, self._global_weights): (start, end)
                 for start, end in chunks
             }
             
@@ -673,11 +680,12 @@ class FairValueEngine:
         t_end: int,
         X: np.ndarray,
         y: np.ndarray,
+        global_weights: np.ndarray,
     ) -> tuple[int, int, np.ndarray, np.ndarray, dict, np.ndarray]:
         """Process a single walk-forward block (fit at start, predict up to end)."""
         start_idx = max(0, t_start - MAX_TRAIN_SIZE)
         models, scaler, valid_cols = FairValueEngine._fit_ensemble(
-            X[start_idx:t_start], y[start_idx:t_start], t_start
+            X[start_idx:t_start], y[start_idx:t_start], t_start, global_weights
         )
 
         preds = []
@@ -697,7 +705,7 @@ class FairValueEngine:
 
     @staticmethod
     def _fit_ensemble(
-        X_train: np.ndarray, y_train: np.ndarray, t: int,
+        X_train: np.ndarray, y_train: np.ndarray, t: int, global_weights: np.ndarray,
     ) -> tuple[dict, StandardScaler | None, np.ndarray]:
         """Fit Ridge + Huber + WLS ensemble on training data with exponential decay weighting."""
         models: dict = {"ridge": None, "huber": None, "ols": None, "elasticnet": None, "pca_wls": None}
@@ -711,9 +719,8 @@ class FairValueEngine:
         X_train_clean = X_train[:, valid_cols]
 
         n_samples = len(y_train)
-        # Half-life of 252 trading days for recent data emphasis
-        decay_rate = np.log(2) / 252.0
-        weights = np.exp(-decay_rate * np.arange(n_samples - 1, -1, -1))
+        # Slice precomputed weights directly from memory
+        weights = global_weights[-n_samples:]
 
         if _HAS_SKLEARN:
             scaler = StandardScaler()
@@ -741,8 +748,8 @@ class FairValueEngine:
                 # Revert to single-threaded ElasticNet to prevent thread explosion during outer parallelization
                 enet = ElasticNetCV(
                     l1_ratio=[0.5, 0.9, 1.0],
-                    n_alphas=30,
-                    cv=TimeSeriesSplit(n_splits=3),
+                    n_alphas=15,
+                    cv=2,
                     max_iter=10000,
                     tol=1e-2,
                     selection="random",
