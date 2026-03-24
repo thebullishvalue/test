@@ -760,9 +760,9 @@ class FairValueEngine:
                 # Revert to single-threaded ElasticNet to prevent thread explosion during outer parallelization
                 enet = ElasticNetCV(
                     l1_ratio=[0.5, 0.9, 1.0],
-                    n_alphas=15,
+                    n_alphas=10,
                     cv=2,
-                    max_iter=10000,
+                    max_iter=2000,
                     tol=1e-2,
                     selection="random",
                     n_jobs=1
