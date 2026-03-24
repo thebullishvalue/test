@@ -292,6 +292,11 @@ def ledoit_wolf_shrinkage(
     # Sum upper triangle only
     rho_off = float(np.triu(contrib_mat, k=1).sum())
 
+    # CRITICAL FIX: Instantiate missing denominator and guard against identical target matches
+    gamma_lw = np.sum((target - sample_cov) ** 2)
+    if gamma_lw < 1e-10:
+        return target, 1.0
+
     kappa = (pi_sum - rho_diag - 2 * rho_off) / gamma_lw
     delta = max(0.0, min(1.0, kappa / T))
 
@@ -373,7 +378,12 @@ def compute_spectral_diagnostics(
     if T < 3:
         return _degenerate_diagnostics(N)
 
-    col_means = np.nanmean(data_matrix, axis=0)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        col_means = np.nanmean(data_matrix, axis=0)
+        
+    col_means = np.nan_to_num(col_means, nan=0.0)
     for j in range(N):
         mask = np.isnan(data_matrix[:, j])
         data_matrix[mask, j] = col_means[j]
@@ -469,19 +479,21 @@ def compute_spectral_diagnostics(
 
 def _degenerate_diagnostics(n: int) -> SpectralDiagnostics:
     """Return identity-based diagnostics for degenerate cases."""
+    safe_n = max(n, 1)
+    n_factors = min(5, safe_n)
     return SpectralDiagnostics(
-        eigenvalues=np.ones(max(n, 1)),
-        eigenvectors=np.eye(max(n, 1)),
+        eigenvalues=np.ones(safe_n),
+        eigenvectors=np.eye(safe_n),
         mp_dist=MPDistribution(
             gamma=1.0, sigma_sq=1.0,
             lambda_plus=4.0, lambda_minus=0.0,
-            n_signal=0, n_noise=max(n, 1),
+            n_signal=0, n_noise=safe_n,
         ),
         condition_number=1.0,
-        effective_rank=float(max(n, 1)),
-        absorption_ratio=1.0 / max(n, 1),
-        herfindahl_eigenvalues=1.0 / max(n, 1),
-        cleaned_corr=np.eye(max(n, 1)),
+        effective_rank=float(safe_n),
+        absorption_ratio=float(n_factors / safe_n),
+        herfindahl_eigenvalues=1.0 / safe_n,
+        cleaned_corr=np.eye(safe_n),
         shrinkage_intensity=0.0,
     )
 
@@ -547,9 +559,9 @@ def detect_redundant_strategies(
         strategy_returns[name][:min_len] for name in names
     ])
 
-    # Remove NaN rows
-    valid = ~np.any(np.isnan(returns_matrix), axis=1)
-    returns_matrix = returns_matrix[valid]
+    # Robust NaN handling: zero-fill instead of dropping rows. 
+    # Prevents a single dud strategy from destroying the overlapping timeline for everyone.
+    returns_matrix = np.nan_to_num(returns_matrix, nan=0.0, posinf=0.0, neginf=0.0)
 
     if returns_matrix.shape[0] < min_window:
         return {
@@ -948,9 +960,8 @@ def reduce_strategy_space(
         strategy_returns[name][:min_len] for name in names
     ])
 
-    # Remove NaN rows
-    valid = ~np.any(np.isnan(returns_matrix), axis=1)
-    returns_matrix = returns_matrix[valid]
+    # Robust NaN handling
+    returns_matrix = np.nan_to_num(returns_matrix, nan=0.0, posinf=0.0, neginf=0.0)
 
     if returns_matrix.shape[0] < min_window:
         return {
@@ -1096,9 +1107,10 @@ def _hrp_bisect_weights(
             # Cluster variance = inverse-vol portfolio variance
             def cluster_var(indices):
                 sub_cov = cov[np.ix_(indices, indices)]
-                ivp = 1.0 / np.diag(sub_cov)
+                diag = np.maximum(np.diag(sub_cov), 1e-10)
+                ivp = 1.0 / diag
                 ivp = ivp / ivp.sum()
-                return float(ivp @ sub_cov @ ivp)
+                return max(0.0, float(ivp @ sub_cov @ ivp))
 
             var_left = cluster_var(left)
             var_right = cluster_var(right)
@@ -1156,6 +1168,8 @@ def hrp_weights(
     if N <= 1:
         return {strategy_names[0]: 1.0} if N == 1 else {}
 
+    returns_matrix = np.nan_to_num(returns_matrix, nan=0.0, posinf=0.0, neginf=0.0)
+
     # Covariance from returns
     vols = np.std(returns_matrix, axis=0)
     vols = np.where(vols > _EPS, vols, _EPS)
@@ -1165,8 +1179,10 @@ def hrp_weights(
         corr = diagnostics.cleaned_corr
     else:
         standardized = (returns_matrix - returns_matrix.mean(axis=0)) / vols
-        corr = np.corrcoef(standardized.T)
+        # Replace fragile np.corrcoef with robust matrix multiplication
+        corr = (standardized.T @ standardized) / returns_matrix.shape[0]
         np.fill_diagonal(corr, 1.0)
+        corr = np.clip(corr, -1.0, 1.0)
 
     cov = corr * np.outer(vols, vols)
     # Regularize

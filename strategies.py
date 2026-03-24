@@ -91,7 +91,12 @@ class BaseStrategy(ABC):
 
     def _allocate_portfolio(self, df: pd.DataFrame, sip_amount: float) -> pd.DataFrame:
         """Standardized portfolio allocation and cash distribution logic."""
-        if 'weightage' not in df.columns or df['weightage'].sum() <= 0:
+        if 'weightage' not in df.columns:
+            return pd.DataFrame(columns=['symbol', 'price', 'weightage_pct', 'units', 'value'])
+
+        # Sanitize weights against upstream NaN leakages
+        df['weightage'] = df['weightage'].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        if df['weightage'].sum() <= 0:
             return pd.DataFrame(columns=['symbol', 'price', 'weightage_pct', 'units', 'value'])
 
         # Cap and redistribute weights (10% max, 1% min)
@@ -375,7 +380,7 @@ class _CL1QuantitativeETFAnalyzer:
         key_metrics = ['rsi latest', 'rsi weekly', 'osc latest', 'osc weekly']
         for metric in key_metrics:
             if metric in df.columns:
-                z_scores = np.abs(stats.zscore(df[metric].fillna(0)))
+                    z_scores = np.abs(np.nan_to_num(stats.zscore(df[metric].fillna(0))))
                 consistency = np.clip(1 - z_scores / 5, 0, 1)  # Penalize extreme outliers
                 quality_factors.append(consistency)
 
@@ -581,7 +586,7 @@ class _CL2QuantitativeETFAnalyzer:
         key_metrics = ['rsi latest', 'rsi weekly', 'osc latest', 'osc weekly']
         for metric in key_metrics:
             if metric in df.columns:
-                z_scores = np.abs(stats.zscore(df[metric].fillna(0)))
+                    z_scores = np.abs(np.nan_to_num(stats.zscore(df[metric].fillna(0))))
                 consistency = np.clip(1 - z_scores / 5, 0, 1)
                 quality_factors.append(consistency)
         return np.mean(quality_factors, axis=0)
@@ -1030,7 +1035,7 @@ class _CL3UltimateETFAnalyzer:
                 mean = df[col].mean()
                 std = df[col].std()
                 if std > 0:
-                    df[col] = df[col].clip(mean - 3*std, mean + 3*std)
+                    df[col] = df[col].clip(mean - 3*std, mean + 3*std).fillna(mean)
         return df
 
     def detect_market_regime(self, df):
@@ -1522,18 +1527,18 @@ class MOM2Strategy(BaseStrategy):
         """Calculate cross-sectional statistical factors"""
         
         # Factor 1: Cross-sectional RSI z-score
-        df['rsi_zscore'] = (df['rsi latest'] - df['rsi latest'].mean()) / (df['rsi latest'].std() + 1e-6)
+        df['rsi_zscore'] = (df['rsi latest'] - df['rsi latest'].mean()) / (df['rsi latest'].std(ddof=0) + 1e-6)
         
         # Factor 2: Cross-sectional Oscillator z-score
-        df['osc_zscore'] = (df['osc latest'] - df['osc latest'].mean()) / (df['osc latest'].std() + 1e-6)
+        df['osc_zscore'] = (df['osc latest'] - df['osc latest'].mean()) / (df['osc latest'].std(ddof=0) + 1e-6)
         
         # Factor 3: Price momentum z-score (relative to MA)
         df['price_ma_ratio'] = df['price'] / df['ma90 latest']
-        df['price_mom_zscore'] = (df['price_ma_ratio'] - df['price_ma_ratio'].mean()) / (df['price_ma_ratio'].std() + 1e-6)
+        df['price_mom_zscore'] = (df['price_ma_ratio'] - df['price_ma_ratio'].mean()) / (df['price_ma_ratio'].std(ddof=0) + 1e-6)
         
         # Factor 4: Volatility-adjusted returns z-score
         df['vol_adj_ret'] = (df['price'] / df['ma20 latest'] - 1) / (df['dev20 latest'] / df['price'] + 1e-6)
-        df['vol_adj_ret_zscore'] = (df['vol_adj_ret'] - df['vol_adj_ret'].mean()) / (df['vol_adj_ret'].std() + 1e-6)
+        df['vol_adj_ret_zscore'] = (df['vol_adj_ret'] - df['vol_adj_ret'].mean()) / (df['vol_adj_ret'].std(ddof=0) + 1e-6)
         
         # Factor 5: Time-series z-score momentum
         # Using the existing z-scores as momentum indicators
@@ -2821,7 +2826,7 @@ class VelocityApocalypse(BaseStrategy):
         df = self._clean_data(df, required_columns)
 
         # 1. Oscillator Escape Velocity (3+ std dev)
-        osc_std = df['osc latest'].std()
+        osc_std = df['osc latest'].std(ddof=0) + 1e-6
         escape_vel = np.where(np.abs(df['osc latest']) > 3 * osc_std, 5.0, np.clip(df['osc latest'] / osc_std, 0.1, 3.0))
         df['escape_vel'] = escape_vel * np.sign(df['osc latest'])  # Direction matters
 
@@ -4854,7 +4859,7 @@ class AdaptiveZScoreEngine(BaseStrategy):
         df = self._clean_data(df, required_columns)
         
         # ADAPTIVE THRESHOLD based on universe stress
-        universe_zscore_std = df['zscore latest'].std()
+        universe_zscore_std = df['zscore latest'].std(ddof=0) + 1e-6
         universe_osc_mean = df['osc latest'].mean()
         
         # In stressed markets (high dispersion, low osc), adjust sensitivity
@@ -5003,7 +5008,7 @@ class InformationRatioOptimizer(BaseStrategy):
         
         # SIGNAL EXTRACTION with cross-sectional normalization
         def cs_normalize(series):
-            mean, std = series.mean(), series.std()
+            mean, std = series.mean(), series.std(ddof=0)
             return (series - mean) / (std + 1e-6)
         
         rsi_norm = cs_normalize(df['rsi latest'])
@@ -5238,7 +5243,7 @@ class VolatilityAdjustedValue(BaseStrategy):
         blended_vol = vol_daily * 0.6 + vol_weekly * 0.4
         
         # Normalize volatility to cross-sectional z-score
-        vol_mean, vol_std = blended_vol.mean(), blended_vol.std()
+        vol_mean, vol_std = blended_vol.mean(), blended_vol.std(ddof=0)
         vol_zscore = (blended_vol - vol_mean) / (vol_std + 1e-6)
         
         # VOLATILITY ADJUSTMENT (value per unit vol)
@@ -5373,7 +5378,7 @@ class EntropyWeightedSelector(BaseStrategy):
             shifted = series - series.min() + 1e-6
             probs = shifted / shifted.sum()
             entropy = -np.sum(probs * np.log(probs + 1e-10))
-            max_entropy = np.log(len(series))
+            max_entropy = max(np.log(len(series)), 1e-6)
             normalized_entropy = entropy / max_entropy
             return 1 - normalized_entropy  # Invert: low entropy = high weight
         

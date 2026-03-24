@@ -32,7 +32,7 @@ class LiquidityOscillator:
         df = data.copy()
         df['spread'] = (df['high'] + df['low']) / 2 - df['open']
         df['vol_ma'] = df['volume'].rolling(window=self.length).mean()
-        safe_vol_ma = df['vol_ma'].replace(0, pd.NA)
+        safe_vol_ma = df['vol_ma'].replace(0, np.nan)
         df['vwap_spread'] = (df['spread'] * df['volume'] / safe_vol_ma).rolling(window=self.length).mean()
         close_shifted = df['close'].shift(self.impact_window)
         df['price_impact'] = ((df['close'] - close_shifted) * df['volume'] / safe_vol_ma).rolling(window=self.length).mean()
@@ -41,7 +41,7 @@ class LiquidityOscillator:
         df['lowest_value'] = df['source_value'].rolling(window=self.length).min()
         df['highest_value'] = df['source_value'].rolling(window=self.length).max()
         range_value = df['highest_value'] - df['lowest_value']
-        safe_range_value = range_value.replace(0, pd.NA)
+        safe_range_value = range_value.replace(0, np.nan)
         oscillator = 200 * (df['source_value'] - df['lowest_value']) / safe_range_value - 100
         return oscillator.rename('liquidity_oscillator')
 
@@ -49,17 +49,31 @@ def resample_data(df: pd.DataFrame, rule: str = 'W-FRI') -> pd.DataFrame:
     """Resample daily OHLCV data to a different timeframe.
 
     Uses last-available trading day per week to handle NSE holidays
-    (e.g. Friday closures) that would otherwise produce partial or
-    missing weekly bars with a rigid W-FRI rule.
+    and incomplete current weeks, preventing temporal lookahead bias 
+    and ensuring current-week data is never dropped during reindexing.
     """
     if df.empty or not isinstance(df.index, pd.DatetimeIndex):
         return pd.DataFrame()
+        
+    # Group by standard pandas period to maintain week boundaries
+    grouped = df.groupby(pd.Grouper(freq=rule))
     agg_map = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
-    resampled = df.resample(rule).agg(agg_map).dropna()
-    # Drop weeks with too few trading days (< 2) to avoid noisy single-day bars
-    counts = df['close'].resample(rule).count()
-    valid_weeks = counts[counts >= 2].index
-    return resampled.loc[resampled.index.isin(valid_weeks)]
+    resampled = grouped.agg(agg_map)
+    
+    # CRITICAL FIX: Align index to the actual LAST available trading day in that period.
+    # This prevents dropping the current incomplete week (e.g., Wed) during daily reindexing.
+    # Execution Fix: Fully vectorized retrieval bypasses O(N) lambda evaluation
+    last_dates = df.index.to_series().groupby(pd.Grouper(freq=rule)).last()
+    resampled.index = last_dates
+    resampled = resampled[resampled.index.notna()]
+    
+    # Drop past weeks with < 2 trading days, but explicitly retain the current (last) week 
+    # even if it only has 1 day (e.g., running backtest on a Monday).
+    counts = grouped['close'].count()
+    counts.index = last_dates
+    valid_mask = (counts >= 2) | (counts.index == df.index[-1])
+    
+    return resampled[valid_mask]
 
 
 def calculate_rsi(data: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -71,13 +85,17 @@ def calculate_rsi(data: pd.DataFrame, period: int = 14) -> pd.Series:
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
 
-    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
-    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
+    # CRITICAL FIX: adjust=False strictly enforces J.W. Wilder's original exponential smoothing.
+    # Default adjust=True calculates a standard EMA, causing RSI divergence vs canonical platforms.
+    avg_gain = gain.ewm(com=period - 1, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(com=period - 1, min_periods=period, adjust=False).mean()
 
-    rs = avg_gain / avg_loss.replace(0, pd.NA)
-    rsi = 100.0 - (100.0 / (1.0 + rs))
-    rsi = rsi.fillna(100.0)  # avg_loss == 0 means all gains → RSI = 100
-    return rsi
+    # CRITICAL FIX: Mathematically isolate exact 0.0 division without polluting warmup NaNs
+    rs = avg_gain / avg_loss.replace(0.0, np.nan)
+    rsi = pd.Series(100.0 - (100.0 / (1.0 + rs)), index=data.index)
+    rsi = np.where((avg_loss == 0.0) & (avg_gain > 0.0), 100.0, rsi)
+    
+    return pd.Series(rsi, index=data.index)
 
 def calculate_all_indicators(
     symbol_data: pd.DataFrame,
@@ -115,7 +133,7 @@ def calculate_all_indicators(
             if len(osc.dropna()) >= 20:
                 osc_sma20 = osc.rolling(window=20).mean()
                 osc_std20 = osc.rolling(window=20).std()
-                safe_std20 = osc_std20.replace(0, pd.NA)
+                safe_std20 = osc_std20.replace(0, np.nan)
                 all_results_df[f'zscore {tf_name}'] = (osc - osc_sma20) / safe_std20
 
         rsi_series = calculate_rsi(df)
@@ -209,10 +227,20 @@ def generate_historical_data(
             start=start_date,
             end=end_date + timedelta(days=1),  # yfinance is end-exclusive
             progress=False,
+            auto_adjust=True,  # Prevent stock splits from causing massive false indicator spikes
         )
     except Exception as e:
         logger.error("yf.download failed: %s", e)
         all_data = pd.DataFrame()
+
+    # Prevent after-hours lookahead bias
+    if not all_data.empty:
+        if all_data.index.tz is not None:
+            all_data.index = all_data.index.tz_localize(None)
+        # Strip time and strictly clip to requested end_date to drop Yahoo's live/partial injections
+        all_data.index = all_data.index.normalize()
+        end_boundary = pd.to_datetime(end_date).normalize()
+        all_data = all_data.loc[all_data.index <= end_boundary]
 
     if all_data.empty or all_data['Close'].dropna(how='all').empty:
         logger.error("yf.download returned empty or all-NaN Close data.")
@@ -294,7 +322,8 @@ def generate_historical_data(
     # Ensure column contract
     for col in COLUMN_ORDER:
         if col not in master_df.columns:
-            master_df[col] = pd.NA
+            # Prevent Pandas extension type pollution which crashes downstream RMT/NumPy math
+            master_df[col] = np.nan
     master_df = master_df[COLUMN_ORDER]
     
     # Group by index (date) and build the final list

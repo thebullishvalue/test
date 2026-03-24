@@ -23,6 +23,9 @@ import logging
 
 logger = logging.getLogger("BacktestEngine")
 
+# Transaction cost model: round-trip cost in basis points (buy + sell).
+# Must perfectly align with app.py to prevent in-sample performance hallucination.
+TRANSACTION_COST_BPS = 20
 
 # ============================================================================
 # CANONICAL RISK METRICS — single source of truth for Sharpe, Sortino, etc.
@@ -195,10 +198,14 @@ class PerformanceMetrics:
         else:
             cagr = 0.0
 
-        if daily_returns.empty or len(daily_returns) < 2 or final_value <= 0:
+        # Epistemic Fix: If total_invested == 0, the strategy successfully held cash.
+        # Do not punish it with a -100% mathematical wipeout.
+        is_cash_hold = (initial_value > 0 and final_value == 0 and daily_values['investment'].iloc[-1] == initial_value)
+        
+        if daily_returns.empty or len(daily_returns) < 2 or (final_value <= 0 and not is_cash_hold):
             metrics = PerformanceMetrics._empty_metrics()
             metrics.update({
-                'total_return': total_return,
+                'total_return': 0.0 if is_cash_hold else total_return,
                 'annualized_return': cagr,
                 'cagr': cagr,
                 'final_value': final_value,
@@ -501,7 +508,7 @@ class UnifiedBacktestEngine:
             
             try:
                 if mode.lower() == 'sip':
-                    metrics, daily_data = self._run_sip_backtest(strategy, name)
+                    metrics, daily_data = self._run_sip_backtest(strategy, name, buy_dates_mask)
                 else:
                     metrics, daily_data = self._run_swing_backtest(
                         strategy, name, buy_dates_mask, sell_dates_mask
@@ -526,7 +533,15 @@ class UnifiedBacktestEngine:
             for name, data in all_results.items():
                 dd = data.get('daily_data')
                 if dd is not None and not dd.empty and 'value' in dd.columns:
-                    rets = dd['value'].pct_change().dropna().values
+                    if 'investment' in dd.columns and mode.lower() == 'sip':
+                        df_twr = dd.copy()
+                        df_twr['cash_flow'] = df_twr['investment'].diff().fillna(0)
+                        df_twr['prev_value'] = df_twr['value'].shift(1)
+                        twr = np.where(df_twr['prev_value'] > 0,
+                                       (df_twr['value'] - df_twr['cash_flow'] - df_twr['prev_value']) / df_twr['prev_value'], 0.0)
+                        rets = pd.Series(twr[1:]).replace([np.inf, -np.inf], 0.0).values
+                    else:
+                        rets = dd['value'].pct_change().dropna().values
                     if len(rets) >= 20:
                         returns_dict[name] = rets
             if len(returns_dict) >= 3:
@@ -563,12 +578,19 @@ class UnifiedBacktestEngine:
         buy_mask = [False] * len(self._historical_data)
         sell_mask = [False] * len(self._historical_data)
         
+        # O(1) set lookup for massive execution speedup
         if buy_col and buy_col in trigger_df.columns:
-            external_buy_dates = trigger_df[trigger_df[buy_col] < buy_threshold].index.date
+            if hasattr(trigger_df.index, 'date'):
+                external_buy_dates = set(trigger_df[trigger_df[buy_col] < buy_threshold].index.date)
+            else:
+                external_buy_dates = set(pd.to_datetime(trigger_df[trigger_df[buy_col] < buy_threshold].index).date)
             buy_mask = [d.date() in external_buy_dates for d, _ in self._historical_data]
         
         if sell_col and sell_col in trigger_df.columns:
-            external_sell_dates = trigger_df[trigger_df[sell_col] > sell_threshold].index.date
+            if hasattr(trigger_df.index, 'date'):
+                external_sell_dates = set(trigger_df[trigger_df[sell_col] > sell_threshold].index.date)
+            else:
+                external_sell_dates = set(pd.to_datetime(trigger_df[trigger_df[sell_col] > sell_threshold].index).date)
             sell_mask = [d.date() in external_sell_dates for d, _ in self._historical_data]
         
         return buy_mask, sell_mask
@@ -599,10 +621,13 @@ class UnifiedBacktestEngine:
             # Sell Logic
             if sell_mask[j] and portfolio_units:
                 prices_today = df.set_index('symbol')['price']
-                current_capital += sum(
+                sell_value = sum(
                     units * prices_today.get(symbol, 0)
                     for symbol, units in portfolio_units.items()
                 )
+                # Deduct transaction cost on exit
+                cost = sell_value * (TRANSACTION_COST_BPS / 10000.0)
+                current_capital += (sell_value - cost)
                 portfolio_units = {}
                 buy_signal_active = False
             
@@ -615,7 +640,10 @@ class UnifiedBacktestEngine:
                             buy_portfolio['units'].values,
                             index=buy_portfolio['symbol']
                         ).to_dict()
-                        current_capital -= buy_portfolio['value'].sum()
+                        buy_value = buy_portfolio['value'].sum()
+                        # Deduct transaction cost on entry
+                        cost = buy_value * (TRANSACTION_COST_BPS / 10000.0)
+                        current_capital -= (buy_value + cost)
                 except Exception as e:
                     logger.debug(f"Portfolio generation failed for {name} on {date}: {e}")
             
@@ -642,49 +670,77 @@ class UnifiedBacktestEngine:
         
         return metrics, daily_df
     
-    def _run_sip_backtest(self, strategy, name: str) -> Tuple[Dict, pd.DataFrame]:
+    def _run_sip_backtest(self, strategy, name: str, buy_mask: List[bool]) -> Tuple[Dict, pd.DataFrame]:
         """Run SIP (systematic investment) backtest for a single strategy."""
         
-        # SIP: Invest fixed amount periodically (weekly in this case)
-        sip_amount = self.capital / 52  # Weekly SIP
+        # SIP: Accumulate on triggers instead of blind weekly entries
+        # Unified NAV-index TWR tracking for absolute alignment with app.py
+        nav_index = 1.0
+        prev_portfolio_value = 0.0
+        has_position = False
+        sip_amount = self.capital / 52  # Standard chunk size
         total_invested = 0
         portfolio_units = {}
         daily_values = []
-        last_sip_week = None
+        nav_history = []
+        buy_signal_active = False
         
-        for date, df in self._historical_data:
-            iso = date.isocalendar()
-            week_key = (iso[0], iso[1])  # (year, week) to avoid cross-year collision
+        for j, (date, df) in enumerate(self._historical_data):
+            prices_today = df.set_index('symbol')['price']
+            
+            # Step 1: Compute current value of EXISTING holdings
+            current_value = 0.0
+            if portfolio_units:
+                current_value = sum(
+                    units * prices_today.get(sym, 0)
+                    for sym, units in portfolio_units.items()
+                )
+            
+            # Step 2: Update NAV based on market movement BEFORE any new investment
+            if has_position and prev_portfolio_value > 0:
+                day_return = (current_value - prev_portfolio_value) / prev_portfolio_value
+                nav_index *= (1 + day_return)
 
-            # Weekly SIP
-            if week_key != last_sip_week:
+            is_buy_day = buy_mask[j]
+            actual_buy_trigger = is_buy_day and not buy_signal_active
+            
+            if is_buy_day:
+                buy_signal_active = True
+            else:
+                buy_signal_active = False
+
+            if actual_buy_trigger:
                 try:
                     buy_portfolio = strategy.generate_portfolio(df, sip_amount)
                     if not buy_portfolio.empty and 'units' in buy_portfolio.columns:
+                        buy_value = buy_portfolio['value'].sum()
+                        cost = buy_value * (TRANSACTION_COST_BPS / 10000.0)
                         for _, row in buy_portfolio.iterrows():
                             symbol = row['symbol']
-                            units = row['units']
-                            if symbol in portfolio_units:
-                                portfolio_units[symbol] += units
-                            else:
-                                portfolio_units[symbol] = units
-                        total_invested += buy_portfolio['value'].sum()
-                        last_sip_week = week_key
+                            units = row.get('units', 0)
+                            if units > 0:
+                                portfolio_units[symbol] = portfolio_units.get(symbol, 0) + units
+                        total_invested += sip_amount
+                        has_position = True
+                        
+                        # Deduct slippage drag instantly from NAV
+                        if nav_index > 0:
+                            nav_index *= (1 - (cost / (current_value + buy_value + 1e-6)))
+                            
+                        # Recalculate value after addition for next day's return base
+                        current_value = sum(
+                            units * prices_today.get(sym, 0)
+                            for sym, units in portfolio_units.items()
+                        )
                 except Exception as e:
                     logger.debug(f"SIP generation failed for {name} on {date}: {e}")
             
-            # Valuation
-            portfolio_value = 0
-            if portfolio_units:
-                prices_today = df.set_index('symbol')['price']
-                portfolio_value = sum(
-                    units * prices_today.get(symbol, 0)
-                    for symbol, units in portfolio_units.items()
-                )
-            
+            prev_portfolio_value = current_value
+            nav_history.append(nav_index)
+
             daily_values.append({
                 'date': date,
-                'value': portfolio_value,
+                'value': current_value,
                 'investment': total_invested if total_invested > 0 else sip_amount
             })
         
@@ -692,9 +748,40 @@ class UnifiedBacktestEngine:
             return PerformanceMetrics._empty_metrics(), pd.DataFrame()
         
         daily_df = pd.DataFrame(daily_values)
-        metrics = PerformanceMetrics.calculate(daily_df, self.risk_free_rate)
         
-        return metrics, daily_df
+        # Calculate exact metrics using the pure NAV index arrays
+        # Identical to the execution topology in app.py's _compute_backtest_metrics
+        metrics_dict = {
+            'total_return': 0.0, 'ann_return': 0.0, 'volatility': 0.0,
+            'sharpe': 0.0, 'sortino': 0.0, 'calmar': 0.0, 'max_drawdown': 0.0, 'win_rate': 0.0
+        }
+        if len(nav_history) >= 5:
+            nav_arr = np.array(nav_history, dtype=np.float64)
+            nav_rets = np.diff(nav_arr) / np.where(nav_arr[:-1] != 0, nav_arr[:-1], 1e-10)
+            nav_rets = nav_rets[np.isfinite(nav_rets)]
+            if len(nav_rets) >= 3:
+                years = len(nav_arr) / 252.0
+                cagr = (nav_arr[-1] / nav_arr[0]) ** (1.0 / years) - 1.0 if years > 0 else 0.0
+                tot_ret = (nav_arr[-1] - nav_arr[0]) / nav_arr[0]
+                core = compute_risk_metrics(nav_rets, periods_per_year=252.0, total_return=tot_ret, ann_return=cagr)
+                metrics_dict = core
+                
+        # Ensure keys match expected PerformanceMetrics contract
+        mapped_metrics = {
+            'total_return': metrics_dict.get('total_return', 0.0),
+            'annualized_return': metrics_dict.get('ann_return', 0.0),
+            'cagr': metrics_dict.get('ann_return', 0.0),
+            'volatility': metrics_dict.get('volatility', 0.0),
+            'sharpe_ratio': metrics_dict.get('sharpe', 0.0),
+            'sortino_ratio': metrics_dict.get('sortino', 0.0),
+            'max_drawdown': metrics_dict.get('max_drawdown', 0.0),
+            'calmar_ratio': metrics_dict.get('calmar', 0.0),
+            'win_rate': metrics_dict.get('win_rate', 0.0),
+            'trading_days': len(nav_history),
+            'final_value': daily_df['value'].iloc[-1]
+        }
+        
+        return mapped_metrics, daily_df
     
     def select_top_strategies(
         self,
@@ -754,7 +841,15 @@ class UnifiedBacktestEngine:
                 for name, data in results.items():
                     daily_data = data.get('daily_data')
                     if daily_data is not None and not daily_data.empty and 'value' in daily_data.columns:
-                        rets = daily_data['value'].pct_change().dropna().values
+                        if 'investment' in daily_data.columns and mode.lower() == 'sip':
+                            df_twr = daily_data.copy()
+                            df_twr['cash_flow'] = df_twr['investment'].diff().fillna(0)
+                            df_twr['prev_value'] = df_twr['value'].shift(1)
+                            twr = np.where(df_twr['prev_value'] > 0,
+                                           (df_twr['value'] - df_twr['cash_flow'] - df_twr['prev_value']) / df_twr['prev_value'], 0.0)
+                            rets = pd.Series(twr[1:]).replace([np.inf, -np.inf], 0.0).values
+                        else:
+                            rets = daily_data['value'].pct_change().dropna().values
                         if len(rets) >= 20:
                             returns_dict[name] = rets
 

@@ -31,16 +31,33 @@
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
-.main, [data-testid="stSidebar"] {
+.main,
+[data-testid="stSidebar"] {
     background-color: var(--background-color);
     color: var(--text-primary);
 }
 
-.stApp > header {
+.stApp>header {
     background-color: transparent;
 }
 
-#MainMenu {visibility: hidden;} footer {visibility: hidden;}
+/* Hide Streamlit default UI elements for a native app feel */
+#MainMenu {
+    visibility: hidden;
+}
+
+footer {
+    visibility: hidden;
+}
+
+[data-testid="stToolbar"] {
+    visibility: hidden;
+    display: none;
+}
+
+[data-testid="stHeader"] {
+    background: transparent;
+}
 
 .block-container {
     padding-top: 3.5rem;
@@ -119,7 +136,7 @@ button[kind="header"] {
     left: 0;
     right: 0;
     bottom: 0;
-    background: radial-gradient(circle at 20% 50%, rgba(var(--primary-rgb),0.01) 0%, transparent 50%);
+    background: radial-gradient(circle at 20% 50%, rgba(var(--primary-rgb), 0.01) 0%, transparent 50%);
     pointer-events: none;
 }
 
@@ -154,7 +171,7 @@ button[kind="header"] {
 
 .metric-card:hover {
     transform: translateY(-2px);
-    box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
     border-color: var(--border-light);
 }
 
@@ -182,13 +199,33 @@ button[kind="header"] {
     font-weight: 500;
 }
 
-.metric-card.success h2 { color: var(--success-green); }
-.metric-card.danger h2 { color: var(--danger-red); }
-.metric-card.warning h2 { color: var(--warning-amber); }
-.metric-card.info h2 { color: var(--info-cyan); }
-.metric-card.neutral h2 { color: var(--neutral); }
-.metric-card.primary h2 { color: var(--primary-color); }
-.metric-card.white h2 { color: var(--text-primary); }
+.metric-card.success h2 {
+    color: var(--success-green);
+}
+
+.metric-card.danger h2 {
+    color: var(--danger-red);
+}
+
+.metric-card.warning h2 {
+    color: var(--warning-amber);
+}
+
+.metric-card.info h2 {
+    color: var(--info-cyan);
+}
+
+.metric-card.neutral h2 {
+    color: var(--neutral);
+}
+
+.metric-card.primary h2 {
+    color: var(--primary-color);
+}
+
+.metric-card.white h2 {
+    color: var(--text-primary);
+}
 
 .status-badge {
     display: inline-flex;
@@ -274,7 +311,7 @@ button[kind="header"] {
     border-radius: 16px;
     overflow: hidden;
     border: 1px solid var(--border-color);
-    box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
 }
 
 .stMarkdown table th,
@@ -298,7 +335,11 @@ button[kind="header"] {
     background-color: var(--bg-elevated);
 }
 
-.stTabs [data-baseweb="tab-list"] { gap: 24px; background: transparent; }
+.stTabs [data-baseweb="tab-list"] {
+    gap: 24px;
+    background: transparent;
+}
+
 .stTabs [data-baseweb="tab"] {
     color: var(--text-muted);
     border-bottom: 2px solid transparent;
@@ -306,22 +347,27 @@ button[kind="header"] {
     background: transparent;
     font-weight: 600;
 }
+
 .stTabs [aria-selected="true"] {
     color: var(--primary-color);
     border-bottom: 2px solid var(--primary-color);
     background: transparent !important;
 }
-.stPlotlyChart, .stDataFrame {
+
+.stPlotlyChart,
+.stDataFrame {
     border-radius: 12px;
     background-color: var(--secondary-background-color);
     padding: 10px;
     border: 1px solid var(--border-color);
     box-shadow: 0 0 25px rgba(var(--primary-rgb), 0.01);
 }
+
 h2 {
     border-bottom: 1px solid var(--border-color);
     padding-bottom: 10px;
 }
+
 .section-divider {
     height: 1px;
     background: linear-gradient(90deg, transparent 0%, var(--border-color) 50%, transparent 100%);
@@ -356,7 +402,20 @@ h2 {
     margin-bottom: 0.75rem;
 }
 
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: var(--background-color); }
-::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--border-light); }
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--background-color);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--border-light);
+}

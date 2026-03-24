@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.7.0] - 2026-03-24
+
+### Fixed
+- **[CRITICAL] Drawdown Ranking Inversion** — Fixed fatal logic in `strategy_selection.py` where the worst maximum drawdowns were mathematically rewarded instead of penalized.
+- **[CRITICAL] TWR Cash-Flow Leakage** — Corrected SIP performance tracking in `MasterPortfolio` to strictly use Modified Dietz Time-Weighted Returns.
+- **[CRITICAL] NaN Cascade in Cross-Sections** — Enforced `ddof=0` standard deviation across all 96 strategies in `strategies.py` to prevent `NaN` generation on single-asset filters.
+- **[CRITICAL] HRP Singularity & NameError** — Fixed missing `gamma_lw` definition in Ledoit-Wolf shrinkage and zero-variance cluster division errors (`1.0 / diag`) in Hierarchical Risk Parity.
+- **[CRITICAL] RSI Wilder Smoothing** — Enforced `adjust=False` in pandas EWM to strictly replicate J. Welles Wilder's original exponential smoothing.
+- **[CRITICAL] Zero-Variance Plotly Crash** — Shielded conviction heatmaps and scatter plots against flat-array JSON serialization crashes in `charts.py` and `app.py`.
+- **[HIGH] Memory Fragmentation** — Rewrote `backdata.py` data ingestion to filter temporal bounds before list concatenation, bypassing 100k+ rows of memory bloat.
+- **[HIGH] O(N) Date Scan Bottleneck** — Replaced linear date scans with $O(\log N)$ `bisect_left` binary searches in strategy selection loops.
+- **[HIGH] Temporal Weekly Bar Leakage** — Modified `resample_data` to map weekly periods to the exact last available trading day, eliminating current-week data loss.
+- **[HIGH] Scale-Invariant Turnover Costs** — Shifted transaction cost modeling from relative weight differences to absolute value traded for accurate SIP capital injection costs.
+- **[MEDIUM] Leptokurtic Softmax Collapse** — Replaced L2 standard deviation with robust L1 Median Absolute Deviation (MAD) for adaptive temperature scaling in `app.py`.
+- **[MEDIUM] Kelly Criterion Bounds** — Clamped Z-scores in the 3rd-order Taylor expansion to prevent gap-risk singularities from inverting the Kelly fraction.
+
+### Changed
+- **Expanding Window Walk-Forward** — Upgraded the RMT and Sharpe validation loops in `app.py` from a 50-day rolling window to a continuous expanding window to maximize the $T/N$ ratio.
+- **Conformal Prediction Heteroskedasticity** — Upgraded conformal prediction bands to normalize nonconformity scores by local volatility, preventing coverage collapse during market stress.
+- **Robust Correlation Fallback** — Replaced fragile `np.corrcoef` with robust matrix multiplication `(X^T @ X)/T` inside HRP fallback to gracefully handle zero-variance arrays.
+
+---
+
 ## [3.6.0] - 2026-03-23
 
 ### Fixed

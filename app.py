@@ -220,16 +220,18 @@ def compute_portfolio_return(
             drifted_prev['price_y'] = drifted_prev['price_y'].fillna(drifted_prev['price_x'])
             drifted_prev['drifted_value'] = drifted_prev['units'] * drifted_prev['price_y']
             
-            # Compute turnover as half the sum of absolute weight changes
             curr_total = portfolio['value'].sum()
             prev_total = drifted_prev['drifted_value'].sum()
             if curr_total > 0 and prev_total > 0:
-                curr_weights = portfolio.set_index('symbol')['value'] / curr_total
-                prev_weights = drifted_prev.set_index('symbol')['drifted_value'] / prev_total
-                all_symbols = curr_weights.index.union(prev_weights.index)
-                curr_w = curr_weights.reindex(all_symbols, fill_value=0.0)
-                prev_w = prev_weights.reindex(all_symbols, fill_value=0.0)
-                turnover = float(np.abs(curr_w - prev_w).sum()) / 2.0
+                # Mathematical Fix: Weight-based turnover fails during capital injections (SIP).
+                # We must compute absolute value traded to account for new capital deployment.
+                curr_v = portfolio.set_index('symbol')['value']
+                prev_v = drifted_prev.set_index('symbol')['drifted_value']
+                all_symbols = curr_v.index.union(prev_v.index)
+                curr_vals = curr_v.reindex(all_symbols, fill_value=0.0)
+                prev_vals = prev_v.reindex(all_symbols, fill_value=0.0)
+                trade_value = float(np.abs(curr_vals - prev_vals).sum())
+                turnover = (trade_value / curr_total) / 2.0
             else:
                 turnover = 1.0  # full entry
         else:
@@ -1067,7 +1069,10 @@ def evaluate_historical_performance_trigger_based(
     step_count = 0
     for i in range(start_idx, len(historical_data) - 1):
         # REC-2: train on data[:i-EMBARGO], skip embargo gap, test at i
-        train_start = max(0, i - 50 - EMBARGO_DAYS)
+        # Execution Fix: Shift from 50-day Rolling Window to Expanding Window.
+        # RMT and Sharpe estimators require maximum T/N ratio to converge accurately. 
+        # The O(1) cache ensures this costs 0 extra computation time.
+        train_start = 0
         train_window = historical_data[train_start : i - EMBARGO_DAYS]
         test_date, test_df = historical_data[i]
         next_date, next_df = historical_data[i + 1]
@@ -1334,7 +1339,10 @@ def evaluate_historical_performance(
 
     for i in range(start_idx, len(historical_data) - 1):
         # REC-2: train on data[:i-EMBARGO], skip embargo gap, test at i
-        train_start = max(0, i - 50 - EMBARGO_DAYS)
+        # Execution Fix: Shift from 50-day Rolling Window to Expanding Window.
+        # RMT and Sharpe estimators require maximum T/N ratio to converge accurately. 
+        # The O(1) cache ensures this costs 0 extra computation time.
+        train_start = 0
         train_window = historical_data[train_start : i - EMBARGO_DAYS]
         test_date, test_df = historical_data[i]
         next_date, next_df = historical_data[i + 1]
@@ -2377,7 +2385,7 @@ def _render_strategy_analysis(performance: Dict, strategies_dict: Dict, current_
         all_signals, signal_counts = [], {}
         for name, s in strats_for_hm.items():
             try:
-                port = s.generate_portfolio(current_df.copy())
+                port = s.generate_portfolio(current_df)
                 if not port.empty:
                     if 'composite_score' not in port.columns:
                         port['composite_score'] = port['weightage_pct']
@@ -2393,9 +2401,15 @@ def _render_strategy_analysis(performance: Dict, strategies_dict: Dict, current_
             df_sig = pd.DataFrame(all_signals)
             hm_df = df_sig.pivot(index='symbol', columns='strategy', values='conviction').fillna(0)
             cs = [[0.0, '#2563eb'], [0.5, '#4B5563'], [1.0, '#dc2626']]
+            
+            # Prevent Streamlit JSON serialization crash on zero-variance matrices
+            z_min, z_max = hm_df.values.min(), hm_df.values.max()
+            if z_min == z_max:
+                z_min, z_max = -0.1, 0.1
+                
             fig_hm = go.Figure(data=go.Heatmap(
                 z=hm_df.values, x=hm_df.columns, y=hm_df.index,
-                colorscale=cs, zmid=0,
+                colorscale=cs, zmid=0, zmin=z_min, zmax=z_max,
                 text=np.round(hm_df.values, 2), texttemplate='%{text:.2f}',
                 textfont=dict(size=9, color='rgba(255,255,255,0.8)'),
                 hovertemplate='%{y} × %{x}<br>Conviction: %{z:.2f}<extra></extra>',

@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-3.6.0-gold)
+![Version](https://img.shields.io/badge/version-3.7.0-gold)
 ![Python](https://img.shields.io/badge/python-3.10+-blue)
 ![License](https://img.shields.io/badge/license-Proprietary-red)
 ![Status](https://img.shields.io/badge/status-Production-green)
@@ -44,9 +44,9 @@
 ## Features
 
 ### 📊 Portfolio Intelligence
-- **Walk-Forward Backtesting**: Out-of-sample validation with embargo gaps, turnover-proportional transaction costs, and Modified Dietz TWR
+- **Walk-Forward Backtesting**: Expanding window out-of-sample validation with embargo gaps, turnover-proportional transaction costs, and Modified Dietz TWR
 - **Strategy Factor Decomposition**: RMT projects 60+ strategies onto true independent factors — reveals how many bets you actually have
-- **Conformal Prediction Intervals**: Distribution-free 90% coverage bounds on next-period returns (no normality assumption)
+- **Conformal Prediction Intervals**: Locally adaptive heteroskedastic 90% coverage bounds on next-period returns (no normality assumption)
 - **Strategy Attribution**: Decompose returns by strategy, tier, and time period
 - **Correlation Analysis**: Inter-strategy correlation monitoring with RMT-cleaned matrices
 - **Weight Evolution**: Track how strategy allocations change through market regimes
@@ -343,6 +343,15 @@ This software is licensed exclusively to authorized users. Redistribution, modif
 ---
 
 ## Changelog
+
+### v3.7.0 (March 2026)
+- Epistemic & Execution Hardening: 12 mathematical/architectural fixes across all modules
+- Upgraded to Expanding Window walk-forward methodology for RMT stability
+- Implemented $O(\log N)$ binary search execution topology in strategy evaluation
+- Resolved $O(N)$ DataFrame memory fragmentation and terminal `pd.NA` type pollution
+- Upgraded Softmax temperature scaling to use robust Median Absolute Deviation (MAD)
+- Fixed Modified Dietz Time-Weighted Returns to handle absolute value capital SIP tracking
+- Hardened Hierarchical Risk Parity against zero-variance singularity clusters
 
 ### v3.6.0 (March 2026)
 - Quantitative hardening: 12 mathematical/architectural fixes (CRITICAL-1 through MEDIUM-3)

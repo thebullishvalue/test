@@ -159,6 +159,8 @@ def create_equity_drawdown_chart(
     return_col: str = 'return',
 ) -> go.Figure:
     """Dual-panel equity curve with underwater analysis."""
+    if returns_df.empty:
+        return go.Figure()
     df = returns_df.copy().sort_values(date_col)
     df['equity'] = (1 + df[return_col]).cumprod()
     df['peak'] = df['equity'].expanding().max()
@@ -229,6 +231,8 @@ def create_rolling_metrics_chart(
     periods_per_year: int = 52,
 ) -> go.Figure:
     """Rolling Sharpe and Sortino with zone shading."""
+    if returns_df.empty:
+        return go.Figure()
     df = returns_df.copy().sort_values(date_col)
 
     r_mean = df[return_col].rolling(window=window).mean()
@@ -285,6 +289,9 @@ def create_correlation_heatmap(
     title: str = "",
 ) -> go.Figure:
     """Adaptive correlation heatmap — green-to-red for typical portfolios."""
+    if corr_matrix.empty or len(corr_matrix) <= 1:
+        return go.Figure()
+        
     vals = corr_matrix.values.flatten()
     od = ~np.eye(len(corr_matrix), dtype=bool).flatten()
     c_min = float(np.nanmin(vals[od]))
@@ -399,7 +406,8 @@ def create_risk_return_scatter(
 
     df['vol_pct'] = df['Volatility'] * 100
     df['cagr_pct'] = df['CAGR'] * 100
-    df['size'] = np.clip(np.abs(df['Max DD']) * 120 + 8, 14, 42)
+    # CRITICAL FIX: NaN propagation breaks Plotly JSON marker serialization
+    df['size'] = np.clip(np.abs(df['Max DD'].fillna(0)) * 120 + 8, 14, 42)
 
     fig = go.Figure()
 
@@ -687,6 +695,9 @@ def create_eigenvalue_histogram(
     title: str = "",
 ) -> go.Figure:
     """Eigenvalue distribution with Marchenko-Pastur overlay and signal markers."""
+    # Mathematically insulate against div-by-zero singularities from degenerate external states
+    gamma = max(gamma, 1e-10)
+    sigma_sq = max(sigma_sq, 1e-10)
     n_signal = int(np.sum(eigenvalues > mp_lambda_plus))
     n_noise = len(eigenvalues) - n_signal
     signal_eigs = eigenvalues[eigenvalues > mp_lambda_plus]
@@ -773,6 +784,8 @@ def create_cleaned_vs_raw_correlation(
     title: str = "",
 ) -> go.Figure:
     """Three-panel heatmap: raw, cleaned, and noise removed."""
+    if raw_corr.size == 0 or cleaned_corr.size == 0:
+        return go.Figure()
     diff = raw_corr - cleaned_corr
     n = len(labels)
 
@@ -833,6 +846,8 @@ def create_absorption_ratio_chart(
     title: str = "",
 ) -> go.Figure:
     """Rolling absorption ratio with stress zone bands."""
+    if not spectral_history:
+        return go.Figure()
     dates = [s['date'] for s in spectral_history]
     ar = [s['absorption_ratio'] for s in spectral_history]
 
@@ -876,12 +891,17 @@ def create_factor_loading_heatmap(
     title: str = "",
 ) -> go.Figure:
     """Factor loading heatmap with explained variance labels."""
+    if eigenvectors.size == 0 or n_factors <= 0:
+        return go.Figure()
     n_factors = min(n_factors, eigenvectors.shape[1])
     loadings = eigenvectors[:, :n_factors]
 
     if eigenvalues is not None and len(eigenvalues) >= n_factors:
         tot = eigenvalues.sum()
-        f_labels = [f'F{i+1} ({eigenvalues[i]/tot*100:.1f}%)' for i in range(n_factors)]
+        if tot > 1e-10:
+            f_labels = [f'F{i+1} ({eigenvalues[i]/tot*100:.1f}%)' for i in range(n_factors)]
+        else:
+            f_labels = [f'F{i+1} (0.0%)' for i in range(n_factors)]
     else:
         f_labels = [f'F{i+1}' for i in range(n_factors)]
 
@@ -919,6 +939,8 @@ def create_spectral_risk_dashboard(
     title: str = "",
 ) -> go.Figure:
     """2x2 multi-panel: AR, effective rank, condition number, largest eigenvalue."""
+    if not spectral_history:
+        return go.Figure()
     dates = [s['date'] for s in spectral_history]
     ar = [s.get('absorption_ratio', 0) for s in spectral_history]
     eff = [s.get('effective_rank', 1) for s in spectral_history]

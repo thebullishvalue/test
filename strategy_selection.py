@@ -28,6 +28,7 @@ Author: Hemrek Capital
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+import bisect
 from typing import Dict, List, Tuple, Optional, Any
 import logging
 import warnings
@@ -325,7 +326,7 @@ class MasterPortfolio:
                 }
         
         # Record snapshot
-        self._record_snapshot(date, 'SIP_BUY')
+        self._record_snapshot(date, 'SIP_BUY', cash_flow=investment)
     
     def update_prices(self, price_data: pd.DataFrame, date: datetime):
         """
@@ -344,7 +345,7 @@ class MasterPortfolio:
             if symbol in prices:
                 self.holdings[symbol]['current_price'] = prices[symbol]
         
-        self._record_snapshot(date, 'PRICE_UPDATE')
+        self._record_snapshot(date, 'PRICE_UPDATE', cash_flow=0.0)
     
     def get_current_value(self) -> float:
         """Get total current value of all holdings."""
@@ -359,12 +360,13 @@ class MasterPortfolio:
             return 0.0
         return (self.get_current_value() - self.total_invested) / self.total_invested
     
-    def _record_snapshot(self, date: datetime, action: str):
+    def _record_snapshot(self, date: datetime, action: str, cash_flow: float = 0.0):
         """Record portfolio state."""
         self.history.append({
             'date': date,
             'action': action,
             'total_invested': self.total_invested,
+            'cash_flow': cash_flow,
             'current_value': self.get_current_value(),
             'num_holdings': len(self.holdings),
             'return': self.get_total_return()
@@ -387,8 +389,14 @@ class MasterPortfolio:
         for i in range(1, len(self.history)):
             prev_val = self.history[i - 1]['current_value']
             curr_val = self.history[i]['current_value']
+            cf = self.history[i]['cash_flow']
             if prev_val > 0:
-                returns.append((curr_val - prev_val) / prev_val)
+                # CRITICAL FIX: Modified Dietz Time-Weighted Return
+                returns.append((curr_val - cf - prev_val) / prev_val)
+            elif prev_val == 0 and cf > 0:
+                returns.append(0.0)
+            else:
+                returns.append(0.0)
 
         returns = np.array(returns) if returns else np.array([total_return])
 
@@ -520,10 +528,10 @@ def execute_sip_mode(
         if target in data_by_date:
             return data_by_date[target]
         
-        # Find nearest available date
-        for d in sorted_data_dates:
-            if d >= target:
-                return data_by_date[d]
+        # Execution Fix: O(log N) binary search replaces O(N) linear scan
+        idx = bisect.bisect_left(sorted_data_dates, target)
+        if idx < len(sorted_data_dates):
+            return data_by_date[sorted_data_dates[idx]]
         
         return data_by_date[sorted_data_dates[-1]] if sorted_data_dates else None
     
@@ -543,7 +551,8 @@ def execute_sip_mode(
             
             try:
                 # Generate portfolio for this date
-                portfolio = strategy.generate_portfolio(indicator_df.copy(), sip_amount=sip_amount)
+                # Memory Fix: _clean_data handles numpy bounds, remove deep copy
+                portfolio = strategy.generate_portfolio(indicator_df, sip_amount=sip_amount)
                 
                 if portfolio.empty:
                     continue
@@ -624,9 +633,9 @@ def execute_swing_mode(
         target = target_date.date() if isinstance(target_date, datetime) else target_date
         if target in data_by_date:
             return data_by_date[target]
-        for d in sorted_data_dates:
-            if d >= target:
-                return data_by_date[d]
+        idx = bisect.bisect_left(sorted_data_dates, target)
+        if idx < len(sorted_data_dates):
+            return data_by_date[sorted_data_dates[idx]]
         return data_by_date[sorted_data_dates[-1]] if sorted_data_dates else None
     
     results = {}
@@ -648,7 +657,7 @@ def execute_swing_mode(
             
             try:
                 # Generate portfolio at entry
-                portfolio = strategy.generate_portfolio(entry_df.copy(), sip_amount=capital_per_trade)
+                portfolio = strategy.generate_portfolio(entry_df, sip_amount=capital_per_trade)
                 
                 if portfolio.empty:
                     continue
@@ -795,21 +804,31 @@ def rank_strategies(metrics: Dict[str, Dict]) -> pd.DataFrame:
     df['strategy'] = df.index
     df = df.reset_index(drop=True)
     
-    # Scoring metrics (higher is better)
-    positive_metrics = ['sharpe', 'sortino', 'calmar', 'win_rate', 'total_return']
-    # Penalty metrics (more negative is worse)
-    negative_metrics = ['max_drawdown']
+    # CRITICAL MATH FIX: max_drawdown is naturally computed as a negative number (e.g. -0.25).
+    # Therefore, mathematically, higher (-0.10 > -0.25) is ALREADY better.
+    # Placing it in negative_metrics inverted the logic, rewarding the worst drawdowns.
+    positive_metrics = ['sharpe', 'sortino', 'calmar', 'win_rate', 'total_return', 'max_drawdown']
+    # Penalty metrics (metrics where strictly larger positive magnitude is worse)
+    negative_metrics = []
     
     # Compute normalized scales instead of uniform percentiles to preserve dispersion
     for metric in positive_metrics:
         if metric in df.columns:
-            col_min, col_max = df[metric].min(), df[metric].max()
-            df[f'{metric}_rank'] = (df[metric] - col_min) / (col_max - col_min) if col_max > col_min else 0.5
+            clean_s = df[metric].replace([np.inf, -np.inf], np.nan).dropna()
+            if not clean_s.empty:
+                col_min, col_max = clean_s.min(), clean_s.max()
+                df[f'{metric}_rank'] = (df[metric] - col_min) / (col_max - col_min) if col_max > col_min else 0.5
+            else:
+                df[f'{metric}_rank'] = 0.5
     
     for metric in negative_metrics:
         if metric in df.columns:
-            col_min, col_max = df[metric].min(), df[metric].max()
-            df[f'{metric}_rank'] = (col_max - df[metric]) / (col_max - col_min) if col_max > col_min else 0.5
+            clean_s = df[metric].replace([np.inf, -np.inf], np.nan).dropna()
+            if not clean_s.empty:
+                col_min, col_max = clean_s.min(), clean_s.max()
+                df[f'{metric}_rank'] = (col_max - df[metric]) / (col_max - col_min) if col_max > col_min else 0.5
+            else:
+                df[f'{metric}_rank'] = 0.5
     
     rank_cols = [c for c in df.columns if c.endswith('_rank')]
     
@@ -1110,7 +1129,7 @@ class SPRTRegimeTrigger:
         self.log_lr = 0.0  # cumulative log-likelihood ratio
         self.fitted = False
 
-    def fit(self, breadth_series: 'pd.Series') -> 'SPRTRegimeTrigger':
+    def fit(self, breadth_series: Any) -> 'SPRTRegimeTrigger':
         """
         Estimate distribution parameters from historical breadth data.
 
@@ -1120,7 +1139,9 @@ class SPRTRegimeTrigger:
         Returns:
             self (for chaining).
         """
-        clean = breadth_series.dropna().values
+        # Memory Fix: Direct numpy casting bypasses heavy Pandas series constructors in loops
+        arr = np.asarray(breadth_series, dtype=float)
+        clean = arr[~np.isnan(arr)]
         if len(clean) < 20:
             return self
 
@@ -1230,8 +1251,10 @@ def get_sprt_trigger_dates(
         historical_buffer.append(val)
         
         # Fit only on past data to prevent lookahead bias
+        # Execution Fix: Bound fit to rolling 100-day window to prevent O(N^2) memory 
+        # accumulation and allow the baseline to track current regime macro shifts.
         if len(historical_buffer) > 20:
-            sprt.fit(pd.Series(historical_buffer[:-1]))
+            sprt.fit(historical_buffer[-100:-1])
             
         signal = sprt.update(val)
         date_val = row['DATE'] if has_date_col else idx
