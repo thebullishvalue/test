@@ -85,14 +85,19 @@ def compute_risk_metrics(
 
     # ── Sharpe ──
     excess = ann_return - risk_free_rate
-    sharpe = excess / volatility if volatility > 0.001 else 0.0
-    sharpe = float(np.clip(sharpe, -10, 10))
+    sharpe = excess / volatility if volatility > 1e-6 else 0.0
+    sharpe = float(np.clip(sharpe, -100.0, 100.0))
 
     # ── Sortino (RMS of downside) ──
     downside = np.minimum(r, 0.0)
     downside_vol = float(np.sqrt(np.mean(downside ** 2)) * ann_factor)
-    sortino = excess / downside_vol if downside_vol > 0.001 else 0.0
-    sortino = float(np.clip(sortino, -10, 10))
+    if downside_vol > 1e-6:
+        sortino = excess / downside_vol
+    elif excess > 0:
+        sortino = 100.0  # Reward strategies with zero downside
+    else:
+        sortino = 0.0
+    sortino = float(np.clip(sortino, -100.0, 100.0))
 
     # ── max drawdown ──
     cumulative = np.cumprod(1 + r)
@@ -101,8 +106,13 @@ def compute_risk_metrics(
     max_drawdown = float(np.min(drawdowns))
 
     # ── Calmar ──
-    calmar = ann_return / abs(max_drawdown) if max_drawdown < -0.001 else 0.0
-    calmar = float(np.clip(calmar, -20, 20))
+    if max_drawdown < -1e-6:
+        calmar = ann_return / abs(max_drawdown)
+    elif ann_return > 0:
+        calmar = 100.0
+    else:
+        calmar = 0.0
+    calmar = float(np.clip(calmar, -100.0, 100.0))
 
     # ── Win rate & extremes ──
     win_rate = float(np.mean(r > 0))
@@ -121,77 +131,6 @@ def compute_risk_metrics(
         'best_period': best_period,
         'worst_period': worst_period,
     }
-
-
-# ============================================================================
-# MASTER Phase 0: IC / RankIC / ICIR — cross-sectional forecasting metrics
-# ============================================================================
-
-def ic(predicted: np.ndarray, actual: np.ndarray) -> float:
-    """Information Coefficient: Pearson correlation between predicted and actual.
-
-    Args:
-        predicted: 1-D array of predicted values (e.g. return forecasts).
-        actual: 1-D array of realized values (e.g. actual returns).
-
-    Returns:
-        Pearson correlation coefficient, or 0.0 if computation fails.
-    """
-    p = np.asarray(predicted, dtype=np.float64).ravel()
-    a = np.asarray(actual, dtype=np.float64).ravel()
-    mask = np.isfinite(p) & np.isfinite(a)
-    p, a = p[mask], a[mask]
-    if len(p) < 3:
-        return 0.0
-    std_p, std_a = np.std(p, ddof=1), np.std(a, ddof=1)
-    if std_p < 1e-12 or std_a < 1e-12:
-        return 0.0
-    return float(np.corrcoef(p, a)[0, 1])
-
-
-def rank_ic(predicted: np.ndarray, actual: np.ndarray) -> float:
-    """Rank Information Coefficient: Spearman rank correlation.
-
-    More robust to outliers than IC and directly measures ranking quality.
-
-    Args:
-        predicted: 1-D array of predicted values.
-        actual: 1-D array of realized values.
-
-    Returns:
-        Spearman rank correlation coefficient, or 0.0 if computation fails.
-    """
-    from scipy.stats import spearmanr
-
-    p = np.asarray(predicted, dtype=np.float64).ravel()
-    a = np.asarray(actual, dtype=np.float64).ravel()
-    mask = np.isfinite(p) & np.isfinite(a)
-    p, a = p[mask], a[mask]
-    if len(p) < 3:
-        return 0.0
-    corr, _ = spearmanr(p, a)
-    return float(corr) if np.isfinite(corr) else 0.0
-
-
-def icir(ic_series: np.ndarray) -> float:
-    """Information Ratio of IC: mean(IC) / std(IC).
-
-    Measures the consistency of predictive power across time periods.
-
-    Args:
-        ic_series: 1-D array of daily IC values over a backtest period.
-
-    Returns:
-        ICIR value, or 0.0 if computation fails.
-    """
-    s = np.asarray(ic_series, dtype=np.float64).ravel()
-    s = s[np.isfinite(s)]
-    if len(s) < 3:
-        return 0.0
-    std = np.std(s, ddof=1)
-    if std < 1e-12:
-        return 0.0
-    return float(np.mean(s) / std)
 
 
 # ============================================================================
@@ -224,8 +163,24 @@ class PerformanceMetrics:
         if initial_value <= 0 or final_value <= 0:
             return PerformanceMetrics._empty_metrics()
 
-        daily_returns = pd.Series(values).pct_change().dropna()
-        daily_returns = daily_returns.replace([np.inf, -np.inf], np.nan).dropna().clip(-1.0, 1.0)
+        # Modified Dietz TWR to prevent cash-flow return leakage
+        df = daily_values.copy()
+        if 'investment' in df.columns:
+            df['cash_flow'] = df['investment'].diff().fillna(0)
+            twr_returns = []
+            for i in range(1, len(df)):
+                prev_val = df['value'].iloc[i - 1]
+                curr_val = df['value'].iloc[i]
+                cf = df['cash_flow'].iloc[i]
+                if prev_val > 0:
+                    twr_returns.append((curr_val - cf - prev_val) / prev_val)
+                elif prev_val == 0 and cf > 0:
+                    twr_returns.append(0.0) # Just injected
+                else:
+                    twr_returns.append(0.0)
+            daily_returns = pd.Series(twr_returns).replace([np.inf, -np.inf], np.nan).dropna().clip(-1.0, 1.0)
+        else:
+            daily_returns = pd.Series(values).pct_change().replace([np.inf, -np.inf], np.nan).dropna().clip(-1.0, 1.0)
 
         if daily_returns.empty or len(daily_returns) < 2:
             return PerformanceMetrics._empty_metrics()
@@ -282,6 +237,7 @@ class DataCacheManager:
 
     _instance: Optional["DataCacheManager"] = None
     _CACHE_TTL_MINUTES: int = 30
+    _MAX_CACHE_KEYS: int = 10
 
     def __new__(cls) -> "DataCacheManager":
         if cls._instance is None:
@@ -314,6 +270,12 @@ class DataCacheManager:
     
     def set(self, symbols: List[str], start_date: datetime, end_date: datetime, data: List[Tuple[datetime, pd.DataFrame]]):
         """Store data in cache."""
+        if len(self._cache) >= self._MAX_CACHE_KEYS:
+            # Evict oldest key
+            oldest_key = min(self._cache_timestamps, key=self._cache_timestamps.get)
+            self._cache.pop(oldest_key, None)
+            self._cache_timestamps.pop(oldest_key, None)
+            
         key = self._generate_key(symbols, start_date, end_date)
         self._cache[key] = data
         self._cache_timestamps[key] = datetime.now()

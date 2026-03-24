@@ -381,8 +381,15 @@ class MasterPortfolio:
 
         returns = np.array(returns) if returns else np.array([total_return])
 
-        # Estimate periods_per_year from snapshot frequency
-        periods_per_year = max(len(returns), 1)
+        # Estimate periods_per_year from ACTUAL calendar time
+        if len(self.history) >= 2:
+            start_date = self.history[0]['date']
+            end_date = self.history[-1]['date']
+            days = (end_date - start_date).days
+            years = days / 365.25 if days > 0 else 1.0
+            periods_per_year = max(1.0, len(returns) / years)
+        else:
+            periods_per_year = 252.0
 
         if compute_risk_metrics is not None and len(returns) >= 2:
             core = compute_risk_metrics(
@@ -683,9 +690,16 @@ def execute_swing_mode(
                 # Compounded total return
                 total_return = (1 + closed['return']).prod() - 1
 
+                # Calculate actual time span for accurate annualization
+                date_start = pd.to_datetime(closed['entry_date'].min())
+                date_end = pd.to_datetime(closed['exit_date'].max())
+                days = (date_end - date_start).days
+                years = days / 365.25 if days > 0 else 1.0
+                periods_per_year = max(1.0, len(returns) / years)
+
                 # Risk metrics — delegate to canonical when available
                 if compute_risk_metrics is not None and len(returns) >= 2:
-                    core = compute_risk_metrics(returns, periods_per_year=max(len(returns), 1), total_return=total_return)
+                    core = compute_risk_metrics(returns, periods_per_year=periods_per_year, total_return=total_return)
                     sharpe = core['sharpe']
                     sortino = core['sortino']
                     max_dd = core['max_drawdown']
@@ -775,14 +789,16 @@ def rank_strategies(metrics: Dict[str, Dict]) -> pd.DataFrame:
     # Penalty metrics (more negative is worse)
     negative_metrics = ['max_drawdown']
     
-    # Compute percentile ranks
+    # Compute normalized scales instead of uniform percentiles to preserve dispersion
     for metric in positive_metrics:
         if metric in df.columns:
-            df[f'{metric}_rank'] = df[metric].rank(pct=True)
+            col_min, col_max = df[metric].min(), df[metric].max()
+            df[f'{metric}_rank'] = (df[metric] - col_min) / (col_max - col_min) if col_max > col_min else 0.5
     
     for metric in negative_metrics:
         if metric in df.columns:
-            df[f'{metric}_rank'] = df[metric].rank(pct=True, ascending=False)
+            col_min, col_max = df[metric].min(), df[metric].max()
+            df[f'{metric}_rank'] = (col_max - df[metric]) / (col_max - col_min) if col_max > col_min else 0.5
     
     rank_cols = [c for c in df.columns if c.endswith('_rank')]
     
@@ -959,46 +975,6 @@ class StrategySelectionEngine:
             'swing_sell': SWING_SELL_TRIGGER
         }
     
-    def get_master_confidence(self) -> Dict:
-        """Get MASTER-informed confidence overlay on current trigger logic.
-
-        Returns a dict with:
-            'available': bool — whether MASTER signal was computed
-            'regime_score': float — MASTER composite regime score
-            'confidence_modifier': float — suggested adjustment to trigger confidence
-            'recommendation': str — human-readable recommendation
-        """
-        result = {'available': False, 'regime_score': 0.0, 'confidence_modifier': 0.0, 'recommendation': ''}
-        try:
-            from master_regime import get_master_regime_signal
-            signal = get_master_regime_signal()
-            score = signal['score']
-            result['available'] = score != 0.0
-            result['regime_score'] = score
-
-            # Confidence modifier: positive MASTER score → higher confidence in bullish triggers
-            # Negative score → higher confidence in bearish/defensive triggers
-            if score > 0.3:
-                result['confidence_modifier'] = 0.10
-                result['recommendation'] = "MASTER signals healthy regime — favor aggressive triggers"
-            elif score > 0.0:
-                result['confidence_modifier'] = 0.05
-                result['recommendation'] = "MASTER signals mildly positive regime"
-            elif score > -0.3:
-                result['confidence_modifier'] = -0.05
-                result['recommendation'] = "MASTER signals mildly stressed regime — favor defensive"
-            else:
-                result['confidence_modifier'] = -0.10
-                result['recommendation'] = "MASTER signals stressed regime — favor capital preservation"
-
-        except ImportError:
-            result['recommendation'] = "MASTER modules not available"
-        except Exception as e:
-            logger.debug("MASTER confidence overlay failed: %s", e)
-            result['recommendation'] = "MASTER signal computation failed"
-
-        return result
-
     def _check_ready(self) -> bool:
         """Check if engine is ready to run."""
         if self.breadth_data is None or self.breadth_data.empty:
@@ -1135,7 +1111,9 @@ class SPRTRegimeTrigger:
         # Stress hypothesis: shift below median
         self.mu1 = self.mu0 + self.stress_shift * self.sigma
 
-        self.log_lr = 0.0
+        # CRITICAL FIX: Do NOT reset log_lr if already accumulating evidence!
+        if not self.fitted:
+            self.log_lr = 0.0
         self.fitted = True
         return self
 
@@ -1218,15 +1196,22 @@ def get_sprt_trigger_dates(
         return [], []
 
     sprt = SPRTRegimeTrigger(alpha=alpha, beta=beta)
-    sprt.fit(breadth_data['REL_BREADTH'])
 
     buy_dates = []
     sell_dates = []
+    historical_buffer = []
 
     has_date_col = 'DATE' in breadth_data.columns
 
     for idx, row in breadth_data.iterrows():
-        signal = sprt.update(row['REL_BREADTH'])
+        val = row['REL_BREADTH']
+        historical_buffer.append(val)
+        
+        # Fit only on past data to prevent lookahead bias
+        if len(historical_buffer) > 20:
+            sprt.fit(pd.Series(historical_buffer[:-1]))
+            
+        signal = sprt.update(val)
         date_val = row['DATE'] if has_date_col else idx
         if signal == 'BUY':
             buy_dates.append(date_val)

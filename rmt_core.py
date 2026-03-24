@@ -270,9 +270,9 @@ def ledoit_wolf_shrinkage(
     r_mat = np.sqrt(diag_cov[np.newaxis, :] / diag_cov[:, np.newaxis])
 
     # theta_mat[i,j] = (1/T) * sum_t(X_ti^2 * X_tj * X_ti)
-    #                = (1/T) * sum_t(X_ti^3 * X_tj)
+    #                = (1/T) * sum_t(X_ti^3 * X_tj) - s_ii * s_ij
     X3 = X ** 3
-    theta_mat = (X3.T @ X) / T
+    theta_mat = (X3.T @ X) / T - diag_cov[:, np.newaxis] * sample_cov
 
     # Combined: each (i,j) contributes (r_ij * theta_ij + r_ji * theta_ji) * rho_bar / 2
     contrib_mat = (r_mat * theta_mat + r_mat.T * theta_mat.T) * (rho_bar / 2)
@@ -702,12 +702,15 @@ def rmt_minimum_variance_weights(
     def objective(w):
         return w @ cleaned_cov @ w
 
+    def jacobian(w):
+        return 2 * (cleaned_cov @ w)
+
     constraints = {'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0}
     bounds = [(0.0, 1.0)] * N
 
     result = minimize(
         objective, w0, method='SLSQP',
-        bounds=bounds, constraints=constraints,
+        jac=jacobian, bounds=bounds, constraints=constraints,
         options={'maxiter': 200, 'ftol': 1e-12},
     )
 
@@ -1157,13 +1160,13 @@ def hrp_weights(
     cov += np.eye(N) * 1e-8
 
     # Distance matrix from correlation
-    dist = np.sqrt(0.5 * (1.0 - corr))
+    # Clip inside the sqrt to prevent NaN from floating point artifacts (e.g., corr = 1.0000000000000002)
+    dist = np.sqrt(np.clip(0.5 * (1.0 - corr), 0.0, 1.0))
     np.fill_diagonal(dist, 0.0)
-    dist = np.clip(dist, 0.0, 1.0)
 
     # Hierarchical clustering
     condensed_dist = squareform(dist, checks=False)
-    link = linkage(condensed_dist, method='single')
+    link = linkage(condensed_dist, method='ward')
 
     # Quasi-diagonalization
     sorted_indices = _get_quasi_diag_order(link, N)
@@ -1172,85 +1175,6 @@ def hrp_weights(
     weights = _hrp_bisect_weights(cov, sorted_indices)
 
     return {name: float(weights[i]) for i, name in enumerate(strategy_names)}
-
-
-# ---------------------------------------------------------------------------
-# MASTER Attention Integration
-# ---------------------------------------------------------------------------
-
-def blend_attention_correlation(
-    cleaned_corr: np.ndarray,
-    attention_matrix: Optional[np.ndarray],
-    blend_weight: float = 0.3,
-) -> np.ndarray:
-    """Blend RMT-cleaned correlation with MASTER attention matrix.
-
-    The attention matrix from inter-stock attention is a learned, dynamic
-    correlation analog. Blending it with the MP-cleaned correlation gives
-    a hybrid that benefits from both:
-      - RMT: principled noise removal, eigenvalue-level denoising
-      - MASTER: forward-looking, neural-learned cross-stock relationships
-
-    Args:
-        cleaned_corr: RMT-denoised correlation, shape (N, N).
-        attention_matrix: Mean attention matrix, shape (N, N). None to skip.
-        blend_weight: Weight for attention matrix (0 = pure RMT, 1 = pure attention).
-
-    Returns:
-        Blended correlation matrix, shape (N, N).
-    """
-    if attention_matrix is None:
-        return cleaned_corr
-
-    N = cleaned_corr.shape[0]
-    if attention_matrix.shape != (N, N):
-        return cleaned_corr
-
-    # Symmetrize attention matrix (it's asymmetric from softmax)
-    attn_sym = (attention_matrix + attention_matrix.T) / 2.0
-
-    # Normalize to [0, 1] range like a correlation
-    attn_min = attn_sym.min()
-    attn_range = attn_sym.max() - attn_min
-    if attn_range > _EPS:
-        attn_norm = (attn_sym - attn_min) / attn_range
-    else:
-        attn_norm = np.ones_like(attn_sym) / N
-
-    # Set diagonal to 1
-    np.fill_diagonal(attn_norm, 1.0)
-
-    # Blend
-    blended = (1.0 - blend_weight) * cleaned_corr + blend_weight * attn_norm
-
-    # Ensure valid correlation matrix properties
-    np.fill_diagonal(blended, 1.0)
-    blended = np.clip(blended, -1.0, 1.0)
-
-    return blended
-
-
-def get_master_attention_matrix() -> Optional[np.ndarray]:
-    """Try to obtain the current MASTER attention matrix.
-
-    Returns:
-        Mean attention matrix (n_stocks, n_stocks) or None if unavailable.
-    """
-    try:
-        import torch
-        from master_predict import load_pipeline
-
-        pipeline = load_pipeline()
-        if pipeline is None:
-            return None
-
-        # Generate from pipeline's inter-stock module with random embeddings
-        # In production, these would come from real feature sequences
-        n_stocks = 30  # Standard Pragyam ETF universe
-        dummy = torch.randn(n_stocks, pipeline.tau, pipeline.d_model)
-        return pipeline.inter_stock.get_mean_attention_matrix(dummy)
-    except (ImportError, Exception):
-        return None
 
 
 # ---------------------------------------------------------------------------

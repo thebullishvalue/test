@@ -31,9 +31,7 @@ from charts import (
     create_equity_drawdown_chart, create_rolling_metrics_chart,
     create_correlation_heatmap, create_tier_sharpe_heatmap,
     create_risk_return_scatter, create_factor_radar,
-    create_weight_evolution_chart, create_signal_heatmap,
-    create_attention_heatmap, create_attention_entropy_chart,
-    create_cross_time_correlation_chart,
+    create_weight_evolution_chart, create_signal_heatmap
 )
 
 # --- Import Strategies from strategies.py ---
@@ -214,12 +212,17 @@ def compute_portfolio_return(
     # Turnover-proportional transaction costs
     if is_rebalance and TRANSACTION_COST_BPS > 0:
         if prev_portfolio is not None and not prev_portfolio.empty and 'value' in prev_portfolio.columns:
+            # Mark previous portfolio to market to capture weight drift
+            drifted_prev = prev_portfolio.merge(next_prices[['symbol', 'price']], on='symbol', how='left')
+            drifted_prev['price_y'] = drifted_prev['price_y'].fillna(drifted_prev['price_x'])
+            drifted_prev['drifted_value'] = drifted_prev['units'] * drifted_prev['price_y']
+            
             # Compute turnover as half the sum of absolute weight changes
             curr_total = portfolio['value'].sum()
-            prev_total = prev_portfolio['value'].sum()
+            prev_total = drifted_prev['drifted_value'].sum()
             if curr_total > 0 and prev_total > 0:
                 curr_weights = portfolio.set_index('symbol')['value'] / curr_total
-                prev_weights = prev_portfolio.set_index('symbol')['value'] / prev_total
+                prev_weights = drifted_prev.set_index('symbol')['drifted_value'] / prev_total
                 all_symbols = curr_weights.index.union(prev_weights.index)
                 curr_w = curr_weights.reindex(all_symbols, fill_value=0.0)
                 prev_w = prev_weights.reindex(all_symbols, fill_value=0.0)
@@ -420,28 +423,39 @@ def calculate_strategy_weights(
     weights = exp_sharpes / total_score
     return {name: weights[i] for i, name in enumerate(strat_names)}
 
-def _calculate_performance_on_window(window_data: List[Tuple[datetime, pd.DataFrame]], strategies: Dict[str, BaseStrategy], training_capital: float) -> Dict:
+def _calculate_performance_on_window(window_data: List[Tuple[datetime, pd.DataFrame]], strategies: Dict[str, BaseStrategy], training_capital: float, precomputed_cache: Dict = None) -> Dict:
     performance = {name: {'returns': []} for name in strategies}
     subset_performance = {name: {} for name in strategies}
-    for i in range(len(window_data) - 1):
-        date, df = window_data[i]
-        next_date, next_df = window_data[i+1]
-        for name, strategy in strategies.items():
-            try:
-                portfolio = strategy.generate_portfolio(df, training_capital)
-                if portfolio.empty: continue
-                performance[name]['returns'].append({'return': compute_portfolio_return(portfolio, next_df), 'date': next_date})
-                n, tier_size = len(portfolio), 10
-                num_tiers = n // tier_size
-                if num_tiers == 0: continue
-                for j in range(num_tiers):
-                    tier_name = f'tier_{j+1}'
-                    if tier_name not in subset_performance[name]: subset_performance[name][tier_name] = []
-                    sub_df = portfolio.iloc[j*tier_size : (j+1)*tier_size]
-                    if not sub_df.empty:
-                        sub_ret = compute_portfolio_return(sub_df, next_df)
-                        subset_performance[name][tier_name].append({'return': sub_ret, 'date': next_date})
-            except Exception as e: logger.error(f"Window Calc Error ({name}, {date}): {e}")
+    
+    if precomputed_cache:
+        # O(1) Cache slice retrieval instead of O(T^2) regeneration
+        window_end_idx = len(window_data) - 1
+        for name in strategies:
+            performance[name]['returns'] = precomputed_cache['strategy'][name][:window_end_idx]
+            for tier_name, rets in precomputed_cache['subset'].get(name, {}).items():
+                if tier_name not in subset_performance[name]: subset_performance[name][tier_name] = []
+                subset_performance[name][tier_name] = rets[:window_end_idx]
+    else:
+        for i in range(len(window_data) - 1):
+            date, df = window_data[i]
+            next_date, next_df = window_data[i+1]
+            for name, strategy in strategies.items():
+                try:
+                    portfolio = strategy.generate_portfolio(df, training_capital)
+                    if portfolio.empty: continue
+                    performance[name]['returns'].append({'return': compute_portfolio_return(portfolio, next_df), 'date': next_date})
+                    n, tier_size = len(portfolio), 10
+                    num_tiers = n // tier_size
+                    if num_tiers == 0: continue
+                    for j in range(num_tiers):
+                        tier_name = f'tier_{j+1}'
+                        if tier_name not in subset_performance[name]: subset_performance[name][tier_name] = []
+                        sub_df = portfolio.iloc[j*tier_size : (j+1)*tier_size]
+                        if not sub_df.empty:
+                            sub_ret = compute_portfolio_return(sub_df, next_df)
+                            subset_performance[name][tier_name].append({'return': sub_ret, 'date': next_date})
+                except Exception as e: logger.error(f"Window Calc Error ({name}, {date}): {e}")
+                
     final_performance = {}
     for name, perf in performance.items():
         metrics = calculate_advanced_metrics(perf['returns'])[0]
@@ -505,9 +519,10 @@ def calculate_trigger_based_metrics(daily_data: pd.DataFrame, deployment_style: 
             prev_val = df['value'].iloc[i - 1]
             curr_val = df['value'].iloc[i]
             cf = df['cash_flow'].iloc[i]
-            base = prev_val + cf  # capital base that was exposed to market
+            base = prev_val  # capital base exposed to the market BEFORE injection
             if base > 0:
-                r = (curr_val - base) / base
+                # Extract the market-driven value change, divided by exposed base
+                r = (curr_val - cf - prev_val) / prev_val
                 twr_returns.append(r)
             elif prev_val > 0:
                 # Fallback: no new injection, use prev_val
@@ -517,7 +532,14 @@ def calculate_trigger_based_metrics(daily_data: pd.DataFrame, deployment_style: 
                 twr_returns.append(0.0)
 
         returns = pd.Series(twr_returns).replace([np.inf, -np.inf], 0).clip(-1.0, 1.0)
-        ann_return = (1 + returns.mean()) ** 252 - 1
+        
+        # Correct geometric annualization for Time-Weighted Returns
+        if len(returns) > 0:
+            geom_return = (1 + returns).prod()
+            years = len(returns) / 252.0
+            ann_return = (geom_return ** (1 / years)) - 1 if years > 0 else 0.0
+        else:
+            ann_return = 0.0
         cagr = None
     else:  # Swing/Lumpsum
         initial_investment = daily_data['investment'].iloc[0]
@@ -530,9 +552,9 @@ def calculate_trigger_based_metrics(daily_data: pd.DataFrame, deployment_style: 
         if returns.empty:
             return {'total_return': total_return_pct, 'absolute_pnl': absolute_pnl}
         
-        ann_return = (1 + returns.mean()) ** 252 - 1
         years = len(daily_data) / 252
-        cagr = ((final_value / initial_investment) ** (1/years) - 1) if years > 0 else 0
+        ann_return = ((final_value / initial_investment) ** (1/years) - 1) if years > 0 else 0.0
+        cagr = ann_return
     
     if returns.empty or len(returns) < 2:
         return {'total_return': total_return_pct, 'absolute_pnl': absolute_pnl}
@@ -820,9 +842,9 @@ def run_trigger_based_backtest(
                 for tier_name, rets in tier_returns_accum.items():
                     arr = np.array(rets)
                     if len(arr) > 1 and arr.std() > 0.001:
-                        subset_performance[tier_name] = float(arr.mean() / arr.std())
+                        subset_performance[tier_name] = float((arr.mean() / arr.std()) * np.sqrt(252.0))
                     else:
-                        subset_performance[tier_name] = float(arr.mean() * 10) if len(arr) > 0 else 0.0
+                        subset_performance[tier_name] = float(arr.mean() * np.sqrt(252.0)) if len(arr) > 0 else 0.0
             
             all_results[name] = {
                 'metrics': metrics,
@@ -965,6 +987,29 @@ def evaluate_historical_performance_trigger_based(
     subset_weights_history = []
     spectral_history = []
 
+    # --- O(T^2) Bottleneck Fix: Precompute all strategy returns once ---
+    precalc_cache = {'strategy': {n: [] for n in _strategies}, 'subset': {n: {} for n in _strategies}}
+    logger.info("Precomputing strategy returns for walk-forward cache...")
+    for j in range(len(historical_data) - 1):
+        df_date, df = historical_data[j]
+        next_date, next_df = historical_data[j+1]
+        for name, strategy in _strategies.items():
+            try:
+                port = strategy.generate_portfolio(df, TRAINING_CAPITAL)
+                ret = compute_portfolio_return(port, next_df) if not port.empty else 0.0
+                precalc_cache['strategy'][name].append({'return': ret, 'date': next_date})
+                if not port.empty:
+                    num_tiers = len(port) // 10
+                    for t in range(num_tiers):
+                        t_name = f'tier_{t+1}'
+                        if t_name not in precalc_cache['subset'][name]: precalc_cache['subset'][name][t_name] = []
+                        t_port = port.iloc[t*10:(t+1)*10]
+                        t_ret = compute_portfolio_return(t_port, next_df) if not t_port.empty else 0.0
+                        precalc_cache['subset'][name][t_name].append({'return': t_ret, 'date': next_date})
+            except Exception:
+                precalc_cache['strategy'][name].append({'return': 0.0, 'date': next_date})
+    # -------------------------------------------------------------------
+
     # State for SIP accumulation tracking
     sip_portfolio_units = {}  # strategy -> {symbol: units}
     swing_in_position = {}   # strategy -> bool
@@ -999,7 +1044,7 @@ def evaluate_historical_performance_trigger_based(
         if is_buy_day or (not is_sip and is_sell_day):
             try:
                 # Train on historical window to get performance-based weights
-                in_sample_perf = _calculate_performance_on_window(train_window, _strategies, TRAINING_CAPITAL)
+                in_sample_perf = _calculate_performance_on_window(train_window, _strategies, TRAINING_CAPITAL, precalc_cache)
                 
                 curated_port, strat_wts, sub_wts, _ = curate_final_portfolio(
                     _strategies, in_sample_perf, test_df, TRAINING_CAPITAL, 30, 1.0, 10.0
@@ -1036,7 +1081,7 @@ def evaluate_historical_performance_trigger_based(
                 if 'price_y' in merged.columns:
                     merged['price'] = merged['price_y'].fillna(merged['price_x'])
                     merged = merged.drop(columns=['price_x', 'price_y'])
-                    merged['value'] = merged['price'] * (last_curated_port['value'] / last_curated_port['price'].replace(0, 1))
+                    merged['value'] = merged['units'] * merged['price']
                     last_curated_port = merged
             else:
                 oos_perf['System_Curated']['returns'].append({'return': 0, 'date': next_date})
@@ -1211,6 +1256,29 @@ def evaluate_historical_performance(
     subset_weights_history = []
     spectral_history = []
 
+    # --- O(T^2) Bottleneck Fix: Precompute all strategy returns once ---
+    precalc_cache = {'strategy': {n: [] for n in _strategies}, 'subset': {n: {} for n in _strategies}}
+    logger.info("Precomputing strategy returns for walk-forward cache...")
+    for j in range(len(historical_data) - 1):
+        df_date, df = historical_data[j]
+        next_date, next_df = historical_data[j+1]
+        for name, strategy in _strategies.items():
+            try:
+                port = strategy.generate_portfolio(df, TRAINING_CAPITAL)
+                ret = compute_portfolio_return(port, next_df) if not port.empty else 0.0
+                precalc_cache['strategy'][name].append({'return': ret, 'date': next_date})
+                if not port.empty:
+                    num_tiers = len(port) // 10
+                    for t in range(num_tiers):
+                        t_name = f'tier_{t+1}'
+                        if t_name not in precalc_cache['subset'][name]: precalc_cache['subset'][name][t_name] = []
+                        t_port = port.iloc[t*10:(t+1)*10]
+                        t_ret = compute_portfolio_return(t_port, next_df) if not t_port.empty else 0.0
+                        precalc_cache['subset'][name][t_name].append({'return': t_ret, 'date': next_date})
+            except Exception:
+                precalc_cache['strategy'][name].append({'return': 0.0, 'date': next_date})
+    # -------------------------------------------------------------------
+
     # Track previous portfolios for turnover-proportional cost (CRITICAL-3 wiring)
     last_curated_port = pd.DataFrame()
     last_strategy_ports: Dict[str, pd.DataFrame] = {}
@@ -1233,7 +1301,7 @@ def evaluate_historical_performance(
         progress_text = f"Processing step {step_idx}/{total_steps}"
         progress_bar.progress(step_idx / total_steps, text=progress_text)
 
-        in_sample_perf = _calculate_performance_on_window(train_window, _strategies, TRAINING_CAPITAL)
+        in_sample_perf = _calculate_performance_on_window(train_window, _strategies, TRAINING_CAPITAL, precalc_cache)
 
         try:
             curated_port, strat_wts, sub_wts, _ = curate_final_portfolio(
@@ -1321,7 +1389,7 @@ def evaluate_historical_performance(
     # CRITICAL-2 fix: use train-only window for tier Sharpe calculation
     train_cutoff = max(MIN_TRAIN_FILES, len(historical_data) * 2 // 3)
     full_history_subset_perf = _calculate_performance_on_window(
-        historical_data[:train_cutoff], _strategies, TRAINING_CAPITAL
+        historical_data[:train_cutoff], _strategies, TRAINING_CAPITAL, precalc_cache
     )['subset']
 
     # Spectral summary (market correlation regime)
@@ -1539,14 +1607,6 @@ class MarketRegimeDetectorV2:
             'correlation': self._analyze_correlation_regime(latest_df),
             'velocity': self._analyze_velocity(analysis_window)
         }
-
-        # MASTER regime sub-analyzer (optional, non-disruptive)
-        try:
-            from master_regime import get_master_regime_signal
-            master_signal = get_master_regime_signal()
-            metrics['master'] = master_signal
-        except ImportError:
-            pass
         
         regime_score = self._calculate_composite_score(metrics)
         regime_name, confidence = self._classify_regime(regime_score, metrics)
@@ -1826,12 +1886,8 @@ class MarketRegimeDetectorV2:
         }
 
     def _calculate_composite_score(self, metrics: Dict) -> float:
-        # If MASTER regime signal is available, include it (5% weight, taken from correlation + velocity)
-        if 'master' in metrics and metrics['master'].get('score', 0.0) != 0.0:
-            weights = { 'momentum': 0.25, 'trend': 0.25, 'breadth': 0.15, 'volatility': 0.05, 'extremes': 0.10, 'correlation': 0.075, 'velocity': 0.075, 'master': 0.05 }
-        else:
-            weights = { 'momentum': 0.25, 'trend': 0.25, 'breadth': 0.15, 'volatility': 0.05, 'extremes': 0.10, 'correlation': 0.10, 'velocity': 0.10 }
-        return sum(metrics.get(factor, {}).get('score', 0.0) * weight for factor, weight in weights.items())
+        weights = { 'momentum': 0.25, 'trend': 0.25, 'breadth': 0.15, 'volatility': 0.05, 'extremes': 0.10, 'correlation': 0.10, 'velocity': 0.10 }
+        return sum(metrics[factor]['score'] * weight for factor, weight in weights.items())
     
     def _classify_regime(self, score: float, metrics: Dict) -> Tuple[str, float]:
         if metrics['volatility']['regime'] == 'PANIC' and score < -0.5 and metrics['breadth']['quality'] == 'CAPITULATION':
@@ -2949,83 +3005,6 @@ def _run_dynamic_strategy_selection(
     return selected, results
 
 
-# --- MASTER Insights Tab ---
-def _render_master_insights():
-    """Render the MASTER Insights tab with attention visualization and regime analysis."""
-    st.markdown(_section_header("MASTER Pipeline Insights", "Neural attention analysis and regime detection"), unsafe_allow_html=True)
-
-    _master_available = False
-    try:
-        from master_predict import load_pipeline, MASTERPipeline
-        from master_regime import get_master_regime_signal, GatingRegimeAnalyzer, AttentionRegimeAnalyzer
-        from master_cross_stock import compute_attention_entropy
-        _master_available = True
-    except ImportError:
-        pass
-
-    if not _master_available:
-        st.info("MASTER modules not available. Install PyTorch and train the pipeline to enable neural insights.")
-        return
-
-    # Regime signal
-    master_signal = get_master_regime_signal()
-    gating = master_signal['gating']
-    attention = master_signal['attention']
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        score_color = "success" if master_signal['score'] > 0.1 else ("danger" if master_signal['score'] < -0.1 else "neutral")
-        st.markdown(_metric_card("MASTER Signal", f"{master_signal['score']:+.2f}", "Combined regime score", score_color), unsafe_allow_html=True)
-    with col2:
-        gating_label = gating.get('regime', 'N/A')
-        gating_entropy = f"{gating['entropy']:.2f}" if gating.get('entropy') is not None else "N/A"
-        st.markdown(_metric_card("Gating Regime", gating_label, f"Entropy: {gating_entropy}", "info"), unsafe_allow_html=True)
-    with col3:
-        attn_label = attention.get('regime', 'N/A')
-        attn_entropy = f"{attention['attention_entropy']:.2f}" if attention.get('attention_entropy') is not None else "N/A"
-        st.markdown(_metric_card("Attention Regime", attn_label, f"Entropy: {attn_entropy}", "info"), unsafe_allow_html=True)
-
-    _section_divider()
-
-    # Pipeline status
-    pipeline = load_pipeline()
-    if pipeline is None:
-        st.warning("MASTER pipeline not trained yet. Run `python3 master_training.py` to train. Showing regime analysis from gating coefficients only.")
-        return
-
-    st.success(f"MASTER pipeline loaded (D={pipeline.d_model}, τ={pipeline.tau})")
-
-    # If we have current data in session state, show attention visualization
-    if 'current_df' in st.session_state and st.session_state.current_df is not None:
-        df = st.session_state.current_df
-        symbols = df['symbol'].tolist() if 'symbol' in df.columns else [f'ETF{i}' for i in range(len(df))]
-
-        st.markdown("### Inter-Stock Attention Matrix")
-        st.caption("Neural analog of the denoised correlation matrix — shows learned, dynamic cross-stock relationships.")
-
-        # Generate synthetic attention for visualization (from random embeddings if no real data)
-        try:
-            import torch
-            n_stocks = len(symbols)
-            dummy_embeddings = torch.randn(n_stocks, pipeline.tau, pipeline.d_model)
-            attn_matrix = pipeline.inter_stock.get_mean_attention_matrix(dummy_embeddings)
-
-            fig = create_attention_heatmap(attn_matrix, symbols)
-            st.plotly_chart(fig, use_container_width=True)
-
-            entropy = compute_attention_entropy(attn_matrix)
-            if entropy > 0.80:
-                st.success(f"Attention entropy: {entropy:.3f} — Healthy diversification (dispersed attention)")
-            elif entropy > 0.50:
-                st.info(f"Attention entropy: {entropy:.3f} — Moderate concentration")
-            else:
-                st.warning(f"Attention entropy: {entropy:.3f} — High concentration (herding signal)")
-        except Exception as e:
-            st.info(f"Attention visualization unavailable: {e}")
-    else:
-        st.info("Run a portfolio generation to see attention visualizations.")
-
-
 # --- Main Application ---
 def main():
     strategies = discover_strategies()
@@ -3339,6 +3318,15 @@ def main():
                 st.stop()
                 
             final_mix_to_use = st.session_state.suggested_mix
+
+            # CRITICAL: Prevent Lookahead Bias by strictly separating Phase 2 (Selection) and Phase 3 (Validation) data
+            PHASE3_LOOKBACK = 50
+            if len(training_data_window_with_current) > PHASE3_LOOKBACK + 10:
+                phase2_data = training_data_window_with_current[:-PHASE3_LOOKBACK]
+                phase3_data = training_data_window_with_current[-PHASE3_LOOKBACK:]
+            else:
+                phase2_data = training_data_window_with_current
+                phase3_data = training_data_window_with_current
             
             # ═══════════════════════════════════════════════════════════════════
             # PHASE 2: DYNAMIC STRATEGY SELECTION (TRIGGER-BASED)
@@ -3361,7 +3349,7 @@ def main():
                 logger.info(f"  Sell Enabled: {trigger_config.get('sell_enabled', False)}")
             
             dynamic_strategies, strategy_metrics = _run_dynamic_strategy_selection(
-                training_data_window_with_current, 
+                phase2_data, 
                 strategies, 
                 selected_main_branch,
                 progress_bar=progress_bar,
@@ -3410,11 +3398,6 @@ def main():
             # stocks day-by-day?" This is a pure walk-forward process — every
             # day is a rebalancing day. The resulting metrics (Sharpe, Sortino,
             # MaxDD) measure stock-picking ability, not timing ability.
-            PHASE3_LOOKBACK = 50
-            if len(training_data_window_with_current) > PHASE3_LOOKBACK:
-                phase3_data = training_data_window_with_current[-PHASE3_LOOKBACK:]
-            else:
-                phase3_data = training_data_window_with_current
             
             progress_bar.progress(0.65, text="Running walk-forward portfolio curation...")
             status_text.text(f"Walk-forward: {len(strategies_to_run)} strategies over {len(phase3_data)} days...")
@@ -3527,7 +3510,7 @@ def main():
             st.markdown(_metric_card("Positions", f"{len(st.session_state.portfolio)}", "Active holdings", "info"), unsafe_allow_html=True)
         _section_divider()
 
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["**Portfolio**", "**Performance**", "**Risk Intelligence**", "**Strategy Analysis**", "**Backtest Data**", "**MASTER Insights**"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["**Portfolio**", "**Performance**", "**Risk Intelligence**", "**Strategy Analysis**", "**Backtest Data**"])
 
         with tab1:
             st.markdown(_section_header("Curated Portfolio Holdings", f"{len(st.session_state.portfolio)} positions from multi-strategy walk-forward curation"), unsafe_allow_html=True)
@@ -3572,9 +3555,6 @@ def main():
 
         with tab5:
             _render_backtest_data(st.session_state.performance)
-
-        with tab6:
-            _render_master_insights()
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     

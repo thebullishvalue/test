@@ -128,47 +128,11 @@ def calculate_all_indicators(
                 if period == 20:
                     all_results_df[f'dev{period} {tf_name}'] = df['close'].rolling(window=period).std()
 
-    # --- MASTER Phase 0: Extended features (daily only) ---
-    close = daily_data['close']
-    high = daily_data['high']
-    low = daily_data['low']
-    volume = daily_data['volume']
-
-    # ROCP: Rate of Change in Percentage
-    for n in [5, 10, 20]:
-        all_results_df[f'rocp{n}'] = close.pct_change(n)
-
-    # Volume ratio: current volume / 20-day average volume
-    vol_ma20 = volume.rolling(window=20).mean().replace(0, pd.NA)
-    all_results_df['volume_ratio'] = volume / vol_ma20
-
-    # ATR(14): Average True Range
-    prev_close = close.shift(1)
-    tr = pd.concat([
-        high - low,
-        (high - prev_close).abs(),
-        (low - prev_close).abs(),
-    ], axis=1).max(axis=1)
-    all_results_df['atr14'] = tr.ewm(span=14, min_periods=14).mean()
-
-    # Bollinger Band Width: (upper - lower) / mid using 20-period, 2-std
-    bb_mid = close.rolling(window=20).mean()
-    bb_std = close.rolling(window=20).std()
-    safe_bb_mid = bb_mid.replace(0, pd.NA)
-    all_results_df['bbwidth'] = (4 * bb_std) / safe_bb_mid  # (mid+2σ - (mid-2σ)) / mid = 4σ/mid
-
-    # MACD histogram: 12/26/9
-    ema12 = close.ewm(span=12, min_periods=12).mean()
-    ema26 = close.ewm(span=26, min_periods=26).mean()
-    macd_line = ema12 - ema26
-    signal_line = macd_line.ewm(span=9, min_periods=9).mean()
-    all_results_df['macd_hist'] = macd_line - signal_line
-
     all_results_df = all_results_df.reindex(daily_data.index)
-
+    
     weekly_cols = [col for col in all_results_df.columns if 'weekly' in col]
     all_results_df[weekly_cols] = all_results_df[weekly_cols].ffill()
-
+    
     return all_results_df
 
 
@@ -209,17 +173,8 @@ COLUMN_ORDER = [
     'zscore latest', 'zscore weekly',
     'ma20 latest', 'ma90 latest', 'ma200 latest',
     'ma20 weekly', 'ma90 weekly', 'ma200 weekly',
-    'dev20 latest', 'dev20 weekly',
-    # --- MASTER Phase 0: Extended features ---
-    'rocp5', 'rocp10', 'rocp20',
-    'volume_ratio',
-    'atr14',
-    'bbwidth',
-    'macd_hist',
+    'dev20 latest', 'dev20 weekly'
 ]
-
-# Numeric indicator columns used by MASTER gating (excludes 'date' and 'symbol')
-NUMERIC_INDICATOR_COLS = [c for c in COLUMN_ORDER if c not in ('date', 'symbol')]
 
 # --- NEW: Export max indicator period ---
 INDICATOR_PERIODS = [20, 90, 200]
@@ -230,7 +185,6 @@ def generate_historical_data(
     symbols_to_process: List[str],
     start_date: datetime,
     end_date: datetime,
-    use_market_gating: bool = False,
 ) -> List[Tuple[datetime, pd.DataFrame]]:
     """
     Generate historical indicator snapshots for a list of symbols.
@@ -239,10 +193,6 @@ def generate_historical_data(
         symbols_to_process: Stock ticker symbols (e.g. ``["RELIANCE.NS"]``).
         start_date: Beginning of the download window (must include warmup).
         end_date: End of the snapshot window.
-        use_market_gating: If True and a trained gating model exists,
-            apply MASTER market-guided feature gating to numeric columns.
-            When False or no model is found, passes through unchanged
-            (backward compatible).
 
     Returns:
         Chronologically ordered list of ``(date, indicator_df)`` tuples.
@@ -313,98 +263,46 @@ def generate_historical_data(
             logger.warning("Skipping %s: data quality error during indicator calculation (%s)", ticker, e)
             continue
 
-    # 2b. --- MASTER: Initialize gating if requested ---
-    gating_model = None
-    market_vector = None
-    temporal_buffer = None
-    if use_market_gating:
-        try:
-            from master_gating import load_gating_model
-            from master_market import MarketStatusVector
-            from master_temporal import TemporalBuffer
-            gating_model = load_gating_model()
-            temporal_buffer = TemporalBuffer(tau=10, feature_cols=NUMERIC_INDICATOR_COLS)
-            if gating_model is not None:
-                market_vector = MarketStatusVector()
-                market_vector.fit(all_data)
-                if not market_vector.is_fitted:
-                    logger.warning("MarketStatusVector fit failed; gating disabled.")
-                    gating_model = None
-                    market_vector = None
-                else:
-                    logger.info("MASTER gating enabled (β=%.1f).", gating_model.beta)
-            else:
-                logger.info("No trained gating model found; gating disabled.")
-        except ImportError as e:
-            logger.warning("MASTER modules not available; gating disabled: %s", e)
-
     # 3. --- Generate Daily Snapshots in Memory ---
     pragati_data_list: List[Tuple[datetime, pd.DataFrame]] = []
-    # Use the index of the downloaded data as the authoritative date range
-    date_range = all_data.index.normalize().unique()
+    
+    if not ticker_indicator_cache:
+        return []
 
-    for snapshot_date in date_range:
-        # --- NEW: Only start generating snapshots *after* the indicator period
-        # We also only care about dates *within* the requested range (end_date)
-        if snapshot_date < (start_date + timedelta(days=MAX_INDICATOR_PERIOD)) or snapshot_date > end_date:
-            continue
-
-        daily_results: List[Dict[str, Any]] = []
-        for ticker in symbols_to_process:
-            if ticker not in ticker_indicator_cache:
-                continue
-            
-            full_indicator_df = ticker_indicator_cache[ticker]
-            
-            if snapshot_date not in full_indicator_df.index:
-                continue
-                
-            try:
-                indicator_row = full_indicator_df.loc[snapshot_date]
-                if indicator_row.isnull().all() or pd.isna(indicator_row.get('price')):
-                    continue # Skip if all data is NaN or price is NaN
-
-                indicators = indicator_row.to_dict()
-                indicators['symbol'] = ticker.replace('.NS', '')
-                indicators['date'] = snapshot_date.strftime('%d %b')
-                indicators['% change'] = indicators['% change'] * 100
-                
-                daily_results.append(indicators)
-            except KeyError:
-                continue
+    # Vectorized concatenation of all indicator DataFrames
+    all_ticker_dfs = []
+    for ticker, df in ticker_indicator_cache.items():
+        df = df.copy()
+        df['symbol'] = ticker.replace('.NS', '')
+        all_ticker_dfs.append(df)
         
-        if daily_results:
-            final_df = pd.DataFrame(daily_results)
-            for col in COLUMN_ORDER:
-                if col not in final_df.columns:
-                    final_df[col] = pd.NA
-
-            final_df = final_df[COLUMN_ORDER]
-
-            # --- MASTER: Apply market-guided gating if enabled ---
-            if gating_model is not None and market_vector is not None:
-                m_tau = market_vector.get_vector_normalized(snapshot_date)
-                if m_tau is not None:
-                    final_df = gating_model.gate_features(
-                        m_tau, final_df, NUMERIC_INDICATOR_COLS
-                    )
-
-            # --- MASTER: Populate temporal buffer for lookback windows ---
-            if temporal_buffer is not None:
-                import numpy as _np
-                for _, row in final_df.iterrows():
-                    sym = str(row.get('symbol', ''))
-                    if sym:
-                        feat_vals = []
-                        for col in NUMERIC_INDICATOR_COLS:
-                            v = row.get(col, 0)
-                            try:
-                                feat_vals.append(float(v) if v == v else 0.0)
-                            except (ValueError, TypeError):
-                                feat_vals.append(0.0)
-                        temporal_buffer.update(sym, _np.array(feat_vals, dtype=_np.float64))
-
-            pragati_data_list.append((snapshot_date, final_df))
+    master_df = pd.concat(all_ticker_dfs)
+    master_df = master_df.dropna(subset=['price'])
+    
+    # Filter dates strictly AFTER indicator warmup and up to end_date
+    valid_start = start_date + timedelta(days=MAX_INDICATOR_PERIOD)
+    mask = (master_df.index >= valid_start) & (master_df.index <= end_date)
+    master_df = master_df.loc[mask].copy()
+    
+    if master_df.empty:
+        return []
+        
+    # Vectorized formatting
+    master_df['date'] = master_df.index.strftime('%d %b')
+    master_df['% change'] = master_df['% change'] * 100
+    
+    # Ensure column contract
+    for col in COLUMN_ORDER:
+        if col not in master_df.columns:
+            master_df[col] = pd.NA
+    master_df = master_df[COLUMN_ORDER]
+    
+    # Group by index (date) and build the final list
+    for snapshot_date, group_df in master_df.groupby(master_df.index):
+        pragati_data_list.append((snapshot_date, group_df.reset_index(drop=True)))
+        
+    # Ensure chronological order
+    pragati_data_list.sort(key=lambda x: x[0])
 
     return pragati_data_list
 
@@ -528,8 +426,6 @@ __all__ = [
     'generate_historical_data',
     'SYMBOLS_UNIVERSE',
     'MAX_INDICATOR_PERIOD',
-    'COLUMN_ORDER',
-    'NUMERIC_INDICATOR_COLS',
 ]
 
 if __name__ == "__main__":
