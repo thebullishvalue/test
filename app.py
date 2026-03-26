@@ -100,22 +100,22 @@ COMPANY = "Hemrek Capital"
 # Thresholds derived from strategy_selection.py (research-backed, NOT arbitrary)
 TRIGGER_CONFIG = {
     'SIP Investment': {
-        'buy_threshold': 0.42,   # Buy when REL_BREADTH < 0.42
-        'sell_threshold': 0.50,  # Sell when REL_BREADTH >= 0.50
+        'buy_threshold': SIP_TRIGGER,           # from strategy_selection constants
+        'sell_threshold': SWING_SELL_TRIGGER,    # from strategy_selection constants
         'sell_enabled': False,   # SIP accumulates, no sell
         'use_sprt': False,       # REC-3: set True to use SPRT evidence accumulation
         'description': 'Systematic accumulation on regime dips'
     },
     'Swing Trading': {
-        'buy_threshold': 0.42,   # Buy when REL_BREADTH < 0.42
-        'sell_threshold': 0.50,  # Sell when REL_BREADTH >= 0.50
+        'buy_threshold': SWING_BUY_TRIGGER,     # from strategy_selection constants
+        'sell_threshold': SWING_SELL_TRIGGER,    # from strategy_selection constants
         'sell_enabled': True,
         'use_sprt': False,       # REC-3: set True to use SPRT evidence accumulation
         'description': 'Tactical entry/exit on regime signals'
     },
     'All Weather': {
-        'buy_threshold': 0.42,   # Same research-backed threshold
-        'sell_threshold': 0.50,
+        'buy_threshold': SIP_TRIGGER,           # from strategy_selection constants
+        'sell_threshold': SWING_SELL_TRIGGER,
         'sell_enabled': False,
         'use_sprt': False,       # REC-3: set True to use SPRT evidence accumulation
         'description': 'Balanced regime-aware allocation'
@@ -2741,7 +2741,7 @@ def _run_dynamic_strategy_selection(
     
     Trigger-Based Methodology:
     - Buy when REL_BREADTH < buy_threshold
-    - Sell when REL_BREADTH > sell_threshold (Swing mode only)
+    - Sell when REL_BREADTH >= sell_threshold (Swing mode only)
     - SIP: Accumulate on each buy trigger
     - Swing: Single position, hold until sell trigger
     """
@@ -2758,8 +2758,8 @@ def _run_dynamic_strategy_selection(
     if trigger_config is None:
         trigger_config = TRIGGER_CONFIG.get(selected_style, TRIGGER_CONFIG.get('SIP Investment', {}))
     
-    buy_threshold = trigger_config.get('buy_threshold', 0.42 if is_sip else 0.52)
-    sell_threshold = trigger_config.get('sell_threshold', 1.5 if is_sip else 1.2)
+    buy_threshold = trigger_config.get('buy_threshold', SIP_TRIGGER if is_sip else SWING_BUY_TRIGGER)
+    sell_threshold = trigger_config.get('sell_threshold', SWING_SELL_TRIGGER)
     sell_enabled = trigger_config.get('sell_enabled', not is_sip)  # Swing = enabled, SIP = disabled
     
     _dss_logger.info("=" * 70)
@@ -2847,7 +2847,7 @@ def _run_dynamic_strategy_selection(
                 rel_breadth = trigger_date_map[sim_date]
                 if rel_breadth < buy_threshold:
                     buy_dates_mask[i] = True
-                if sell_enabled and rel_breadth > sell_threshold:
+                if sell_enabled and rel_breadth >= sell_threshold:
                     sell_dates_mask[i] = True
         
         _dss_logger.info(f"  Buy triggers: {sum(buy_dates_mask)} days | Sell triggers: {sum(sell_dates_mask)} days")

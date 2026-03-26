@@ -200,46 +200,67 @@ def load_historical_data(
 # TRIGGER IDENTIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_sip_trigger_dates(breadth_data: pd.DataFrame) -> List[datetime]:
+def get_sip_trigger_dates(
+    breadth_data: pd.DataFrame,
+    buy_threshold: Optional[float] = None
+) -> List[datetime]:
     """
-    Get all dates where REL_BREADTH < 0.42.
+    Get all dates where REL_BREADTH < buy_threshold.
+
+    Args:
+        breadth_data: DataFrame with 'DATE' and 'REL_BREADTH' columns.
+        buy_threshold: Threshold below which to trigger. Defaults to SIP_TRIGGER.
     """
     if breadth_data.empty:
         return []
-    
-    mask = breadth_data['REL_BREADTH'] < SIP_TRIGGER
+
+    if buy_threshold is None:
+        buy_threshold = SIP_TRIGGER
+
+    mask = breadth_data['REL_BREADTH'] < buy_threshold
     dates = breadth_data.loc[mask, 'DATE'].tolist()
-    
-    logger.info(f"SIP: Found {len(dates)} trigger dates (REL_BREADTH < {SIP_TRIGGER})")
+
+    logger.info(f"SIP: Found {len(dates)} trigger dates (REL_BREADTH < {buy_threshold})")
     return dates
 
 
-def get_swing_cycles(breadth_data: pd.DataFrame) -> List[Dict]:
+def get_swing_cycles(
+    breadth_data: pd.DataFrame,
+    buy_threshold: Optional[float] = None,
+    sell_threshold: Optional[float] = None
+) -> List[Dict]:
     """
     Identify buy-sell cycles based on breadth triggers.
-    
-    Buy: REL_BREADTH < 0.42
-    Sell: REL_BREADTH >= 0.50
+
+    Args:
+        breadth_data: DataFrame with 'DATE' and 'REL_BREADTH' columns.
+        buy_threshold: Buy when REL_BREADTH < this. Defaults to SWING_BUY_TRIGGER.
+        sell_threshold: Sell when REL_BREADTH >= this. Defaults to SWING_SELL_TRIGGER.
     """
     if breadth_data.empty:
         return []
-    
+
+    if buy_threshold is None:
+        buy_threshold = SWING_BUY_TRIGGER
+    if sell_threshold is None:
+        sell_threshold = SWING_SELL_TRIGGER
+
     cycles = []
     in_position = False
     entry_date = None
     entry_breadth = None
-    
+
     for _, row in breadth_data.iterrows():
         date = row['DATE']
         breadth = row['REL_BREADTH']
-        
-        if not in_position and breadth < SWING_BUY_TRIGGER:
+
+        if not in_position and breadth < buy_threshold:
             # BUY signal
             in_position = True
             entry_date = date
             entry_breadth = breadth
-            
-        elif in_position and breadth >= SWING_SELL_TRIGGER:
+
+        elif in_position and breadth >= sell_threshold:
             # SELL signal
             cycles.append({
                 'entry_date': entry_date,
@@ -483,31 +504,33 @@ def execute_sip_mode(
     strategies: Dict[str, Any],
     historical_data: List[Tuple[datetime, pd.DataFrame]],
     breadth_data: pd.DataFrame,
-    sip_amount: float = DEFAULT_SIP_AMOUNT
+    sip_amount: float = DEFAULT_SIP_AMOUNT,
+    buy_threshold: Optional[float] = None
 ) -> Dict[str, Dict]:
     """
     Execute SIP mode: Accumulate on every trigger date.
-    
+
     Process:
-    1. Find all dates where REL_BREADTH < 0.42
+    1. Find all dates where REL_BREADTH < buy_threshold
     2. For each trigger date:
        - Get indicator data for that date
        - Run each strategy's generate_portfolio()
        - Add holdings to cumulative master portfolio
     3. Update to terminal prices
     4. Calculate selection metrics from terminal portfolio
-    
+
     Args:
         strategies: Dict of strategy_name -> strategy instance
         historical_data: List of (date, indicator_df) from backdata
         breadth_data: DataFrame with DATE and REL_BREADTH
         sip_amount: Amount to invest per trigger
-        
+        buy_threshold: Adaptive buy threshold. Defaults to SIP_TRIGGER.
+
     Returns:
         Dict of strategy_name -> performance metrics
     """
     # Get trigger dates
-    trigger_dates = get_sip_trigger_dates(breadth_data)
+    trigger_dates = get_sip_trigger_dates(breadth_data, buy_threshold=buy_threshold)
     
     if not trigger_dates:
         logger.warning("No SIP trigger dates found")
@@ -592,30 +615,34 @@ def execute_swing_mode(
     strategies: Dict[str, Any],
     historical_data: List[Tuple[datetime, pd.DataFrame]],
     breadth_data: pd.DataFrame,
-    capital_per_trade: float = DEFAULT_SIP_AMOUNT
+    capital_per_trade: float = DEFAULT_SIP_AMOUNT,
+    buy_threshold: Optional[float] = None,
+    sell_threshold: Optional[float] = None
 ) -> Dict[str, Dict]:
     """
     Execute Swing mode: Buy-sell cycles based on breadth triggers.
-    
+
     Process:
-    1. Identify cycles: Buy when REL_BREADTH < 0.42, Sell when >= 0.50
+    1. Identify cycles: Buy when REL_BREADTH < buy_threshold, Sell when >= sell_threshold
     2. For each cycle:
        - Generate portfolio at entry
        - Track to exit date
        - Calculate cycle return
     3. Aggregate all cycle returns for final metrics
-    
+
     Args:
         strategies: Dict of strategy_name -> strategy instance
         historical_data: List of (date, indicator_df) from backdata
         breadth_data: DataFrame with DATE and REL_BREADTH
         capital_per_trade: Capital allocated per swing trade
-        
+        buy_threshold: Adaptive buy threshold. Defaults to SWING_BUY_TRIGGER.
+        sell_threshold: Adaptive sell threshold. Defaults to SWING_SELL_TRIGGER.
+
     Returns:
         Dict of strategy_name -> performance metrics
     """
     # Get swing cycles
-    cycles = get_swing_cycles(breadth_data)
+    cycles = get_swing_cycles(breadth_data, buy_threshold=buy_threshold, sell_threshold=sell_threshold)
     
     if not cycles:
         logger.warning("No swing cycles found")
@@ -915,12 +942,16 @@ class StrategySelectionEngine:
         self.breadth_data: Optional[pd.DataFrame] = None
         self.strategies: Dict[str, Any] = {}
         self.historical_data: List[Tuple[datetime, pd.DataFrame]] = []
-        
+
         self.sip_results: Dict[str, Dict] = {}
         self.swing_results: Dict[str, Dict] = {}
         self.current_mode: Optional[str] = None
         self.rankings: Optional[pd.DataFrame] = None
         self.weights: Dict[str, float] = {}
+
+        # Adaptive thresholds (computed during initialize)
+        self.buy_threshold: Optional[float] = None
+        self.sell_threshold: Optional[float] = None
     
     def initialize(
         self,
@@ -944,7 +975,13 @@ class StrategySelectionEngine:
         if self.breadth_data.empty:
             logger.error("Failed to load breadth data")
             return False
-        
+
+        # Compute adaptive thresholds from breadth distribution
+        self.buy_threshold, self.sell_threshold = compute_adaptive_thresholds(
+            self.breadth_data['REL_BREADTH']
+        )
+        logger.info(f"Adaptive thresholds: buy < {self.buy_threshold}, sell >= {self.sell_threshold}")
+
         # Load strategies
         self.strategies = load_strategies()
         if not self.strategies:
@@ -969,7 +1006,8 @@ class StrategySelectionEngine:
             self.strategies,
             self.historical_data,
             self.breadth_data,
-            self.sip_amount
+            self.sip_amount,
+            buy_threshold=self.buy_threshold
         )
         
         self.current_mode = 'SIP'
@@ -986,7 +1024,9 @@ class StrategySelectionEngine:
             self.strategies,
             self.historical_data,
             self.breadth_data,
-            self.sip_amount
+            self.sip_amount,
+            buy_threshold=self.buy_threshold,
+            sell_threshold=self.sell_threshold
         )
         
         self.current_mode = 'Swing'
