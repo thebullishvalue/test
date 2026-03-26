@@ -665,7 +665,7 @@ class UnifiedBacktestEngine:
                     for symbol, units in portfolio_units.items()
                 )
                 # Deduct transaction cost on exit
-                cost = sell_value * (TRANSACTION_COST_BPS / 10000.0)
+                cost = sell_value * (TRANSACTION_COST_BPS / 20000.0)
                 current_capital += (sell_value - cost)
                 portfolio_units = {}
                 buy_signal_active = False
@@ -681,7 +681,7 @@ class UnifiedBacktestEngine:
                         ).to_dict()
                         buy_value = buy_portfolio['value'].sum()
                         # Deduct transaction cost on entry
-                        cost = buy_value * (TRANSACTION_COST_BPS / 10000.0)
+                        cost = buy_value * (TRANSACTION_COST_BPS / 20000.0)
                         current_capital -= (buy_value + cost)
                 except Exception as e:
                     logger.debug(f"Portfolio generation failed for {name} on {date}: {e}")
@@ -753,13 +753,13 @@ class UnifiedBacktestEngine:
                     buy_portfolio = strategy.generate_portfolio(df, sip_amount)
                     if not buy_portfolio.empty and 'units' in buy_portfolio.columns:
                         buy_value = buy_portfolio['value'].sum()
-                        cost = buy_value * (TRANSACTION_COST_BPS / 10000.0)
+                        cost = buy_value * (TRANSACTION_COST_BPS / 20000.0)
                         for _, row in buy_portfolio.iterrows():
                             symbol = row['symbol']
                             units = row.get('units', 0)
                             if units > 0:
                                 portfolio_units[symbol] = portfolio_units.get(symbol, 0) + units
-                        total_invested += sip_amount
+                        total_invested += buy_value + cost
                         has_position = True
                         
                         # Deduct slippage drag instantly from NAV

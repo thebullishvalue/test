@@ -82,10 +82,11 @@ try:
         compute_risk_metrics,
         estimate_transaction_cost_bps,
     )
-    DYNAMIC_SELECTION_AVAILABLE = True
 except ImportError:
-    DYNAMIC_SELECTION_AVAILABLE = False
-    logger.warning("backtest_engine.py not found. Using static strategy selection.")
+    st.error("Fatal Error: `backtest_engine.py` not found. Please ensure it's in the same directory.")
+    st.stop()
+
+DYNAMIC_SELECTION_AVAILABLE = True
 
 
 # --- System Configuration ---
@@ -830,7 +831,8 @@ def run_trigger_based_backtest(
                             units * prices_today.get(sym, 0)
                             for sym, units in portfolio_units.items()
                         )
-                        current_capital += sell_value
+                            cost = sell_value * (TRANSACTION_COST_BPS / 20000.0)
+                            current_capital += (sell_value - cost)
                         portfolio_units = {}
                         buy_signal_active = False
                     
@@ -844,7 +846,9 @@ def run_trigger_based_backtest(
                                 buy_portfolio['units'].values,
                                 index=buy_portfolio['symbol']
                             ).to_dict()
-                            current_capital -= buy_portfolio['value'].sum()
+                                buy_value = buy_portfolio['value'].sum()
+                                cost = buy_value * (TRANSACTION_COST_BPS / 20000.0)
+                                current_capital -= (buy_value + cost)
                     
                     # Calculate current value
                     portfolio_value = 0

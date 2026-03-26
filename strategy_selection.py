@@ -319,7 +319,12 @@ class MasterPortfolio:
         if portfolio_df.empty:
             return
         
-        self.total_invested += investment
+        # Track actual deployed capital to prevent unallocated cash from appearing as a loss
+        deployed_capital = portfolio_df['value'].sum() if 'value' in portfolio_df.columns else 0.0
+        if deployed_capital == 0.0:
+            deployed_capital = (portfolio_df.get('units', 0) * portfolio_df.get('price', 0)).sum()
+            
+        self.total_invested += deployed_capital
         
         for _, row in portfolio_df.iterrows():
             symbol = row['symbol']
@@ -708,7 +713,10 @@ def execute_swing_mode(
                 else:
                     exit_value = entry_value
                 
-                cycle_return = (exit_value - entry_value) / entry_value
+                # Apply 20 bps round-trip transaction costs (10 bps per leg)
+                entry_value_with_cost = entry_value * (1 + 10 / 10000.0)
+                exit_value_after_cost = exit_value * (1 - 10 / 10000.0)
+                cycle_return = (exit_value_after_cost - entry_value_with_cost) / entry_value_with_cost
                 
                 cycle_results.append({
                     'entry_date': entry_date,
