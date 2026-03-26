@@ -5,8 +5,9 @@ import numpy as np
 from abc import ABC, abstractmethod
 from typing import List
 from scipy import stats
-from sklearn.preprocessing import StandardScaler
 import logging
+
+from quant_core import rank_normalize, compute_adaptive_multiplier_vectorized
 
 logger = logging.getLogger("strategies")
 
@@ -210,15 +211,18 @@ class PRStrategy(BaseStrategy):
             default=1.0
         )
 
-        # Z-Score Multiplier
+        # Z-Score Multiplier (C-1/C-4 FIX: thresholds adapted for quantile ranks [0,1])
+        # The 'zscore' column is now an empirical quantile rank from backdata.py.
+        # Low quantile rank = deeply oversold; high = overbought.
         z_w, z_d = df['zscore weekly'], df['zscore latest']
         df['zscore_mult'] = np.select(
-            [(z_w < -2.5) & (z_d < -2.5), (z_w < -2.5) & (z_d >= -2.5),
-             (z_w < -2.0) & (z_d < -2.0),
-             (z_w < -1.5) & (z_d < -1.5),
-             (z_w < -1.2) & (z_d < -1.2),
-             (z_w < -1.0) & (z_d < -1.0),
-             z_d < -2.5],
+            [(z_w < 0.05) & (z_d < 0.05),   # both in bottom 5%
+             (z_w < 0.05) & (z_d >= 0.05),   # weekly extreme, daily recovering
+             (z_w < 0.10) & (z_d < 0.10),    # both in bottom 10%
+             (z_w < 0.15) & (z_d < 0.15),    # bottom 15%
+             (z_w < 0.20) & (z_d < 0.20),    # bottom 20%
+             (z_w < 0.25) & (z_d < 0.25),    # bottom 25%
+             z_d < 0.05],                      # daily extreme alone
             [3.5, 3.2, 2.8, 2.5, 2.2, 2.0, 2.0],
             default=1.0
         )
@@ -388,26 +392,53 @@ class _CL1QuantitativeETFAnalyzer:
         return np.mean(quality_factors, axis=0)
 
     def detect_market_regime(self, df):
-        """Advanced regime detection using multiple indicators"""
-        # Calculate aggregate market indicators
-        avg_rsi = df['rsi latest'].mean()
-        avg_osc = df['osc latest'].mean()
-        volatility_regime = df['dev20 latest'].mean() / df['price'].mean()
+        """
+        H-1 FIX: Regime detection using cross-sectional BREADTH metrics.
 
-        # Cross-timeframe momentum consistency
-        momentum_consistency = np.corrcoef(df['osc latest'], df['osc weekly'])[0, 1]
+        The original used cross-sectional averages (mean RSI, mean OSC) as if
+        they were time-series regime indicators.  This conflates "most stocks
+        are oversold" (breadth) with "the market is in crisis" (regime).
 
-        # Regime classification with confidence score
-        if avg_rsi < 35 and avg_osc < -40 and volatility_regime > 0.02:
+        Fixed approach: use the FRACTION of stocks in each state (breadth)
+        rather than the raw average, plus volatility dispersion as a systemic
+        risk signal.
+        """
+        n = len(df)
+        if n == 0:
+            self.regime_indicators = {'regime': 'NEUTRAL_RANGE', 'confidence': 0.5}
+            return "NEUTRAL_RANGE", 0.5
+
+        # Breadth metrics: fraction of stocks in each state
+        frac_rsi_oversold = (df['rsi latest'] < 35).sum() / n
+        frac_rsi_overbought = (df['rsi latest'] > 65).sum() / n
+        frac_osc_deep_oversold = (df['osc latest'] < -40).sum() / n
+        frac_osc_overbought = (df['osc latest'] > 30).sum() / n
+
+        # Systemic risk: cross-sectional volatility dispersion
+        vol_ratio = df['dev20 latest'] / df['price'].clip(lower=1e-6)
+        median_vol = vol_ratio.median()
+
+        # Cross-timeframe momentum consistency (retained — this IS time-series)
+        if n >= 3:
+            momentum_consistency = np.corrcoef(
+                df['osc latest'].fillna(0), df['osc weekly'].fillna(0)
+            )[0, 1]
+            if not np.isfinite(momentum_consistency):
+                momentum_consistency = 0.0
+        else:
+            momentum_consistency = 0.0
+
+        # Regime classification via breadth thresholds
+        if frac_rsi_oversold > 0.6 and frac_osc_deep_oversold > 0.5 and median_vol > 0.02:
             regime = "CRISIS"
             confidence = 0.9
-        elif avg_rsi < 45 and avg_osc < -20 and momentum_consistency > 0.7:
+        elif frac_rsi_oversold > 0.4 and frac_osc_deep_oversold > 0.3 and momentum_consistency > 0.5:
             regime = "BEAR_TREND"
             confidence = 0.8
-        elif avg_rsi > 65 and avg_osc > 30 and volatility_regime < 0.015:
+        elif frac_rsi_overbought > 0.6 and frac_osc_overbought > 0.5 and median_vol < 0.015:
             regime = "BULL_EUPHORIA"
             confidence = 0.85
-        elif avg_rsi > 55 and avg_osc > 10 and momentum_consistency > 0.6:
+        elif frac_rsi_overbought > 0.4 and frac_osc_overbought > 0.3 and momentum_consistency > 0.4:
             regime = "BULL_TREND"
             confidence = 0.75
         else:
@@ -417,10 +448,10 @@ class _CL1QuantitativeETFAnalyzer:
         self.regime_indicators = {
             'regime': regime,
             'confidence': confidence,
-            'avg_rsi': avg_rsi,
-            'avg_osc': avg_osc,
-            'volatility': volatility_regime,
-            'momentum_consistency': momentum_consistency
+            'frac_rsi_oversold': frac_rsi_oversold,
+            'frac_osc_deep_oversold': frac_osc_deep_oversold,
+            'median_volatility': median_vol,
+            'momentum_consistency': momentum_consistency,
         }
 
         return regime, confidence
@@ -488,10 +519,13 @@ class _CL1QuantitativeETFAnalyzer:
             np.where(np.abs(df['rsi latest'] - df['rsi weekly']) < 20, 1.0, 0.5)
         )
 
-        # Normalize scores
-        scaler = StandardScaler()
+        # H-2 FIX: Replace StandardScaler with rank-based normalization.
+        # StandardScaler assumes Gaussian inputs; these score distributions are
+        # bounded, skewed, and contain outliers that distort z-scores.
+        # Rank normalization is distribution-free and robust.
         score_columns = ['anomaly_score', 'momentum_score', 'risk_score', 'consistency_score', 'data_quality_score']
-        normalized_scores = scaler.fit_transform(df[score_columns])
+        df = rank_normalize(df, score_columns)
+        normalized_scores = df[score_columns].values
 
         # Apply weights
         df['composite_score'] = np.sum(normalized_scores * list(self.factor_weights.values()), axis=1)
@@ -592,27 +626,45 @@ class _CL2QuantitativeETFAnalyzer:
         return np.mean(quality_factors, axis=0)
 
     def detect_market_regime(self, df):
-        avg_rsi = df['rsi latest'].mean()
-        avg_osc = df['osc latest'].mean()
-        volatility_regime = df['dev20 latest'].mean() / df['price'].mean()
-        momentum_consistency = np.corrcoef(df['osc latest'], df['osc weekly'])[0, 1]
-        if avg_rsi < 35 and avg_osc < -40 and volatility_regime > 0.02:
+        """H-1 FIX: Breadth-based regime detection (see CL1 docstring)."""
+        n = len(df)
+        if n == 0:
+            self.regime_indicators = {'regime': 'NEUTRAL_RANGE', 'confidence': 0.5}
+            return "NEUTRAL_RANGE", 0.5
+
+        frac_rsi_oversold = (df['rsi latest'] < 35).sum() / n
+        frac_rsi_overbought = (df['rsi latest'] > 65).sum() / n
+        frac_osc_deep_oversold = (df['osc latest'] < -40).sum() / n
+        frac_osc_overbought = (df['osc latest'] > 30).sum() / n
+        vol_ratio = df['dev20 latest'] / df['price'].clip(lower=1e-6)
+        median_vol = vol_ratio.median()
+
+        if n >= 3:
+            momentum_consistency = np.corrcoef(
+                df['osc latest'].fillna(0), df['osc weekly'].fillna(0)
+            )[0, 1]
+            if not np.isfinite(momentum_consistency):
+                momentum_consistency = 0.0
+        else:
+            momentum_consistency = 0.0
+
+        if frac_rsi_oversold > 0.6 and frac_osc_deep_oversold > 0.5 and median_vol > 0.02:
             regime, confidence = "CRISIS", 0.9
-        elif avg_rsi < 45 and avg_osc < -20 and momentum_consistency > 0.7:
+        elif frac_rsi_oversold > 0.4 and frac_osc_deep_oversold > 0.3 and momentum_consistency > 0.5:
             regime, confidence = "BEAR_TREND", 0.8
-        elif avg_rsi > 65 and avg_osc > 30 and volatility_regime < 0.015:
+        elif frac_rsi_overbought > 0.6 and frac_osc_overbought > 0.5 and median_vol < 0.015:
             regime, confidence = "BULL_EUPHORIA", 0.85
-        elif avg_rsi > 55 and avg_osc > 10 and momentum_consistency > 0.6:
+        elif frac_rsi_overbought > 0.4 and frac_osc_overbought > 0.3 and momentum_consistency > 0.4:
             regime, confidence = "BULL_TREND", 0.75
         else:
             regime, confidence = "NEUTRAL_RANGE", 0.6
+
         self.regime_indicators = {
-            'regime': regime,
-            'confidence': confidence,
-            'avg_rsi': avg_rsi,
-            'avg_osc': avg_osc,
-            'volatility': volatility_regime,
-            'momentum_consistency': momentum_consistency
+            'regime': regime, 'confidence': confidence,
+            'frac_rsi_oversold': frac_rsi_oversold,
+            'frac_osc_deep_oversold': frac_osc_deep_oversold,
+            'median_volatility': median_vol,
+            'momentum_consistency': momentum_consistency,
         }
         return regime, confidence
 
@@ -1039,20 +1091,41 @@ class _CL3UltimateETFAnalyzer:
         return df
 
     def detect_market_regime(self, df):
+        """H-1 FIX: Breadth-based regime detection."""
+        n = len(df)
+        if n == 0:
+            self.market_regime, self.regime_confidence = "NEUTRAL", 0.5
+            return self.market_regime, self.regime_confidence, {}
+
+        frac_rsi_oversold = (df['rsi latest'] < 35).sum() / n
+        frac_rsi_overbought = (df['rsi latest'] > 65).sum() / n
+        frac_osc_deep_oversold = (df['osc latest'] < -40).sum() / n
+        frac_osc_overbought = (df['osc latest'] > 30).sum() / n
+        breadth_below_50 = (df['rsi latest'] < 50).sum() / n
+        vol_ratio = df['dev20 latest'] / df['price'].clip(lower=1e-6)
+        median_vol = vol_ratio.median()
+
+        if n >= 3:
+            mc = np.corrcoef(df['osc latest'].fillna(0), df['osc weekly'].fillna(0))[0, 1]
+            mc = mc if np.isfinite(mc) else 0.0
+        else:
+            mc = 0.0
+
         metrics = {
-            'avg_rsi': df['rsi latest'].mean(),
-            'avg_osc': df['osc latest'].mean(),
-            'volatility': df['dev20 latest'].mean() / df['price'].mean(),
-            'breadth': len(df[df['rsi latest'] < 50]) / len(df),
-            'momentum_consistency': np.corrcoef(df['osc latest'], df['osc weekly'])[0, 1]
+            'frac_rsi_oversold': frac_rsi_oversold,
+            'frac_osc_deep_oversold': frac_osc_deep_oversold,
+            'median_volatility': median_vol,
+            'breadth_below_50': breadth_below_50,
+            'momentum_consistency': mc,
         }
-        if metrics['avg_rsi'] < 35 and metrics['avg_osc'] < -40:
+
+        if frac_rsi_oversold > 0.6 and frac_osc_deep_oversold > 0.5:
             self.market_regime, self.regime_confidence = "OVERSOLD_EXTREME", 0.9
-        elif metrics['avg_rsi'] < 45 and metrics['breadth'] > 0.6:
+        elif frac_rsi_oversold > 0.4 and breadth_below_50 > 0.6:
             self.market_regime, self.regime_confidence = "BEARISH", 0.8
-        elif metrics['avg_rsi'] > 65 and metrics['avg_osc'] > 30:
+        elif frac_rsi_overbought > 0.6 and frac_osc_overbought > 0.5:
             self.market_regime, self.regime_confidence = "OVERBOUGHT", 0.85
-        elif metrics['avg_rsi'] > 55 and metrics['breadth'] < 0.4:
+        elif frac_rsi_overbought > 0.4 and breadth_below_50 < 0.4:
             self.market_regime, self.regime_confidence = "BULLISH", 0.75
         else:
             self.market_regime, self.regime_confidence = "NEUTRAL", 0.6
@@ -1305,25 +1378,33 @@ class MOM1Strategy(BaseStrategy):
         return self._allocate_portfolio(df, sip_amount)
     
     def _detect_market_regime(self, df):
-        """Detect market regime for adaptive weighting"""
-        avg_rsi = df['rsi latest'].mean()
-        avg_osc = df['osc latest'].mean()
-        avg_vol = (df['dev20 latest'] / df['price']).mean()
-        
-        # Regime classification
-        if avg_rsi < 40 and avg_osc < -30:
+        """H-1 FIX: Breadth-based regime detection for momentum strategy."""
+        n = len(df)
+        if n == 0:
+            df['regime'] = 'NEUTRAL'
+            df['regime_factor'] = 1.0
+            return df
+
+        frac_rsi_oversold = (df['rsi latest'] < 40).sum() / n
+        frac_osc_oversold = (df['osc latest'] < -30).sum() / n
+        frac_rsi_strong = (df['rsi latest'] > 60).sum() / n
+        frac_osc_strong = (df['osc latest'] > 20).sum() / n
+        vol_ratio = df['dev20 latest'] / df['price'].clip(lower=1e-6)
+        median_vol = vol_ratio.median()
+
+        if frac_rsi_oversold > 0.5 and frac_osc_oversold > 0.4:
             df['regime'] = 'OVERSOLD'
-            df['regime_factor'] = 0.7  # Reduce momentum bias in oversold
-        elif avg_rsi > 60 and avg_osc > 20:
+            df['regime_factor'] = 0.7
+        elif frac_rsi_strong > 0.5 and frac_osc_strong > 0.4:
             df['regime'] = 'MOMENTUM'
-            df['regime_factor'] = 1.3  # Amplify momentum in trending
-        elif avg_vol > 0.03:
+            df['regime_factor'] = 1.3
+        elif median_vol > 0.03:
             df['regime'] = 'VOLATILE'
-            df['regime_factor'] = 0.8  # Dampen in high volatility
+            df['regime_factor'] = 0.8
         else:
             df['regime'] = 'NEUTRAL'
             df['regime_factor'] = 1.0
-        
+
         return df
     
     def _calculate_momentum_scores(self, df):

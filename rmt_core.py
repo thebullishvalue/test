@@ -1296,17 +1296,41 @@ def conformal_prediction_interval(
 def conformal_strategy_intervals(
     strategy_returns: Dict[str, np.ndarray],
     alpha: float = 0.10,
+    use_dependence_correction: bool = True,
 ) -> Dict[str, Tuple[float, float, float]]:
     """
     Compute conformal prediction intervals for each strategy's next return.
 
+    When use_dependence_correction=True, delegates to the block-bootstrap
+    corrected version from quant_core (Barber et al., 2023) which accounts
+    for serial dependence in return series. Falls back to the original
+    i.i.d. conformal if the import is unavailable.
+
     Args:
         strategy_returns: {strategy_name: 1D array of returns}
         alpha: Miscoverage rate.
+        use_dependence_correction: If True, use block-bootstrap correction.
 
     Returns:
         {strategy_name: (lower, point_estimate, upper)}
     """
+    if use_dependence_correction:
+        try:
+            from quant_core import conformal_intervals_with_dependence
+            intervals = {}
+            for name, returns in strategy_returns.items():
+                r = np.asarray(returns, dtype=float)
+                if len(r) >= 10:
+                    intervals[name] = conformal_intervals_with_dependence(r, alpha)
+                elif len(r) >= 5:
+                    intervals[name] = conformal_prediction_interval(r, alpha)
+                else:
+                    mu = r.mean() if len(r) > 0 else 0.0
+                    intervals[name] = (mu - 0.05, mu, mu + 0.05)
+            return intervals
+        except ImportError:
+            pass  # fall through to original implementation
+
     intervals = {}
     for name, returns in strategy_returns.items():
         if len(returns) >= 5:
@@ -1315,3 +1339,162 @@ def conformal_strategy_intervals(
             mu = returns.mean() if len(returns) > 0 else 0.0
             intervals[name] = (mu - 0.05, mu, mu + 0.05)
     return intervals
+
+
+# ---------------------------------------------------------------------------
+# RMT Signal Extraction (Priority 3: Integrate RMT INTO signal construction)
+# ---------------------------------------------------------------------------
+# Reference: Laloux, Cizeau, Bouchaud & Potters (1999);
+#            Bun, Bouchaud & Potters (2017), "Cleaning large correlation matrices".
+
+def rmt_extract_signals(
+    indicator_matrix: np.ndarray,
+    min_observations: int = 50,
+    denoise_method: str = "shrink",
+) -> Dict:
+    """
+    Project a T×N indicator matrix onto its signal eigenvectors, separating
+    true cross-sectional factors from noise using the Marchenko-Pastur threshold.
+
+    This is the core function for Priority 3: integrating RMT cleaning INTO
+    signal construction rather than applying it post-hoc to strategy returns.
+
+    Pipeline:
+        1. Standardize columns to zero mean, unit variance (rank-based).
+        2. Compute the N×N correlation matrix.
+        3. Apply spectral decomposition and identify signal eigenvalues
+           (those above the Marchenko-Pastur upper edge λ+).
+        4. Project the indicator matrix onto signal eigenvectors to produce
+           orthogonal factor scores (T × K, where K = n_signal).
+        5. Return the denoised factor scores plus full diagnostics.
+
+    Args:
+        indicator_matrix: T×N array where T = time observations, N = indicators.
+                          NaN/Inf values are replaced with column medians.
+        min_observations: minimum T for meaningful spectral analysis.
+        denoise_method: "shrink" (Ledoit-Wolf) or "clip" (zero-out noise eigenvalues).
+
+    Returns:
+        {
+            'factor_scores': np.ndarray,         # T × K denoised factor scores
+            'n_signal_factors': int,              # K = number of signal eigenvalues
+            'signal_eigenvalues': np.ndarray,     # the K signal eigenvalues
+            'signal_eigenvectors': np.ndarray,    # N × K signal eigenvectors
+            'factor_loadings': np.ndarray,        # N × K — how each indicator loads on factors
+            'explained_signal_variance': np.ndarray,  # fraction of variance per signal factor
+            'diagnostics': SpectralDiagnostics,
+            'denoised_corr': np.ndarray,          # cleaned N×N correlation matrix
+        }
+    """
+    X = np.asarray(indicator_matrix, dtype=float).copy()
+    T, N = X.shape
+
+    if T < min_observations or N < 2:
+        # Not enough data — return identity projection (no denoising)
+        return {
+            'factor_scores': X,
+            'n_signal_factors': N,
+            'signal_eigenvalues': np.ones(N),
+            'signal_eigenvectors': np.eye(N),
+            'factor_loadings': np.eye(N),
+            'explained_signal_variance': np.ones(N) / N,
+            'diagnostics': None,
+            'denoised_corr': np.eye(N),
+        }
+
+    # Step 1: Impute and rank-standardize
+    for j in range(N):
+        col = X[:, j]
+        mask = ~np.isfinite(col)
+        if mask.any():
+            median_val = np.nanmedian(col)
+            col[mask] = median_val if np.isfinite(median_val) else 0.0
+        # Rank-based standardization (distribution-free, H-2 compliant)
+        from scipy.stats import rankdata
+        ranks = rankdata(col, method='average')
+        X[:, j] = (ranks - ranks.mean()) / max(ranks.std(), _EPS)
+
+    # Step 2: Correlation matrix
+    corr = np.corrcoef(X, rowvar=False)
+    np.fill_diagonal(corr, 1.0)
+
+    # Step 3: Spectral decomposition
+    diagnostics = compute_spectral_diagnostics(corr, T)
+    mp = diagnostics.mp_dist
+    eigenvalues = diagnostics.eigenvalues       # sorted descending
+    eigenvectors = diagnostics.eigenvectors      # columns match eigenvalues
+
+    n_signal = mp.n_signal
+    if n_signal == 0:
+        # All eigenvalues are noise — return the first factor as a fallback
+        n_signal = 1
+
+    # Step 4: Signal subspace
+    signal_eigenvalues = eigenvalues[:n_signal]
+    signal_eigenvectors = eigenvectors[:, :n_signal]  # N × K
+
+    # Factor loadings: scale eigenvectors by sqrt(eigenvalue) for interpretability
+    factor_loadings = signal_eigenvectors * np.sqrt(signal_eigenvalues)[np.newaxis, :]
+
+    # Project data onto signal eigenvectors → T × K factor scores
+    factor_scores = X @ signal_eigenvectors
+
+    # Explained signal variance
+    total_var = eigenvalues.sum()
+    explained_signal_variance = signal_eigenvalues / max(total_var, _EPS)
+
+    # Step 5: Denoised correlation matrix
+    if denoise_method == "shrink":
+        denoised_corr = diagnostics.cleaned_corr
+    else:
+        # Clip method: reconstruct from signal eigenvalues only
+        denoised_corr = (
+            signal_eigenvectors @ np.diag(signal_eigenvalues) @ signal_eigenvectors.T
+        )
+        # Rescale diagonal to 1
+        d_inv = 1.0 / np.sqrt(np.maximum(np.diag(denoised_corr), _EPS))
+        denoised_corr = denoised_corr * np.outer(d_inv, d_inv)
+        np.fill_diagonal(denoised_corr, 1.0)
+
+    return {
+        'factor_scores': factor_scores,
+        'n_signal_factors': n_signal,
+        'signal_eigenvalues': signal_eigenvalues,
+        'signal_eigenvectors': signal_eigenvectors,
+        'factor_loadings': factor_loadings,
+        'explained_signal_variance': explained_signal_variance,
+        'diagnostics': diagnostics,
+        'denoised_corr': denoised_corr,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Module exports
+# ---------------------------------------------------------------------------
+
+__all__ = [
+    # Data structures
+    "MPDistribution",
+    "SpectralDiagnostics",
+    # Marchenko-Pastur
+    "marchenko_pastur_edges",
+    "marchenko_pastur_pdf",
+    # Eigenvalue metrics
+    "effective_number_of_bets",
+    "absorption_ratio",
+    "herfindahl_eigenvalue_index",
+    # Matrix operations
+    "clean_correlation_matrix",
+    "ledoit_wolf_shrinkage",
+    # Spectral diagnostics
+    "compute_spectral_diagnostics",
+    # Strategy space reduction
+    "reduce_strategy_space",
+    # Signal extraction (Priority 3)
+    "rmt_extract_signals",
+    # Portfolio construction
+    "hrp_weights",
+    # Conformal prediction
+    "conformal_prediction_interval",
+    "conformal_strategy_intervals",
+]

@@ -4,8 +4,15 @@ import numpy as np
 from datetime import datetime, timedelta
 import warnings
 import os
-from typing import List, Tuple, Dict, Any
+from typing import List, Optional, Tuple, Dict, Any
 import logging
+
+from quant_core import (
+    amihud_illiquidity,
+    corwin_schultz_spread,
+    empirical_quantile_rank_timeseries,
+    load_point_in_time_universe,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,6 +52,37 @@ class LiquidityOscillator:
         safe_range_value = range_value.replace(0, np.nan)
         oscillator = 200 * (df['source_value'] - df['lowest_value']) / safe_range_value - 100
         return oscillator.rename('liquidity_oscillator')
+
+def calculate_amihud_illiquidity(data: pd.DataFrame, window: int = 20) -> pd.Series:
+    """
+    Amihud (2002) illiquidity ratio: mean(|return| / volume) over a rolling window.
+
+    Higher values indicate less liquid stocks.  This is a validated, peer-reviewed
+    liquidity proxy that replaces the ad-hoc Liquidity Oscillator for cross-sectional
+    liquidity ranking (C-5).
+    """
+    if data.empty or not {'close', 'volume'}.issubset(data.columns):
+        return pd.Series(dtype=float, index=data.index)
+    returns = data['close'].pct_change().values
+    volume = data['volume'].values.astype(float)
+    raw = amihud_illiquidity(returns, volume, window)
+    return pd.Series(raw, index=data.index, name='amihud_illiquidity')
+
+
+def calculate_corwin_schultz(data: pd.DataFrame, window: int = 20) -> pd.Series:
+    """
+    Corwin & Schultz (2012) high-low spread estimator.
+
+    Estimates the bid-ask spread from daily high/low prices.  Validated
+    liquidity indicator replacing ad-hoc constructs (C-5).
+    """
+    if data.empty or not {'high', 'low'}.issubset(data.columns):
+        return pd.Series(dtype=float, index=data.index)
+    high = data['high'].values.astype(float)
+    low = data['low'].values.astype(float)
+    raw = corwin_schultz_spread(high, low, window)
+    return pd.Series(raw, index=data.index, name='corwin_schultz_spread')
+
 
 def resample_data(df: pd.DataFrame, rule: str = 'W-FRI') -> pd.DataFrame:
     """Resample daily OHLCV data to a different timeframe.
@@ -132,10 +170,14 @@ def calculate_all_indicators(
             all_results_df[f'21ema osc {tf_name}'] = osc.ewm(span=21).mean()
 
             if len(osc.dropna()) >= 20:
-                osc_sma20 = osc.rolling(window=20).mean()
-                osc_std20 = osc.rolling(window=20).std()
-                safe_std20 = osc_std20.replace(0, np.nan)
-                all_results_df[f'zscore {tf_name}'] = (osc - osc_sma20) / safe_std20
+                # C-4 FIX: Replace Gaussian z-score with empirical quantile rank.
+                # Z-scores assume normality which oscillator values violate (bounded, skewed).
+                # Empirical quantile rank is distribution-free and robust.
+                # Wrap in pd.Series to preserve index alignment (critical for weekly→daily reindex).
+                qr = empirical_quantile_rank_timeseries(osc.dropna(), expanding_min=50)
+                all_results_df[f'zscore {tf_name}'] = pd.Series(
+                    qr, index=osc.dropna().index, name=f'zscore {tf_name}'
+                )
 
         rsi_series = calculate_rsi(df)
         if rsi_series is not None and not rsi_series.dropna().empty:
@@ -147,11 +189,20 @@ def calculate_all_indicators(
                 if period == 20:
                     all_results_df[f'dev{period} {tf_name}'] = df['close'].rolling(window=period).std()
 
+    # C-5: Add validated liquidity indicators (Amihud, Corwin-Schultz)
+    amihud = calculate_amihud_illiquidity(daily_data, window=20)
+    if not amihud.dropna().empty:
+        all_results_df['amihud_illiquidity'] = amihud
+
+    cs_spread = calculate_corwin_schultz(daily_data, window=20)
+    if not cs_spread.dropna().empty:
+        all_results_df['corwin_schultz_spread'] = cs_spread
+
     all_results_df = all_results_df.reindex(daily_data.index)
-    
+
     weekly_cols = [col for col in all_results_df.columns if 'weekly' in col]
     all_results_df[weekly_cols] = all_results_df[weekly_cols].ffill()
-    
+
     return all_results_df
 
 
@@ -180,8 +231,47 @@ def load_symbols_from_file(filepath: str = "symbols.txt") -> List[str]:
         logger.error("Error reading symbol file %s: %s", filepath, e)
         return []
 
-# Load the fixed universe
+# Load the fixed universe (static fallback)
 SYMBOLS_UNIVERSE = load_symbols_from_file()
+
+
+def get_universe_for_date(
+    date: Optional[datetime] = None,
+    historical_constituents_path: Optional[str] = None,
+) -> List[str]:
+    """
+    Return the appropriate symbol universe for a given date.
+
+    If a historical constituents file is available, uses point-in-time
+    membership to avoid survivorship bias (C-3 / Priority 5).  Otherwise
+    falls back to the static ``symbols.txt`` universe with a warning.
+
+    Args:
+        date: The as-of date.  Defaults to today.
+        historical_constituents_path: Path to a CSV mapping dates → constituents.
+
+    Returns:
+        List of ticker symbols valid for that date.
+    """
+    snapshot = load_point_in_time_universe(
+        date=date or datetime.now(),
+        historical_constituents_path=historical_constituents_path,
+        static_symbols=SYMBOLS_UNIVERSE,
+    )
+    if snapshot.source == "static":
+        logger.warning(
+            "Using static universe (%d symbols) — survivorship bias present. "
+            "Provide historical_constituents_path for point-in-time accuracy.",
+            len(snapshot.constituents),
+        )
+    else:
+        logger.info(
+            "Point-in-time universe for %s: %d constituents (source: %s)",
+            snapshot.date.strftime("%Y-%m-%d"),
+            len(snapshot.constituents),
+            snapshot.source,
+        )
+    return snapshot.constituents
 
 # Define the column order here so it can be used by the generator
 COLUMN_ORDER = [
@@ -192,7 +282,8 @@ COLUMN_ORDER = [
     'zscore latest', 'zscore weekly',
     'ma20 latest', 'ma90 latest', 'ma200 latest',
     'ma20 weekly', 'ma90 weekly', 'ma200 weekly',
-    'dev20 latest', 'dev20 weekly'
+    'dev20 latest', 'dev20 weekly',
+    'amihud_illiquidity', 'corwin_schultz_spread',
 ]
 
 # --- NEW: Export max indicator period ---
@@ -449,10 +540,13 @@ def main():
 
 __all__ = [
     'LiquidityOscillator',
+    'calculate_amihud_illiquidity',
+    'calculate_corwin_schultz',
     'resample_data',
     'calculate_rsi',
     'calculate_all_indicators',
     'load_symbols_from_file',
+    'get_universe_for_date',
     'generate_historical_data',
     'SYMBOLS_UNIVERSE',
     'MAX_INDICATOR_PERIOD',

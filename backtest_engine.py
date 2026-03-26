@@ -21,11 +21,50 @@ from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional, Tuple, Any
 import logging
 
+from quant_core import estimate_market_impact, MarketImpactEstimate
+
 logger = logging.getLogger("BacktestEngine")
 
 # Transaction cost model: round-trip cost in basis points (buy + sell).
 # Must perfectly align with app.py to prevent in-sample performance hallucination.
 TRANSACTION_COST_BPS = 20
+
+
+def estimate_transaction_cost_bps(
+    trade_value: float,
+    stock_adv: float | None = None,
+    stock_volatility: float | None = None,
+    spread_bps: float = 5.0,
+    impact_coefficient: float = 0.1,
+) -> float:
+    """
+    H-4: Market-impact-aware transaction cost estimator.
+
+    When ADV (average daily volume in currency) and volatility are available,
+    uses the Almgren-Chriss square-root market impact model.  Otherwise falls
+    back to the flat TRANSACTION_COST_BPS constant.
+
+    Args:
+        trade_value: Currency value of the trade.
+        stock_adv: Average daily traded value (currency).  If None, uses flat rate.
+        stock_volatility: Daily return volatility.  If None, uses flat rate.
+        spread_bps: Half-spread in basis points.
+        impact_coefficient: Calibration parameter for square-root impact.
+
+    Returns:
+        Estimated one-way transaction cost in basis points.
+    """
+    if stock_adv is not None and stock_adv > 0 and stock_volatility is not None:
+        impact = estimate_market_impact(
+            trade_value=trade_value,
+            stock_adv=stock_adv,
+            stock_volatility=stock_volatility,
+            spread_bps=spread_bps,
+            impact_coefficient=impact_coefficient,
+        )
+        return impact.total_cost_bps
+    # Fallback: flat constant
+    return float(TRANSACTION_COST_BPS)
 
 # ============================================================================
 # CANONICAL RISK METRICS — single source of truth for Sharpe, Sortino, etc.
