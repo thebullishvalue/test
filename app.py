@@ -831,8 +831,8 @@ def run_trigger_based_backtest(
                             units * prices_today.get(sym, 0)
                             for sym, units in portfolio_units.items()
                         )
-                            cost = sell_value * (TRANSACTION_COST_BPS / 20000.0)
-                            current_capital += (sell_value - cost)
+                        cost = sell_value * (TRANSACTION_COST_BPS / 20000.0)
+                        current_capital += (sell_value - cost)
                         portfolio_units = {}
                         buy_signal_active = False
                     
@@ -846,9 +846,9 @@ def run_trigger_based_backtest(
                                 buy_portfolio['units'].values,
                                 index=buy_portfolio['symbol']
                             ).to_dict()
-                                buy_value = buy_portfolio['value'].sum()
-                                cost = buy_value * (TRANSACTION_COST_BPS / 20000.0)
-                                current_capital -= (buy_value + cost)
+                            buy_value = buy_portfolio['value'].sum()
+                            cost = buy_value * (TRANSACTION_COST_BPS / 20000.0)
+                            current_capital -= (buy_value + cost)
                     
                     # Calculate current value
                     portfolio_value = 0
