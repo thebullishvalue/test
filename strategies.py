@@ -7,7 +7,7 @@ from typing import List
 from scipy import stats
 import logging
 
-from quant_core import rank_normalize, compute_adaptive_multiplier_vectorized
+from quant_core import rank_normalize
 
 logger = logging.getLogger("strategies")
 
@@ -211,18 +211,16 @@ class PRStrategy(BaseStrategy):
             default=1.0
         )
 
-        # Z-Score Multiplier (C-1/C-4 FIX: thresholds adapted for quantile ranks [0,1])
-        # The 'zscore' column is now an empirical quantile rank from backdata.py.
-        # Low quantile rank = deeply oversold; high = overbought.
+        # Z-Score Multiplier (C-4: now uses robust z-scores via empirical quantile + probit)
+        # The 'zscore' column retains the ~[-3, 3] scale but is distribution-free.
         z_w, z_d = df['zscore weekly'], df['zscore latest']
         df['zscore_mult'] = np.select(
-            [(z_w < 0.05) & (z_d < 0.05),   # both in bottom 5%
-             (z_w < 0.05) & (z_d >= 0.05),   # weekly extreme, daily recovering
-             (z_w < 0.10) & (z_d < 0.10),    # both in bottom 10%
-             (z_w < 0.15) & (z_d < 0.15),    # bottom 15%
-             (z_w < 0.20) & (z_d < 0.20),    # bottom 20%
-             (z_w < 0.25) & (z_d < 0.25),    # bottom 25%
-             z_d < 0.05],                      # daily extreme alone
+            [(z_w < -2.5) & (z_d < -2.5), (z_w < -2.5) & (z_d >= -2.5),
+             (z_w < -2.0) & (z_d < -2.0),
+             (z_w < -1.5) & (z_d < -1.5),
+             (z_w < -1.2) & (z_d < -1.2),
+             (z_w < -1.0) & (z_d < -1.0),
+             z_d < -2.5],
             [3.5, 3.2, 2.8, 2.5, 2.2, 2.0, 2.0],
             default=1.0
         )

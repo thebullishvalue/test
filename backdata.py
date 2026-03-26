@@ -7,6 +7,8 @@ import os
 from typing import List, Optional, Tuple, Dict, Any
 import logging
 
+from scipy.stats import norm as _norm
+
 from quant_core import (
     amihud_illiquidity,
     corwin_schultz_spread,
@@ -170,13 +172,17 @@ def calculate_all_indicators(
             all_results_df[f'21ema osc {tf_name}'] = osc.ewm(span=21).mean()
 
             if len(osc.dropna()) >= 20:
-                # C-4 FIX: Replace Gaussian z-score with empirical quantile rank.
-                # Z-scores assume normality which oscillator values violate (bounded, skewed).
-                # Empirical quantile rank is distribution-free and robust.
-                # Wrap in pd.Series to preserve index alignment (critical for weekly→daily reindex).
+                # C-4 FIX: Distribution-free "robust z-score" via empirical quantile + probit.
+                # Step 1: Empirical quantile rank — distribution-free, no Gaussian assumption.
+                # Step 2: Probit transform (inverse normal CDF) — maps [0,1] back to z-score
+                #         scale (~[-3, 3]) so ALL downstream strategy thresholds remain valid.
+                # This gives the same familiar scale while eliminating the normality bias.
                 qr = empirical_quantile_rank_timeseries(osc.dropna(), expanding_min=50)
+                # Clip to (0.001, 0.999) to avoid ±inf from norm.ppf(0) and norm.ppf(1)
+                qr_clipped = np.clip(qr, 0.001, 0.999)
+                robust_zscore = _norm.ppf(qr_clipped)
                 all_results_df[f'zscore {tf_name}'] = pd.Series(
-                    qr, index=osc.dropna().index, name=f'zscore {tf_name}'
+                    robust_zscore, index=osc.dropna().index, name=f'zscore {tf_name}'
                 )
 
         rsi_series = calculate_rsi(df)

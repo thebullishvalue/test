@@ -3279,6 +3279,7 @@ def main():
         trigger_config = TRIGGER_CONFIG.get(selected_main_branch, TRIGGER_CONFIG['SIP Investment'])
         
         if use_trigger_backtest:
+            trigger_df = None  # Initialize before conditional branches to prevent NameError
             with st.expander("⚙️ Trigger Configuration", expanded=False):
                 # Auto-fetch from Google Sheets
                 if STRATEGY_SELECTION_AVAILABLE:

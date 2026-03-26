@@ -1488,12 +1488,20 @@ __all__ = [
     "ledoit_wolf_shrinkage",
     # Spectral diagnostics
     "compute_spectral_diagnostics",
-    # Strategy space reduction
+    # Strategy space reduction & selection
     "reduce_strategy_space",
+    "detect_redundant_strategies",
+    "greedy_diversified_select",
     # Signal extraction (Priority 3)
     "rmt_extract_signals",
     # Portfolio construction
+    "rmt_minimum_variance_weights",
+    "rmt_risk_parity_weights",
+    "compute_diversification_ratio",
     "hrp_weights",
+    # Spectral analysis utilities
+    "rolling_spectral_analysis",
+    "compute_spectral_turnover",
     # Conformal prediction
     "conformal_prediction_interval",
     "conformal_strategy_intervals",
