@@ -360,14 +360,22 @@ def calculate_strategy_weights(
         try:
             from quant_core import compute_family_dsr
             dsr_results = compute_family_dsr(returns_data)
+            
+            # FDR Control (Benjamini-Hochberg procedure, Harvey, Liu & Zhu 2016)
+            p_values = sorted([(name, dsr.p_value) for name, dsr in dsr_results.items()], key=lambda x: x[1])
+            M = len(p_values)
+            alpha_fdr = 0.05
+            max_k = 0
+            for k, (name, p_val) in enumerate(p_values, 1):
+                if p_val <= (k / M) * alpha_fdr:
+                    max_k = k
+            
+            significant_strats = set(name for name, _ in p_values[:max_k])
+            
             for i, name in enumerate(strat_names):
-                if name in dsr_results:
-                    dsr = dsr_results[name]
-                    # Apply DSR haircut: reduce Sharpe by the haircut percentage
-                    sharpe_values[i] *= (1.0 - dsr.haircut_pct / 100.0)
-                    if not dsr.is_significant:
-                        # Penalize non-significant strategies further
-                        sharpe_values[i] *= 0.5
+                if name in dsr_results and name not in significant_strats:
+                    # Mask out noise strategies: exp(-inf) approaches 0 weight
+                    sharpe_values[i] = -np.inf
         except Exception:
             pass  # DSR is enhancement, not critical path
 
@@ -608,11 +616,23 @@ def evaluate_historical_performance_trigger_based(
     # --- O(T^2) Bottleneck Fix: Precompute all strategy returns once ---
     precalc_cache = {'strategy': {n: [] for n in _strategies}, 'subset': {n: {} for n in _strategies}}
     logger.info("Precomputing strategy returns for walk-forward cache...")
+    
+    # C-1 FIX: Inject IndicatorHistoryAccumulator for adaptive quantile gates
+    try:
+        from quant_core import IndicatorHistoryAccumulator
+        global_acc = IndicatorHistoryAccumulator()
+    except ImportError:
+        global_acc = None
+        
     for j in range(len(historical_data) - 1):
         df_date, df = historical_data[j]
         next_date, next_df = historical_data[j+1]
+        if global_acc is not None:
+            global_acc.update(df)
         for name, strategy in _strategies.items():
             try:
+                if global_acc is not None:
+                    strategy.accumulator = global_acc
                 port = strategy.generate_portfolio(df, TRAINING_CAPITAL)
                 ret = compute_portfolio_return(port, next_df) if not port.empty else 0.0
                 precalc_cache['strategy'][name].append({'return': ret, 'date': next_date})
@@ -656,6 +676,9 @@ def evaluate_historical_performance_trigger_based(
         test_date, test_df = historical_data[i]
         next_date, next_df = historical_data[i + 1]
         
+        if global_acc is not None:
+            global_acc.update(test_df)
+            
         is_buy_day = buy_mask[i]
         is_sell_day = sell_mask[i]
         
@@ -713,6 +736,8 @@ def evaluate_historical_performance_trigger_based(
         for name, strategy in _strategies.items():
             try:
                 if is_buy_day:
+                    if global_acc is not None:
+                        strategy.accumulator = global_acc
                     portfolio = strategy.generate_portfolio(test_df, TRAINING_CAPITAL)
                     if not portfolio.empty:
                         prev_strat_port = last_strategy_ports.get(name)
@@ -883,11 +908,22 @@ def evaluate_historical_performance(
     # --- O(T^2) Bottleneck Fix: Precompute all strategy returns once ---
     precalc_cache = {'strategy': {n: [] for n in _strategies}, 'subset': {n: {} for n in _strategies}}
     logger.info("Precomputing strategy returns for walk-forward cache...")
+    
+    try:
+        from quant_core import IndicatorHistoryAccumulator
+        global_acc = IndicatorHistoryAccumulator()
+    except ImportError:
+        global_acc = None
+        
     for j in range(len(historical_data) - 1):
         df_date, df = historical_data[j]
         next_date, next_df = historical_data[j+1]
+        if global_acc is not None:
+            global_acc.update(df)
         for name, strategy in _strategies.items():
             try:
+                if global_acc is not None:
+                    strategy.accumulator = global_acc
                 port = strategy.generate_portfolio(df, TRAINING_CAPITAL)
                 ret = compute_portfolio_return(port, next_df) if not port.empty else 0.0
                 precalc_cache['strategy'][name].append({'return': ret, 'date': next_date})
@@ -926,6 +962,9 @@ def evaluate_historical_performance(
         test_date, test_df = historical_data[i]
         next_date, next_df = historical_data[i + 1]
 
+        if global_acc is not None:
+            global_acc.update(test_df)
+
         step_idx = i - start_idx + 1
         progress_text = f"Processing step {step_idx}/{total_steps}"
         progress_bar.progress(step_idx / total_steps, text=progress_text)
@@ -960,6 +999,8 @@ def evaluate_historical_performance(
 
         for name, strategy in _strategies.items():
             try:
+                if global_acc is not None:
+                    strategy.accumulator = global_acc
                 portfolio = strategy.generate_portfolio(test_df, TRAINING_CAPITAL)
                 prev_strat_port = last_strategy_ports.get(name)
                 if prev_strat_port is not None and prev_strat_port.empty:

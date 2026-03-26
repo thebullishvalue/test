@@ -740,6 +740,11 @@ class SPRTRegimeTrigger:
         # Running state
         self.log_lr = 0.0  # cumulative log-likelihood ratio
         self.fitted = False
+        
+        # AR(1) parameters for whitening filter
+        self.phi = 0.0
+        self.c = 0.0
+        self.last_breadth = 0.5
 
     def fit(self, breadth_series: Any) -> 'SPRTRegimeTrigger':
         """
@@ -757,18 +762,29 @@ class SPRTRegimeTrigger:
         if len(clean) < 20:
             return self
 
-        self.mu0 = float(np.median(clean))  # robust central tendency
-        self.sigma = float(np.std(clean))
+        # AR(1) Whitening Filter: Fit X_t = c + phi * X_{t-1} + e_t
+        X_t = clean[1:]
+        X_t_1 = clean[:-1]
+        A = np.vstack([X_t_1, np.ones(len(X_t_1))]).T
+        try:
+            coeffs = np.linalg.lstsq(A, X_t, rcond=None)[0]
+            self.phi, self.c = coeffs[0], coeffs[1]
+        except Exception:
+            self.phi, self.c = 0.0, np.median(clean)
+            
+        residuals = X_t - (self.phi * X_t_1 + self.c)
+
+        self.mu0 = float(np.median(residuals))
+        self.sigma = float(np.std(residuals))
         if self.sigma < 0.01:
             self.sigma = 0.15
 
-        # Stress hypothesis: shift below median
         self.mu1 = self.mu0 + self.stress_shift * self.sigma
 
-        # CRITICAL FIX: Do NOT reset log_lr if already accumulating evidence!
         if not self.fitted:
             self.log_lr = 0.0
         self.fitted = True
+        self.last_breadth = clean[-1]
         return self
 
     def update(self, breadth_value: float) -> str:
@@ -791,12 +807,15 @@ class SPRTRegimeTrigger:
                 return 'SELL'
             return 'HOLD'
 
-        # Log-likelihood ratio increment
-        # log(f(x|H1) / f(x|H0)) for Gaussian
-        ll_h1 = -0.5 * ((breadth_value - self.mu1) / self.sigma) ** 2
-        ll_h0 = -0.5 * ((breadth_value - self.mu0) / self.sigma) ** 2
-        # Clip increment and apply decay to prevent explosive non-convergence and lock-outs in chop regimes
-        self.log_lr = (self.log_lr * self.decay) + np.clip(ll_h1 - ll_h0, -50.0, 50.0)
+        # AR(1) Innovation
+        innovation = breadth_value - (self.phi * self.last_breadth + self.c)
+        self.last_breadth = breadth_value
+
+        ll_h1 = -0.5 * ((innovation - self.mu1) / self.sigma) ** 2
+        ll_h0 = -0.5 * ((innovation - self.mu0) / self.sigma) ** 2
+        
+        # Exact log-likelihood accumulation on i.i.d innovations
+        self.log_lr = self.log_lr + np.clip(ll_h1 - ll_h0, -50.0, 50.0)
 
         if self.log_lr >= self.upper_bound:
             # Evidence confirms stress → BUY

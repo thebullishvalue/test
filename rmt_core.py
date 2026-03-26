@@ -1195,7 +1195,7 @@ def hrp_weights(
 
     # Hierarchical clustering
     condensed_dist = squareform(dist, checks=False)
-    link = linkage(condensed_dist, method='ward')
+    link = linkage(condensed_dist, method='single')
 
     # Quasi-diagonalization
     sorted_indices = _get_quasi_diag_order(link, N)

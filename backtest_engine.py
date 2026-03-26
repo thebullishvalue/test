@@ -649,7 +649,17 @@ class UnifiedBacktestEngine:
         current_capital = self.capital
         trade_log = []
         
+        try:
+            from quant_core import IndicatorHistoryAccumulator
+            acc = IndicatorHistoryAccumulator()
+        except ImportError:
+            acc = None
+        
         for j, (date, df) in enumerate(self._historical_data):
+            if acc is not None:
+                acc.update(df)
+                strategy.accumulator = acc
+                
             is_buy_day = buy_mask[j]
             actual_buy_trigger = is_buy_day and not buy_signal_active
             
@@ -729,7 +739,17 @@ class UnifiedBacktestEngine:
         trade_log = []
         buy_signal_active = False
         
+        try:
+            from quant_core import IndicatorHistoryAccumulator
+            acc = IndicatorHistoryAccumulator()
+        except ImportError:
+            acc = None
+            
         for j, (date, df) in enumerate(self._historical_data):
+            if acc is not None:
+                acc.update(df)
+                strategy.accumulator = acc
+                
             prices_today = df.set_index('symbol')['price']
             
             # Step 1: Compute current value of EXISTING holdings

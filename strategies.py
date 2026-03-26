@@ -1430,11 +1430,21 @@ class MOM1Strategy(BaseStrategy):
             df['regime'] = 'NEUTRAL'
             df['regime_factor'] = 1.0
             return df
+            
+        # C-1 FIX: Stationarity via Adaptive Quantile Gates
+        acc = getattr(self, 'accumulator', None)
+        if acc is not None and len(acc) >= 50:
+            rsi_40 = acc.get_threshold('rsi latest', 30)
+            osc_30 = acc.get_threshold('osc latest', 30)
+            rsi_60 = acc.get_threshold('rsi latest', 70)
+            osc_20 = acc.get_threshold('osc latest', 70)
+        else:
+            rsi_40, osc_30, rsi_60, osc_20 = 40, -30, 60, 20
 
-        frac_rsi_oversold = (df['rsi latest'] < 40).sum() / n
-        frac_osc_oversold = (df['osc latest'] < -30).sum() / n
-        frac_rsi_strong = (df['rsi latest'] > 60).sum() / n
-        frac_osc_strong = (df['osc latest'] > 20).sum() / n
+        frac_rsi_oversold = (df['rsi latest'] < rsi_40).sum() / n
+        frac_osc_oversold = (df['osc latest'] < osc_30).sum() / n
+        frac_rsi_strong = (df['rsi latest'] > rsi_60).sum() / n
+        frac_osc_strong = (df['osc latest'] > osc_20).sum() / n
         vol_ratio = df['dev20 latest'] / df['price'].clip(lower=1e-6)
         median_vol = vol_ratio.median()
 
@@ -1546,17 +1556,32 @@ class MOM1Strategy(BaseStrategy):
     def _calculate_mean_reversion_overlay(self, df):
         """Add mean reversion signal for extreme oversold in strong momentum"""
         
+        # C-1 FIX: Stationarity via Adaptive Quantile Gates
+        acc = getattr(self, 'accumulator', None)
+        if acc is not None and len(acc) >= 50:
+            z_latest_low = acc.get_threshold('zscore latest', 5)
+            z_weekly_low = acc.get_threshold('zscore weekly', 10)
+            rsi_low_1 = acc.get_threshold('rsi latest', 10)
+            osc_low_1 = acc.get_threshold('osc latest', 5)
+            
+            z_latest_mod = acc.get_threshold('zscore latest', 15)
+            rsi_low_2 = acc.get_threshold('rsi latest', 20)
+        else:
+            z_latest_low, z_weekly_low = -2.0, -1.8
+            rsi_low_1, osc_low_1 = 35, -60
+            z_latest_mod, rsi_low_2 = -1.5, 40
+
         # Identify extreme oversold conditions with potential momentum reversal
         df['mean_reversion_boost'] = np.where(
-            (df['zscore latest'] < -2.0) &
-            (df['zscore weekly'] < -1.8) &
-            (df['rsi latest'] < 35) &
-            (df['osc latest'] < -60) &
+            (df['zscore latest'] < z_latest_low) &
+            (df['zscore weekly'] < z_weekly_low) &
+            (df['rsi latest'] < rsi_low_1) &
+            (df['osc latest'] < osc_low_1) &
             (df['9ema osc latest'] > df['21ema osc latest']),  # But showing turn
             1.5,  # Strong reversal setup
             np.where(
-                (df['zscore latest'] < -1.5) &
-                (df['rsi latest'] < 40) &
+                (df['zscore latest'] < z_latest_mod) &
+                (df['rsi latest'] < rsi_low_2) &
                 (df['9ema osc latest'] > df['21ema osc latest']),
                 1.2,  # Moderate reversal setup
                 1.0
