@@ -3068,20 +3068,6 @@ class DivergenceMirage(BaseStrategy):
         return self._allocate_portfolio(df, sip_amount)
 
 
-class ButterflyChaos(BaseStrategy):
-    """
-    ButterflyChaos: Chaotic Butterfly Effects in Momentum.
-    - Paradigm: Chaos theory lens – tiny 'butterfly wings' (small indicator perturbations) flap into massive alpha hurricanes; quantify Lyapunov-like sensitivity for explosive momentum.
-    - Innovation: Perturbation divergence ratio between daily/weekly for chaos exponent.
-    - Weighting: Chaos sensitivity scores for turbulent allocation.
-    """
-    def generate_portfolio(self, df: pd.DataFrame, sip_amount: float = 100000.0) -> pd.DataFrame:
-        required_columns = [
-            'symbol', 'price', 'osc latest', 'osc weekly', 'rsi latest', 'rsi weekly',
-            '9ema osc latest', 'zscore latest'
-        ]
-        df = self._clean_data(df, required_columns)
-
 # =====================================
 # NEW: FractalWhisper Strategy
 # =====================================
