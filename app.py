@@ -1,6 +1,6 @@
 """
 PRAGYAM (प्रज्ञम) - Portfolio Intelligence | A Hemrek Capital Product
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Walk-forward portfolio curation with regime-aware strategy allocation.
 Multi-strategy backtesting and capital optimization engine.
 """
@@ -145,225 +145,6 @@ def create_export_link(data_bytes, filename):
     href = f'<a href="data:file/csv;base64,{b64}" download="{filename}" class="download-link">Download Portfolio CSV</a>'
     return href
 
-# =========================================================================
-# --- Live Data Loading Function ---
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_historical_data(end_date: datetime, lookback_files: int) -> List[Tuple[datetime, pd.DataFrame]]:
-    """
-    Fetches and processes all historical data on-the-fly using the
-    backdata.py module.
-    """
-    logger.info(f"--- START: Live Data Generation (End Date: {end_date.date()}, Training Lookback: {lookback_files}) ---")
-    
-    total_days_to_fetch = int((lookback_files + MAX_INDICATOR_PERIOD) * 1.5) + 30
-    fetch_start_date = end_date - timedelta(days=total_days_to_fetch)
-    
-    logger.info(f"Calculated fetch start date: {fetch_start_date.date()} (Total days: {total_days_to_fetch})")
-
-    try:
-        live_data = generate_historical_data(
-            symbols_to_process=SYMBOLS_UNIVERSE,
-            start_date=fetch_start_date,
-            end_date=end_date
-        )
-        
-        if not live_data:
-            logger.warning("Live data generation returned no data.")
-            return []
-            
-        logger.info(f"--- SUCCESS: Live Data Generation. {len(live_data)} total valid days generated. ---")
-        return live_data
-        
-    except Exception as e:
-        logger.error(f"Error during load_historical_data: {e}")
-        st.error(f"Failed to fetch or process live data: {e}")
-        return []
-
-# =========================================================================
-
-
-# --- Core Backtesting & Curation Engine (Optimized) ---
-
-# Transaction cost model: round-trip cost in basis points (buy + sell).
-# NSE typical: ~20 bps (brokerage + STT + GST + stamp duty + exchange fees).
-TRANSACTION_COST_BPS = 20  # basis points per round-trip trade
-
-
-def compute_portfolio_return(
-    portfolio: pd.DataFrame,
-    next_prices: pd.DataFrame,
-    is_rebalance: bool = False,
-    prev_portfolio: Optional[pd.DataFrame] = None,
-    current_prices: Optional[pd.DataFrame] = None,
-) -> float:
-    """Compute single-period portfolio return with turnover-proportional costs.
-
-    CRITICAL-3 fix: transaction costs are now proportional to actual portfolio
-    turnover rather than a flat per-rebalance deduction.  Turnover is measured
-    as the fraction of portfolio value that changed hands (sum of absolute
-    weight changes / 2).  Cost = turnover × round-trip bps.
-
-    Args:
-        portfolio: Current portfolio with ['symbol', 'price', 'value'].
-        next_prices: Next-period prices with ['symbol', 'price'].
-        is_rebalance: Whether this is a rebalance day.
-        prev_portfolio: Previous portfolio (for turnover calculation).
-            If None on a rebalance day, assumes 100% turnover (full entry).
-    """
-    if portfolio.empty or 'value' not in portfolio.columns or portfolio['value'].sum() == 0:
-        return 0.0
-    merged = portfolio.merge(next_prices[['symbol', 'price']], on='symbol', how='left', suffixes=('_prev', '_next'))
-    if merged.empty:
-        return 0.0
-    # Missing symbols (delisted/halted) get 0 return instead of being silently dropped
-    merged['price_next'] = merged['price_next'].fillna(merged['price_prev'])
-    # Math Soundness: Guard against corrupt price_prev = 0 creating Inf returns
-    safe_prev = np.where(merged['price_prev'] > 0, merged['price_prev'], 1e-10)
-    returns = (merged['price_next'] - safe_prev) / safe_prev
-    gross_return = np.average(returns, weights=merged['value'])
-
-    # Turnover-proportional transaction costs
-    if is_rebalance and TRANSACTION_COST_BPS > 0:
-        if prev_portfolio is not None and not prev_portfolio.empty and 'value' in prev_portfolio.columns:
-            # CRITICAL FIX: Use current_prices (today's prices) to mark-to-market 
-            # the old portfolio to compute exact turnover at the moment of execution.
-            prices_df = current_prices if current_prices is not None else portfolio
-            drifted_prev = prev_portfolio.merge(prices_df[['symbol', 'price']], on='symbol', how='left')
-            drifted_prev['price_y'] = drifted_prev['price_y'].fillna(drifted_prev['price_x'])
-            drifted_prev['drifted_value'] = drifted_prev['units'] * drifted_prev['price_y']
-            
-            curr_total = portfolio['value'].sum()
-            prev_total = drifted_prev['drifted_value'].sum()
-            if curr_total > 0 and prev_total > 0:
-                # Mathematical Fix: Weight-based turnover fails during capital injections (SIP).
-                # We must compute absolute value traded to account for new capital deployment.
-                curr_v = portfolio.set_index('symbol')['value']
-                prev_v = drifted_prev.set_index('symbol')['drifted_value']
-                all_symbols = curr_v.index.union(prev_v.index)
-                curr_vals = curr_v.reindex(all_symbols, fill_value=0.0)
-                prev_vals = prev_v.reindex(all_symbols, fill_value=0.0)
-                trade_value = float(np.abs(curr_vals - prev_vals).sum())
-                turnover = (trade_value / curr_total) / 2.0
-            else:
-                turnover = 1.0  # full entry
-        else:
-            turnover = 1.0  # no previous portfolio → full entry
-
-        # Cost = turnover fraction × round-trip cost in decimal
-        gross_return -= turnover * TRANSACTION_COST_BPS / 10000
-    return gross_return
-
-def calculate_advanced_metrics(returns_with_dates: List[Dict]) -> Tuple[Dict, float]:
-    """Calculate comprehensive risk-adjusted performance metrics.
-
-    Core ratios (Sharpe, Sortino, Calmar, etc.) are delegated to
-    :func:`backtest_engine.compute_risk_metrics`.  This function adds
-    higher-order metrics: Kelly, Omega, tail ratio, gain-to-pain, profit factor.
-    """
-    default_metrics = {
-        'total_return': 0, 'annual_return': 0, 'volatility': 0,
-        'sharpe': 0, 'sortino': 0, 'max_drawdown': 0, 'calmar': 0,
-        'win_rate': 0, 'kelly_criterion': 0, 'omega_ratio': 1.0,
-        'tail_ratio': 1.0, 'gain_to_pain': 0, 'profit_factor': 1.0
-    }
-    if len(returns_with_dates) < 2:
-        return default_metrics, 52
-
-    returns_df = pd.DataFrame(returns_with_dates).sort_values('date').set_index('date')
-    # Robust periods_per_year: count actual observations per calendar year
-    # instead of the fragile 365.25/avg_gap which is unstable for irregular
-    # trigger-based observations (CRITICAL-4 fix).
-    date_range = returns_df.index
-    if hasattr(date_range, 'min') and hasattr(date_range, 'max'):
-        total_calendar_days = (date_range.max() - date_range.min()).days
-        if total_calendar_days > 0:
-            periods_per_year = len(date_range) * 365.25 / total_calendar_days
-        else:
-            periods_per_year = 52.0
-    else:
-        periods_per_year = 52.0
-    # Clamp to reasonable bounds (at least weekly, at most sub-daily)
-    periods_per_year = float(np.clip(periods_per_year, 12, 365))
-
-    returns = returns_df['return'].values
-
-    # ── Delegate core ratios to canonical implementation ──
-    core = compute_risk_metrics(returns, periods_per_year=periods_per_year)
-
-    # ── Higher-order metrics (unique to this function) ──
-    r = np.asarray(returns, dtype=np.float64)
-    gains = r[r > 0]
-    losses = r[r < 0]
-    avg_win = gains.mean() if len(gains) > 0 else 0
-    avg_loss = abs(losses.mean()) if len(losses) > 0 else 0
-    total_gains = gains.sum() if len(gains) > 0 else 0
-    total_losses = abs(losses.sum()) if len(losses) > 0 else 0
-
-    # Kelly Criterion — continuous approximation (MEDIUM-3 fix)
-    # The classic f* = p - (1-p)/R assumes independent binary bets, which
-    # is invalid for correlated portfolio returns.  The continuous Kelly
-    # fraction f* = μ/σ² (mean/variance of arithmetic returns) is valid
-    # for serially correlated, non-binary return streams.
-    # Reference: Thorp (2006), "The Kelly Criterion in Blackjack, Sports
-    # Betting and the Stock Market".
-    mu = r.mean()
-    var = r.var()
-    if var > 1e-8:
-        # Epistemic Fix: Standard continuous Kelly (μ/σ²) mathematically assumes log-normal diffusion.
-        # Under highly skewed, fat-tailed market distributions, this catastrophically over-allocates
-        # and ignores crash gap-risk. We inject a 3rd-order Taylor skewness correction.
-        # CRITICAL REFINEMENT: Empirical 3rd moments are violently unstable to outliers. 
-        # By clipping the standard errors (Z-scores) to ±3.0 before cubing, we guarantee mathematical 
-        # stability in the Taylor expansion and prevent a single anomaly from hijacking the bet size.
-        std = np.sqrt(var)
-        z_scores = np.clip((r - mu) / std, -3.0, 3.0)
-        skewness = float(np.mean(z_scores ** 3))
-        base_kelly = mu / var
-        
-        # Epistemic Fix: Bound the skewness penalty at 0.0. Under extreme gap risk 
-        # (massive negative skew), the linear approximation can incorrectly evaluate 
-        # to a negative multiplier, flipping a long signal into an unintended short.
-        skew_penalty = max(0.0, 1.0 + (mu * skewness) / std)
-        kelly = base_kelly * skew_penalty
-    else:
-        kelly = 0.0
-    kelly = float(np.clip(kelly, -1, 1))
-
-    # Omega Ratio
-    omega_ratio = total_gains / total_losses if total_losses > 0.0001 else (total_gains * 10 if total_gains > 0 else 1.0)
-    omega_ratio = float(np.clip(omega_ratio, 0, 50))
-
-    # Profit Factor
-    profit_factor = total_gains / total_losses if total_losses > 0.0001 else (10.0 if total_gains > 0 else 1.0)
-    profit_factor = float(np.clip(profit_factor, 0, 50))
-
-    # Tail Ratio
-    upper_tail = np.percentile(r, 95) if len(r) >= 20 else r.max()
-    lower_tail = abs(np.percentile(r, 5)) if len(r) >= 20 else abs(r.min())
-    tail_ratio = upper_tail / lower_tail if lower_tail > 0.0001 else (10.0 if upper_tail > 0 else 1.0)
-    tail_ratio = float(np.clip(tail_ratio, 0, 20))
-
-    # Gain-to-Pain Ratio
-    pain = abs(losses.sum()) if len(losses) > 0 else 0
-    gain_to_pain = r.sum() / pain if pain > 0.0001 else (r.sum() * 10 if r.sum() > 0 else 0)
-    gain_to_pain = float(np.clip(gain_to_pain, -20, 20))
-
-    metrics = {
-        'total_return': core['total_return'],
-        'annual_return': core['ann_return'],
-        'volatility': core['volatility'],
-        'sharpe': core['sharpe'],
-        'sortino': core['sortino'],
-        'max_drawdown': core['max_drawdown'],
-        'calmar': core['calmar'],
-        'win_rate': core['win_rate'],
-        'kelly_criterion': kelly,
-        'omega_ratio': omega_ratio,
-        'tail_ratio': tail_ratio,
-        'gain_to_pain': gain_to_pain,
-        'profit_factor': profit_factor,
-    }
-    return metrics, periods_per_year
 
 def calculate_strategy_weights(
     performance: Dict,
@@ -547,114 +328,6 @@ def _calculate_performance_on_window(
     return {'strategy': final_performance, 'subset': final_sub_performance}
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TRIGGER-BASED BACKTEST ENGINE (Aligned with backtest.py methodology)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def calculate_trigger_based_metrics(daily_data: pd.DataFrame, deployment_style: str = 'SIP') -> Dict:
-    """
-    Calculate institutional metrics from trigger-based backtest daily values.
-    Mirrors the calculate_institutional_metrics function from backtest.py.
-    
-    Args:
-        daily_data: DataFrame with 'date', 'value', 'investment' columns
-        deployment_style: 'SIP' or 'Swing'
-    
-    Returns:
-        Dictionary of performance metrics
-    """
-    if daily_data.empty or len(daily_data) < 2:
-        return {}
-    
-    final_value = daily_data['value'].iloc[-1]
-    is_sip = 'SIP' in deployment_style
-    
-    if is_sip:
-        total_investment = daily_data['investment'].iloc[-1]
-        if total_investment <= 0:
-            return {}
-        absolute_pnl = final_value - total_investment
-        total_return_pct = absolute_pnl / total_investment
-
-        # Time-Weighted Return (TWR) for SIP — Modified Dietz method
-        # Cash flows are invested at the END of the day (generate_portfolio
-        # evaluates using EOD prices), so cf earns NO return during the period.
-        # Standard GIPS-compliant denominator for EOD cash flows: prev_val.
-        # R_t = (V_t - V_{t-1} - CF_{t}) / V_{t-1}
-        df = daily_data.copy()
-        df['cash_flow'] = df['investment'].diff().fillna(0)
-
-        twr_returns = []
-        for i in range(1, len(df)):
-            prev_val = df['value'].iloc[i - 1]
-            curr_val = df['value'].iloc[i]
-            cf = df['cash_flow'].iloc[i]
-            if prev_val > 0:
-                # Market-driven value change divided by exposed base
-                r = (curr_val - cf - prev_val) / prev_val
-                twr_returns.append(r)
-            else:
-                # No prior exposure, return is 0
-                twr_returns.append(0.0)
-
-        returns = pd.Series(twr_returns).replace([np.inf, -np.inf], 0).clip(-1.0, 1.0)
-        
-        # Correct geometric annualization for Time-Weighted Returns
-        if len(returns) > 0:
-            geom_return = (1 + returns).prod()
-            years = len(returns) / 252.0
-            ann_return = (geom_return ** (1 / years)) - 1 if years > 0 else 0.0
-        else:
-            ann_return = 0.0
-        cagr = None
-    else:  # Swing/Lumpsum
-        initial_investment = daily_data['investment'].iloc[0]
-        if initial_investment <= 0:
-            return {}
-        absolute_pnl = final_value - initial_investment
-        total_return_pct = absolute_pnl / initial_investment
-        returns = daily_data['value'].pct_change().dropna()
-        
-        if returns.empty:
-            return {'total_return': total_return_pct, 'absolute_pnl': absolute_pnl}
-        
-        years = len(daily_data) / 252
-        ann_return = ((final_value / initial_investment) ** (1/years) - 1) if years > 0 else 0.0
-        cagr = ann_return
-    
-    if returns.empty or len(returns) < 2:
-        return {'total_return': total_return_pct, 'absolute_pnl': absolute_pnl}
-
-    # Delegate core risk math to canonical implementation
-    core = compute_risk_metrics(
-        returns.values,
-        periods_per_year=252.0,
-        ann_return=ann_return,
-        total_return=total_return_pct,
-    )
-
-    metrics = {
-        'total_return': total_return_pct,
-        'annual_return': ann_return,
-        'absolute_pnl': absolute_pnl,
-        'volatility': core['volatility'],
-        'max_drawdown': core['max_drawdown'],
-        'sharpe': core['sharpe'],
-        'sortino': core['sortino'],
-        'calmar': core['calmar'],
-        'win_rate': core['win_rate'],
-        'best_day': core['best_period'],
-        'worst_day': core['worst_period'],
-        'trading_days': len(returns),
-        'final_value': final_value,
-    }
-
-    if cagr is not None:
-        metrics['cagr'] = cagr
-
-    return metrics
-
-
 def run_trigger_based_backtest(
     strategies: Dict[str, BaseStrategy],
     historical_data: List[Tuple[datetime, pd.DataFrame]],
@@ -669,280 +342,31 @@ def run_trigger_based_backtest(
     progress_bar = None,
     status_text = None
 ) -> Dict:
-    """
-    Run trigger-based backtest for all strategies (aligned with backtest.py methodology).
-    
-    This function mirrors run_individual_strategies_backtest from backtest.py:
-    - Buy when trigger column < buy_threshold
-    - Sell when trigger column > sell_threshold (if enabled)
-    - SIP: accumulates units on each buy trigger
-    - Swing: buy once, hold, sell on trigger
-    
-    Args:
-        strategies: Dictionary of strategy name -> strategy instance
-        historical_data: List of (date, DataFrame) tuples
-        trigger_df: DataFrame with trigger column (indexed by date)
-        buy_col: Column name for buy trigger
-        buy_threshold: Buy when value < this threshold
-        sell_col: Column name for sell trigger
-        sell_threshold: Sell when value > this threshold
-        sell_enabled: Whether to use sell trigger
-        capital: Capital per deployment
-        deployment_style: 'SIP' or 'Swing'
-        progress_bar: Optional Streamlit progress bar
-        status_text: Optional Streamlit status text
-    
-    Returns:
-        Dictionary with strategy metrics and performance data
-    """
+    """Wrapper to run trigger-based backtest using the UnifiedBacktestEngine."""
     logger.info(f"TRIGGER-BASED BACKTEST: {deployment_style} mode | {len(strategies)} strategies")
     logger.info(f"  Buy: {buy_col} < {buy_threshold} | Sell: {sell_col} > {sell_threshold} (enabled={sell_enabled})")
     
     if not historical_data:
         logger.error("No historical data provided")
         return {}
-    
+
     is_sip = 'SIP' in deployment_style
-    
-    # Build date-indexed lookup for prices
-    date_to_df = {d.date() if hasattr(d, 'date') else d: df for d, df in historical_data}
-    simulation_dates = sorted(date_to_df.keys())
-    
-    # Prepare trigger masks
-    buy_dates_mask = [False] * len(simulation_dates)
-    sell_dates_mask = [False] * len(simulation_dates)
-    
-    if trigger_df is not None and not trigger_df.empty:
-        # Ensure trigger_df index is date-comparable
-        if hasattr(trigger_df.index, 'date'):
-            trigger_dates = set(trigger_df.index.date)
-        else:
-            trigger_dates = set(pd.to_datetime(trigger_df.index).date)
-        
-        if buy_col in trigger_df.columns:
-            buy_trigger_dates = set(
-                (idx.date() if hasattr(idx, 'date') else idx)
-                for idx, val in trigger_df[buy_col].items()
-                if pd.notna(val) and val < buy_threshold
-            )
-            buy_dates_mask = [d in buy_trigger_dates for d in simulation_dates]
-            logger.info(f"  Buy triggers found: {sum(buy_dates_mask)} days")
-        
-        if sell_enabled and sell_col in trigger_df.columns:
-            sell_trigger_dates = set(
-                (idx.date() if hasattr(idx, 'date') else idx)
-                for idx, val in trigger_df[sell_col].items()
-                if pd.notna(val) and val > sell_threshold
-            )
-            sell_dates_mask = [d in sell_trigger_dates for d in simulation_dates]
-            logger.info(f"  Sell triggers found: {sum(sell_dates_mask)} days")
-    else:
-        # No trigger file - use simple entry on first day
-        logger.warning("No trigger data provided - using first-day entry")
-        buy_dates_mask[0] = True
-    
-    # Run backtest for each strategy
-    all_results = {}
-    total_strategies = len(strategies)
-    
-    for idx, (name, strategy) in enumerate(strategies.items()):
-        if progress_bar:
-            progress_bar.progress(0.3 + (0.4 * (idx + 1) / total_strategies), 
-                                 text=f"Backtesting: {name}")
-        if status_text:
-            status_text.text(f"Testing: {name} ({idx+1}/{total_strategies})")
-        
-        try:
-            daily_values = []
-            portfolio_units = {}
-            buy_signal_active = False
-            trade_log = []
-            
-            if is_sip:
-                # SIP Mode: Accumulate on each buy trigger
-                total_investment = 0
-                
-                for j, sim_date in enumerate(simulation_dates):
-                    df = date_to_df[sim_date]
-                    
-                    is_buy_day = buy_dates_mask[j]
-                    actual_buy_trigger = is_buy_day and not buy_signal_active
-                    
-                    if is_buy_day:
-                        buy_signal_active = True
-                    else:
-                        buy_signal_active = False
+    mode = 'sip' if is_sip else 'swing'
 
-                    # Check sell trigger
-                    if sell_dates_mask[j] and portfolio_units:
-                        trade_log.append({'Event': 'SELL', 'Date': sim_date})
-                        portfolio_units = {}
-                        buy_signal_active = False
-                    
-                    # Execute buy
-                    if actual_buy_trigger:
-                        trade_log.append({'Event': 'BUY', 'Date': sim_date})
-                        buy_portfolio = strategy.generate_portfolio(df, capital)
-                        
-                        if not buy_portfolio.empty and 'value' in buy_portfolio.columns:
-                            buy_value = buy_portfolio['value'].sum()
-                            cost = buy_value * (TRANSACTION_COST_BPS / 20000.0)
-                            total_investment += buy_value + cost
-                            
-                            for _, row in buy_portfolio.iterrows():
-                                sym = row['symbol']
-                                units = row.get('units', 0)
-                                if units > 0:
-                                    portfolio_units[sym] = portfolio_units.get(sym, 0) + units
-                    
-                    # Calculate current value
-                    current_value = 0
-                    if portfolio_units:
-                        prices_today = df.set_index('symbol')['price']
-                        current_value = sum(
-                            units * prices_today.get(sym, 0)
-                            for sym, units in portfolio_units.items()
-                        )
-                    
-                    daily_values.append({
-                        'date': sim_date,
-                        'value': current_value,
-                        'investment': total_investment
-                    })
-            
-            else:
-                # Swing/Lumpsum Mode: Single position at a time
-                current_capital = capital
-                
-                for j, sim_date in enumerate(simulation_dates):
-                    df = date_to_df[sim_date]
-                    
-                    is_buy_day = buy_dates_mask[j]
-                    actual_buy_trigger = is_buy_day and not buy_signal_active
-                    
-                    if is_buy_day:
-                        buy_signal_active = True
-                    else:
-                        buy_signal_active = False
+    engine = UnifiedBacktestEngine(capital=capital)
+    engine._historical_data = historical_data
+    engine._strategies = strategies
 
-                    # Check sell trigger
-                    if sell_dates_mask[j] and portfolio_units:
-                        trade_log.append({'Event': 'SELL', 'Date': sim_date})
-                        prices_today = df.set_index('symbol')['price']
-                        sell_value = sum(
-                            units * prices_today.get(sym, 0)
-                            for sym, units in portfolio_units.items()
-                        )
-                        cost = sell_value * (TRANSACTION_COST_BPS / 20000.0)
-                        current_capital += (sell_value - cost)
-                        portfolio_units = {}
-                        buy_signal_active = False
-                    
-                    # Execute buy (only if no position)
-                    if actual_buy_trigger and not portfolio_units and current_capital > 1000:
-                        trade_log.append({'Event': 'BUY', 'Date': sim_date})
-                        buy_portfolio = strategy.generate_portfolio(df, current_capital)
-                        
-                        if not buy_portfolio.empty and 'units' in buy_portfolio.columns:
-                            portfolio_units = pd.Series(
-                                buy_portfolio['units'].values,
-                                index=buy_portfolio['symbol']
-                            ).to_dict()
-                            buy_value = buy_portfolio['value'].sum()
-                            cost = buy_value * (TRANSACTION_COST_BPS / 20000.0)
-                            current_capital -= (buy_value + cost)
-                    
-                    # Calculate current value
-                    portfolio_value = 0
-                    if portfolio_units:
-                        prices_today = df.set_index('symbol')['price']
-                        portfolio_value = sum(
-                            units * prices_today.get(sym, 0)
-                            for sym, units in portfolio_units.items()
-                        )
-                    
-                    daily_values.append({
-                        'date': sim_date,
-                        'value': portfolio_value + current_capital,
-                        'investment': capital
-                    })
-            
-            if not daily_values:
-                continue
-            
-            # Calculate metrics
-            daily_df = pd.DataFrame(daily_values)
-            metrics = calculate_trigger_based_metrics(daily_df, deployment_style)
-            
-            if is_sip:
-                metrics['buy_events'] = len([t for t in trade_log if t['Event'] == 'BUY'])
-                metrics['total_investment'] = daily_df['investment'].iloc[-1] if not daily_df.empty else 0
-            else:
-                metrics['trade_events'] = len(trade_log)
-            
-            # Compute tier-level performance from actual tier returns
-            subset_performance = {}
-            if len(daily_values) > 0:
-                # Collect actual tier-level returns across all buy days
-                tier_returns_accum = {}  # tier_name -> [returns]
-                buy_indices = [i for i, m in enumerate(buy_dates_mask) if m]
+    all_results = engine.run_backtest(
+        mode=mode,
+        external_trigger_df=trigger_df,
+        buy_col=buy_col,
+        sell_col=sell_col,
+        buy_threshold=buy_threshold,
+        sell_threshold=sell_threshold,
+        progress_callback=lambda p, m: progress_bar.progress(0.3 + p * 0.4, text=m) if progress_bar else None
+    )
 
-                for bi in buy_indices:
-                    if bi + 1 >= len(simulation_dates):
-                        continue
-                    buy_date = simulation_dates[bi]
-                    next_date = simulation_dates[bi + 1]
-                    buy_df = date_to_df[buy_date]
-                    next_df = date_to_df[next_date]
-
-                    tier_port = strategy.generate_portfolio(buy_df, capital)
-                    if tier_port.empty:
-                        continue
-
-                    n_stocks = len(tier_port)
-                    tier_size = 10
-                    num_tiers = n_stocks // tier_size
-                    for t in range(num_tiers):
-                        tier_name = f'tier_{t+1}'
-                        sub_df = tier_port.iloc[t * tier_size : (t + 1) * tier_size]
-                        if not sub_df.empty:
-                            ret = compute_portfolio_return(sub_df, next_df)
-                            tier_returns_accum.setdefault(tier_name, []).append(ret)
-
-                # Compute actual Sharpe per tier
-                for tier_name, rets in tier_returns_accum.items():
-                    arr = np.array(rets)
-                    if len(arr) > 1:
-                        metrics = compute_risk_metrics(arr, periods_per_year=252.0)
-                        subset_performance[tier_name] = metrics['sharpe']
-                    else:
-                        subset_performance[tier_name] = 0.0
-            
-            all_results[name] = {
-                'metrics': metrics,
-                'daily_data': daily_df,
-                'returns': [
-                    {'date': r['date'], 'return': daily_df['value'].pct_change().iloc[i] if i > 0 else 0}
-                    for i, r in enumerate(daily_values)
-                ],
-                'trade_log': trade_log,
-                'subset': subset_performance
-            }
-            
-            logger.info(f"  {name}: Return={metrics.get('total_return', 0):.1%}, "
-                        f"Sharpe={metrics.get('sharpe', 0):.2f}, "
-                        f"Trades={len(trade_log)}")
-        
-        except Exception as e:
-            logger.error(f"Error backtesting {name}: {e}")
-            all_results[name] = {
-                'metrics': {},
-                'daily_data': pd.DataFrame(),
-                'returns': [],
-                'trade_log': [],
-                'subset': {}
-            }
-    
     logger.info(f"TRIGGER-BASED BACKTEST COMPLETE: {len(all_results)} strategies processed")
     return all_results
 
@@ -2088,6 +1512,25 @@ def get_market_mix_suggestion_v3(end_date: datetime) -> Tuple[str, str, float, D
             f"⚠️ Error during regime detection: {e}. Defaulting to Bull Mix.",
             0.30, {}
         )
+
+# =========================================================================
+# --- Live Data Loading Function (Refactored) ---
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_historical_data(end_date: datetime, lookback_files: int) -> List[Tuple[datetime, pd.DataFrame]]:
+    """Fetches and processes all historical data on-the-fly."""
+    logger.info(f"--- START: Live Data Generation (End Date: {end_date.date()}, Lookback: {lookback_files}) ---")
+    total_days_to_fetch = int((lookback_files + MAX_INDICATOR_PERIOD) * 1.5) + 30
+    fetch_start_date = end_date - timedelta(days=total_days_to_fetch)
+    logger.info(f"Calculated fetch start date: {fetch_start_date.date()}")
+
+    try:
+        live_data = generate_historical_data(SYMBOLS_UNIVERSE, fetch_start_date, end_date)
+        logger.info(f"--- SUCCESS: {len(live_data)} total valid days generated. ---")
+        return live_data
+    except Exception as e:
+        logger.error(f"Error during load_historical_data: {e}")
+        st.error(f"Failed to fetch or process live data: {e}")
+        return []
 
 
 # --- UI & Visualization Functions ---

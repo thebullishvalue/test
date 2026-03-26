@@ -37,7 +37,7 @@ warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=RuntimeWarning, message='Mean of empty slice')
 
 try:
-    from backtest_engine import compute_risk_metrics
+    from backtest_engine import compute_risk_metrics, UnifiedBacktestEngine
 except ImportError:
     compute_risk_metrics = None  # graceful degradation
 
@@ -289,219 +289,6 @@ def get_swing_cycles(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CUMULATIVE MASTER PORTFOLIO TRACKER
-# ══════════════════════════════════════════════════════════════════════════════
-
-class MasterPortfolio:
-    """
-    Tracks cumulative holdings across multiple SIP entries.
-    
-    Maintains:
-    - Holdings: symbol -> {units, avg_cost, current_price}
-    - Cash balance
-    - Value history for performance calculation
-    """
-    
-    def __init__(self):
-        self.holdings: Dict[str, Dict] = {}  # symbol -> {units, avg_cost}
-        self.total_invested = 0.0
-        self.history: List[Dict] = []
-        
-    def add_portfolio(self, portfolio_df: pd.DataFrame, date: datetime, investment: float):
-        """
-        Add a new portfolio's holdings to the master portfolio.
-        
-        Args:
-            portfolio_df: DataFrame with columns [symbol, price, units, value]
-            date: Investment date
-            investment: Amount invested
-        """
-        if portfolio_df.empty:
-            return
-        
-        # Track actual deployed capital to prevent unallocated cash from appearing as a loss
-        deployed_capital = portfolio_df['value'].sum() if 'value' in portfolio_df.columns else 0.0
-        if deployed_capital == 0.0:
-            deployed_capital = (portfolio_df.get('units', 0) * portfolio_df.get('price', 0)).sum()
-            
-        self.total_invested += deployed_capital
-        
-        for _, row in portfolio_df.iterrows():
-            symbol = row['symbol']
-            price = row['price']
-            units = row.get('units', 0)
-            
-            if units <= 0 or price <= 0:
-                continue
-            
-            if symbol in self.holdings:
-                # Average into existing position
-                existing = self.holdings[symbol]
-                total_units = existing['units'] + units
-                total_cost = existing['units'] * existing['avg_cost'] + units * price
-                self.holdings[symbol] = {
-                    'units': total_units,
-                    'avg_cost': total_cost / total_units,
-                    'current_price': price
-                }
-            else:
-                self.holdings[symbol] = {
-                    'units': units,
-                    'avg_cost': price,
-                    'current_price': price
-                }
-        
-        # Record snapshot
-        self._record_snapshot(date, 'SIP_BUY', cash_flow=investment)
-    
-    def update_prices(self, price_data: pd.DataFrame, date: datetime):
-        """
-        Update current prices for all holdings.
-        
-        Args:
-            price_data: DataFrame with columns [symbol, price]
-            date: Price date
-        """
-        if price_data.empty:
-            return
-        
-        prices = price_data.set_index('symbol')['price'].to_dict()
-        
-        for symbol in self.holdings:
-            if symbol in prices:
-                self.holdings[symbol]['current_price'] = prices[symbol]
-        
-        self._record_snapshot(date, 'PRICE_UPDATE', cash_flow=0.0)
-    
-    def get_current_value(self) -> float:
-        """Get total current value of all holdings."""
-        return sum(
-            h['units'] * h.get('current_price', h['avg_cost'])
-            for h in self.holdings.values()
-        )
-    
-    def get_total_return(self) -> float:
-        """Get total return percentage."""
-        if self.total_invested <= 0:
-            return 0.0
-        return (self.get_current_value() - self.total_invested) / self.total_invested
-    
-    def _record_snapshot(self, date: datetime, action: str, cash_flow: float = 0.0):
-        """Record portfolio state."""
-        self.history.append({
-            'date': date,
-            'action': action,
-            'total_invested': self.total_invested,
-            'cash_flow': cash_flow,
-            'current_value': self.get_current_value(),
-            'num_holdings': len(self.holdings),
-            'return': self.get_total_return()
-        })
-    
-    def get_metrics(self) -> Dict:
-        """Calculate comprehensive performance metrics.
-
-        Delegates core ratio math to :func:`backtest_engine.compute_risk_metrics`
-        when available, with inline fallback for standalone usage.
-        """
-        if not self.history or self.total_invested <= 0:
-            return self._empty_metrics()
-
-        total_return = self.get_total_return()
-        terminal_value = self.get_current_value()
-
-        # Extract per-snapshot returns
-        returns = []
-        for i in range(1, len(self.history)):
-            prev_val = self.history[i - 1]['current_value']
-            curr_val = self.history[i]['current_value']
-            cf = self.history[i]['cash_flow']
-            if prev_val > 0:
-                # CRITICAL FIX: Modified Dietz Time-Weighted Return
-                returns.append((curr_val - cf - prev_val) / prev_val)
-            elif prev_val == 0 and cf > 0:
-                returns.append(0.0)
-            else:
-                returns.append(0.0)
-
-        returns = np.array(returns) if returns else np.array([total_return])
-
-        # Estimate periods_per_year from ACTUAL calendar time
-        if len(self.history) >= 2:
-            start_date = self.history[0]['date']
-            end_date = self.history[-1]['date']
-            days = (end_date - start_date).days
-            years = days / 365.25 if days > 0 else 1.0
-            periods_per_year = max(1.0, len(returns) / years)
-        else:
-            periods_per_year = 252.0
-
-        if compute_risk_metrics is not None and len(returns) >= 2:
-            core = compute_risk_metrics(
-                returns,
-                periods_per_year=periods_per_year,
-                total_return=total_return,
-            )
-            sharpe = core['sharpe']
-            sortino = core['sortino']
-            max_dd = core['max_drawdown']
-            win_rate = core['win_rate']
-            calmar = core['calmar']
-        else:
-            # Fallback: inline computation for standalone usage
-            ann_factor = np.sqrt(periods_per_year)
-            if len(returns) > 1 and returns.std() > 0:
-                sharpe = (returns.mean() / returns.std()) * ann_factor
-                downside = returns[returns < 0]
-                downside_dev = np.sqrt(np.mean(downside ** 2)) if len(downside) > 0 else 0
-                sortino = (returns.mean() / downside_dev) * ann_factor if downside_dev > 0 else sharpe
-            else:
-                sharpe = total_return if total_return > 0 else 0
-                sortino = sharpe
-
-            values = [h['current_value'] for h in self.history]
-            if values:
-                peak = np.maximum.accumulate(values)
-                drawdown = (np.array(values) - peak) / np.where(peak > 0, peak, 1)
-                max_dd = drawdown.min()
-            else:
-                max_dd = 0
-            win_rate = (returns > 0).mean() if len(returns) > 0 else 0
-            calmar = total_return / abs(max_dd) if max_dd < -0.001 else 0
-
-        return {
-            'total_invested': self.total_invested,
-            'terminal_value': terminal_value,
-            'total_return': total_return,
-            'sharpe': sharpe,
-            'sortino': sortino,
-            'max_drawdown': max_dd,
-            'calmar': calmar,
-            'win_rate': win_rate,
-            'num_holdings': len(self.holdings)
-        }
-    
-    def _empty_metrics(self) -> Dict:
-        return {
-            'total_invested': 0,
-            'terminal_value': 0,
-            'total_return': 0,
-            'sharpe': 0,
-            'sortino': 0,
-            'max_drawdown': 0,
-            'calmar': 0,
-            'win_rate': 0,
-            'num_holdings': 0
-        }
-    
-    def reset(self):
-        """Reset to empty state."""
-        self.holdings = {}
-        self.total_invested = 0.0
-        self.history = []
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # SIP MODE EXECUTION
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -513,103 +300,36 @@ def execute_sip_mode(
     buy_threshold: Optional[float] = None
 ) -> Dict[str, Dict]:
     """
-    Execute SIP mode: Accumulate on every trigger date.
-
-    Process:
-    1. Find all dates where REL_BREADTH < buy_threshold
-    2. For each trigger date:
-       - Get indicator data for that date
-       - Run each strategy's generate_portfolio()
-       - Add holdings to cumulative master portfolio
-    3. Update to terminal prices
-    4. Calculate selection metrics from terminal portfolio
-
-    Args:
-        strategies: Dict of strategy_name -> strategy instance
-        historical_data: List of (date, indicator_df) from backdata
-        breadth_data: DataFrame with DATE and REL_BREADTH
-        sip_amount: Amount to invest per trigger
-        buy_threshold: Adaptive buy threshold. Defaults to SIP_TRIGGER.
-
-    Returns:
-        Dict of strategy_name -> performance metrics
+    Execute SIP mode by delegating to the UnifiedBacktestEngine.
     """
-    # Get trigger dates
-    trigger_dates = get_sip_trigger_dates(breadth_data, buy_threshold=buy_threshold)
-    
-    if not trigger_dates:
-        logger.warning("No SIP trigger dates found")
+    if not strategies or not historical_data:
         return {}
-    
-    # Create date lookup for indicator data
-    data_by_date = {}
-    for date, df in historical_data:
-        key = date.date() if isinstance(date, datetime) else date
-        data_by_date[key] = df
-    
-    sorted_data_dates = sorted(data_by_date.keys())
-    
-    def get_indicator_data(target_date) -> Optional[pd.DataFrame]:
-        """Get indicator data for target date (or nearest available)."""
-        target = target_date.date() if isinstance(target_date, datetime) else target_date
-        
-        if target in data_by_date:
-            return data_by_date[target]
-        
-        # Execution Fix: O(log N) binary search replaces O(N) linear scan
-        idx = bisect.bisect_left(sorted_data_dates, target)
-        if idx < len(sorted_data_dates):
-            return data_by_date[sorted_data_dates[idx]]
-        
-        return data_by_date[sorted_data_dates[-1]] if sorted_data_dates else None
-    
-    results = {}
-    
-    for strategy_name, strategy in strategies.items():
-        logger.info(f"SIP Mode: Evaluating {strategy_name}...")
-        
-        master = MasterPortfolio()
-        entries_made = 0
-        
-        for trigger_date in trigger_dates:
-            indicator_df = get_indicator_data(trigger_date)
-            
-            if indicator_df is None or indicator_df.empty:
-                continue
-            
-            try:
-                # Generate portfolio for this date
-                # Memory Fix: _clean_data handles numpy bounds, remove deep copy
-                portfolio = strategy.generate_portfolio(indicator_df, sip_amount=sip_amount)
-                
-                if portfolio.empty:
-                    continue
-                
-                # Add to master portfolio
-                master.add_portfolio(portfolio, trigger_date, sip_amount)
-                entries_made += 1
-                
-            except Exception as e:
-                logger.warning(f"Error generating portfolio for {strategy_name} on {trigger_date}: {e}")
-                continue
-        
-        # Update to terminal prices (last available data)
-        if sorted_data_dates and master.holdings:
-            final_df = data_by_date[sorted_data_dates[-1]]
-            master.update_prices(final_df[['symbol', 'price']], datetime.now())
-        
-        # Get metrics
-        metrics = master.get_metrics()
+
+    logger.info(f"Executing SIP mode for {len(strategies)} strategies...")
+    engine = UnifiedBacktestEngine(capital=sip_amount)
+    engine._historical_data = historical_data
+    engine._strategies = strategies
+
+    results = engine.run_backtest(
+        mode='sip',
+        external_trigger_df=breadth_data.set_index('DATE'),
+        buy_col='REL_BREADTH',
+        buy_threshold=buy_threshold or SIP_TRIGGER,
+    )
+
+    # Format results to match legacy structure
+    formatted_results = {}
+    for name, data in results.items():
+        if name.startswith('__'): continue
+        metrics = data.get('metrics', {})
         metrics['mode'] = 'SIP'
-        metrics['trigger'] = f'REL_BREADTH < {SIP_TRIGGER}'
-        metrics['num_entries'] = entries_made
+        metrics['trigger'] = f'REL_BREADTH < {buy_threshold or SIP_TRIGGER}'
+        metrics['num_entries'] = metrics.get('buy_events', 0)
         metrics['sip_amount'] = sip_amount
-        
-        results[strategy_name] = metrics
-        
-        logger.info(f"  {strategy_name}: {entries_made} entries, Return: {metrics['total_return']:.2%}")
-    
-    return results
+        formatted_results[name] = metrics
+        logger.info(f"  {name}: {metrics.get('num_entries', 0)} entries, Return: {metrics.get('total_return', 0):.2%}")
+
+    return formatted_results
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -625,196 +345,40 @@ def execute_swing_mode(
     sell_threshold: Optional[float] = None
 ) -> Dict[str, Dict]:
     """
-    Execute Swing mode: Buy-sell cycles based on breadth triggers.
-
-    Process:
-    1. Identify cycles: Buy when REL_BREADTH < buy_threshold, Sell when >= sell_threshold
-    2. For each cycle:
-       - Generate portfolio at entry
-       - Track to exit date
-       - Calculate cycle return
-    3. Aggregate all cycle returns for final metrics
-
-    Args:
-        strategies: Dict of strategy_name -> strategy instance
-        historical_data: List of (date, indicator_df) from backdata
-        breadth_data: DataFrame with DATE and REL_BREADTH
-        capital_per_trade: Capital allocated per swing trade
-        buy_threshold: Adaptive buy threshold. Defaults to SWING_BUY_TRIGGER.
-        sell_threshold: Adaptive sell threshold. Defaults to SWING_SELL_TRIGGER.
-
-    Returns:
-        Dict of strategy_name -> performance metrics
+    Execute Swing mode by delegating to the UnifiedBacktestEngine.
     """
-    # Get swing cycles
-    cycles = get_swing_cycles(breadth_data, buy_threshold=buy_threshold, sell_threshold=sell_threshold)
-    
-    if not cycles:
-        logger.warning("No swing cycles found")
+    if not strategies or not historical_data:
         return {}
-    
-    # Create date lookup
-    data_by_date = {}
-    for date, df in historical_data:
-        key = date.date() if isinstance(date, datetime) else date
-        data_by_date[key] = df
-    
-    sorted_data_dates = sorted(data_by_date.keys())
-    
-    def get_indicator_data(target_date) -> Optional[pd.DataFrame]:
-        target = target_date.date() if isinstance(target_date, datetime) else target_date
-        if target in data_by_date:
-            return data_by_date[target]
-        idx = bisect.bisect_left(sorted_data_dates, target)
-        if idx < len(sorted_data_dates):
-            return data_by_date[sorted_data_dates[idx]]
-        return data_by_date[sorted_data_dates[-1]] if sorted_data_dates else None
-    
-    results = {}
-    
-    for strategy_name, strategy in strategies.items():
-        logger.info(f"Swing Mode: Evaluating {strategy_name}...")
-        
-        cycle_results = []
-        
-        for cycle in cycles:
-            entry_date = cycle['entry_date']
-            exit_date = cycle['exit_date']
-            
-            entry_df = get_indicator_data(entry_date)
-            exit_df = get_indicator_data(exit_date)
-            
-            if entry_df is None or entry_df.empty:
-                continue
-            
-            try:
-                # Generate portfolio at entry
-                portfolio = strategy.generate_portfolio(entry_df, sip_amount=capital_per_trade)
-                
-                if portfolio.empty:
-                    continue
-                
-                # Calculate entry value
-                entry_value = portfolio['value'].sum() if 'value' in portfolio.columns else 0
-                
-                if entry_value <= 0:
-                    continue
-                
-                # Calculate exit value
-                if exit_df is not None and not exit_df.empty:
-                    exit_prices = exit_df.set_index('symbol')['price'].to_dict()
-                    
-                    exit_value = 0
-                    for _, row in portfolio.iterrows():
-                        symbol = row['symbol']
-                        units = row.get('units', 0)
-                        exit_price = exit_prices.get(symbol, row['price'])
-                        exit_value += units * exit_price
-                else:
-                    exit_value = entry_value
-                
-                # Apply 20 bps round-trip transaction costs (10 bps per leg)
-                entry_value_with_cost = entry_value * (1 + 10 / 10000.0)
-                exit_value_after_cost = exit_value * (1 - 10 / 10000.0)
-                cycle_return = (exit_value_after_cost - entry_value_with_cost) / entry_value_with_cost
-                
-                cycle_results.append({
-                    'entry_date': entry_date,
-                    'exit_date': exit_date,
-                    'entry_value': entry_value,
-                    'exit_value': exit_value,
-                    'return': cycle_return,
-                    'status': cycle['status'],
-                    'num_holdings': len(portfolio)
-                })
-                
-            except Exception as e:
-                logger.warning(f"Error in swing cycle for {strategy_name}: {e}")
-                continue
-        
-        # Aggregate metrics
-        if cycle_results:
-            df_cycles = pd.DataFrame(cycle_results)
-            closed = df_cycles[df_cycles['status'] == 'closed']
-            
-            if len(closed) > 0:
-                returns = closed['return'].values
-                avg_return = returns.mean()
-                win_rate = (returns > 0).mean()
 
-                # Compounded total return
-                total_return = (1 + closed['return']).prod() - 1
+    logger.info(f"Executing Swing mode for {len(strategies)} strategies...")
+    engine = UnifiedBacktestEngine(capital=capital_per_trade)
+    engine._historical_data = historical_data
+    engine._strategies = strategies
 
-                # Calculate actual time span for accurate annualization
-                date_start = pd.to_datetime(closed['entry_date'].min())
-                date_end = pd.to_datetime(closed['exit_date'].max())
-                days = (date_end - date_start).days
-                years = days / 365.25 if days > 0 else 1.0
-                periods_per_year = max(1.0, len(returns) / years)
+    results = engine.run_backtest(
+        mode='swing',
+        external_trigger_df=breadth_data.set_index('DATE'),
+        buy_col='REL_BREADTH',
+        sell_col='REL_BREADTH',
+        buy_threshold=buy_threshold or SWING_BUY_TRIGGER,
+        sell_threshold=sell_threshold or SWING_SELL_TRIGGER,
+    )
 
-                # Risk metrics — delegate to canonical when available
-                if compute_risk_metrics is not None and len(returns) >= 2:
-                    core = compute_risk_metrics(returns, periods_per_year=periods_per_year, total_return=total_return)
-                    sharpe = core['sharpe']
-                    sortino = core['sortino']
-                    max_dd = core['max_drawdown']
-                    calmar = core['calmar']
-                elif len(returns) > 1 and returns.std() > 0:
-                    ann_factor = np.sqrt(max(len(returns), 1))
-                    sharpe = (avg_return / returns.std()) * ann_factor
-                    downside = np.minimum(returns, 0)
-                    downside_dev = np.sqrt(np.mean(downside ** 2))
-                    sortino = (avg_return / downside_dev) * ann_factor if downside_dev > 0 else sharpe
-                    cumulative = np.cumprod(1 + returns)
-                    peak = np.maximum.accumulate(cumulative)
-                    max_dd = float(np.min((cumulative - peak) / peak))
-                    calmar = total_return / abs(max_dd) if max_dd < -0.001 else 0
-                else:
-                    sharpe = avg_return * 10 if avg_return > 0 else 0
-                    sortino = sharpe
-                    max_dd = 0
-                    calmar = 0
-                
-            else:
-                # Only open trades
-                avg_return = df_cycles['return'].mean()
-                total_return = avg_return
-                win_rate = (df_cycles['return'] > 0).mean()
-                sharpe = sortino = 0
-                max_dd = 0
-                calmar = 0
-            
-            n_closed = len(closed)
-            results[strategy_name] = {
-                'mode': 'Swing',
-                'buy_trigger': f'REL_BREADTH < {SWING_BUY_TRIGGER}',
-                'sell_trigger': f'REL_BREADTH >= {SWING_SELL_TRIGGER}',
-                'completed_trades': n_closed,
-                'open_trades': len(df_cycles) - n_closed,
-                'avg_return_per_trade': avg_return,
-                'total_return': total_return,
-                'win_rate': win_rate,
-                'sharpe': sharpe,
-                'sortino': sortino,
-                'max_drawdown': max_dd,
-                'calmar': calmar
-            }
-            
-            logger.info(f"  {strategy_name}: {len(cycle_results)} cycles, Return: {total_return:.2%}")
-        else:
-            results[strategy_name] = {
-                'mode': 'Swing',
-                'completed_trades': 0,
-                'open_trades': 0,
-                'total_return': 0,
-                'sharpe': 0,
-                'sortino': 0,
-                'max_drawdown': 0,
-                'calmar': 0,
-                'win_rate': 0
-            }
-    
-    return results
+    # Format results to match legacy structure
+    formatted_results = {}
+    for name, data in results.items():
+        if name.startswith('__'): continue
+        metrics = data.get('metrics', {})
+        metrics['mode'] = 'Swing'
+        metrics['buy_trigger'] = f'REL_BREADTH < {buy_threshold or SWING_BUY_TRIGGER}'
+        metrics['sell_trigger'] = f'REL_BREADTH >= {sell_threshold or SWING_SELL_TRIGGER}'
+        metrics['completed_trades'] = metrics.get('trade_events', 0)
+        metrics['open_trades'] = 0 # Engine doesn't track this distinction, assuming all closed
+        metrics['avg_return_per_trade'] = metrics.get('total_return', 0) / metrics.get('trade_events', 1)
+        formatted_results[name] = metrics
+        logger.info(f"  {name}: {metrics.get('trade_events', 0)} trades, Return: {metrics.get('total_return', 0):.2%}")
+
+    return formatted_results
 
 
 # ══════════════════════════════════════════════════════════════════════════════

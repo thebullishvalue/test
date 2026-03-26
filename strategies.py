@@ -128,6 +128,51 @@ class BaseStrategy(ABC):
         df['value'] = df['units'] * df['price']
         return df[['symbol', 'price', 'weightage_pct', 'units', 'value']].reset_index(drop=True)
 
+    def _apply_tiered_allocation(self, df: pd.DataFrame, tiers: List[Tuple[int, float]]) -> pd.DataFrame:
+        """
+        Applies a tiered (pyramid) allocation scheme based on absolute numbers.
+
+        Args:
+            df: DataFrame sorted by score, must have a 'weightage' column to be overwritten.
+            tiers: List of tuples, where each tuple is (num_stocks_in_tier, fraction_of_capital).
+                   e.g., [(5, 0.8), (10, 0.15)] means top 5 stocks get 80% of capital,
+                   the next 10 get 15%, and the rest get the leftover 5%.
+
+        Returns:
+            DataFrame with the 'weightage' column updated.
+        """
+        df_sorted = df.copy()
+        n = len(df_sorted)
+        if n == 0:
+            return df_sorted
+
+        df_sorted['weightage'] = 0.0
+        start_idx = 0
+        remaining_capital_frac = 1.0
+
+        for num_in_tier, capital_frac in tiers:
+            if start_idx >= n or remaining_capital_frac <= 1e-6:
+                break
+            
+            end_idx = min(n, start_idx + num_in_tier)
+            
+            if end_idx > start_idx:
+                count = end_idx - start_idx
+                df_sorted.loc[start_idx:end_idx-1, 'weightage'] = (capital_frac / count) if count > 0 else 0
+                remaining_capital_frac -= capital_frac
+            
+            start_idx = end_idx
+
+        if start_idx < n and remaining_capital_frac > 0:
+            count = n - start_idx
+            df_sorted.loc[start_idx:, 'weightage'] = (remaining_capital_frac / count) if count > 0 else 0
+
+        total_w = df_sorted['weightage'].sum()
+        if total_w > 0:
+            df_sorted['weightage'] /= total_w
+        
+        return df_sorted
+
 # =====================================
 # PR_v1 Strategy Implementation
 # =====================================
@@ -300,18 +345,8 @@ class PRStrategy(BaseStrategy):
 # CL_v1 Strategy Implementation
 # =====================================
 
-class _CL1QuantitativeETFAnalyzer:
-    """
-    Advanced Quantitative ETF Analysis Engine
-
-    Implements sophisticated multi-factor models for ETF selection based on:
-    1. Statistical Anomaly Detection
-    2. Multi-Timeframe Momentum Convergence
-    3. Volatility-Adjusted Risk Assessment
-    4. Cross-Asset Correlation Analysis
-    5. Regime-Aware Factor Rotation
-    """
-
+class _BaseCLAnalyzer:
+    """Base class for CL-series analyzers to share common logic."""
     def __init__(self):
         self.factor_weights = {}
         self.regime_indicators = {}
@@ -453,6 +488,19 @@ class _CL1QuantitativeETFAnalyzer:
         }
 
         return regime, confidence
+
+
+class _CL1QuantitativeETFAnalyzer(_BaseCLAnalyzer):
+    """
+    Advanced Quantitative ETF Analysis Engine
+
+    Implements sophisticated multi-factor models for ETF selection based on:
+    1. Statistical Anomaly Detection
+    2. Multi-Timeframe Momentum Convergence
+    3. Volatility-Adjusted Risk Assessment
+    4. Cross-Asset Correlation Analysis
+    5. Regime-Aware Factor Rotation
+    """
 
     def calculate_statistical_anomaly_score(self, df):
         """Identify statistical anomalies across multiple dimensions"""
@@ -2212,28 +2260,9 @@ class AlphaSurge(BaseStrategy):
         if n == 0:
             return pd.DataFrame()
 
-        # Top 10%: 70% allocation (equal within tier)
-        top10_end = max(1, int(n * 0.1))
-        df_sorted.loc[:top10_end-1, 'weightage'] = 0.7 / top10_end if top10_end > 0 else 0
-
-        # Next 20%: 20% allocation
-        next20_end = min(n, top10_end + int(n * 0.2))
-        if next20_end > top10_end:
-            count = next20_end - top10_end
-            df_sorted.loc[top10_end:next20_end-1, 'weightage'] = 0.2 / count
-
-        # Remaining 70%: 10% allocation (equal)
-        remaining_start = next20_end
-        if remaining_start < n:
-            count = n - remaining_start
-            df_sorted.loc[remaining_start:, 'weightage'] = 0.1 / count
-
-        # Normalize to sum=1
-        total_w = df_sorted['weightage'].sum()
-        if total_w > 0:
-            df_sorted['weightage'] /= total_w
-
-        return self._allocate_portfolio(df_sorted, sip_amount)
+        tiers = [(max(1, int(n * 0.1)), 0.70), (max(1, int(n * 0.2)), 0.20)]
+        df_with_weights = self._apply_tiered_allocation(df_sorted, tiers=tiers)
+        return self._allocate_portfolio(df_with_weights, sip_amount)
 
 class ReturnPyramid(BaseStrategy):
     def generate_portfolio(self, df: pd.DataFrame, sip_amount: float = 100000.0) -> pd.DataFrame:
@@ -2309,39 +2338,9 @@ class ReturnPyramid(BaseStrategy):
         if n == 0:
             return pd.DataFrame()
 
-        # Top 5 stocks: 80% allocation (equal within)
-        top5_end = min(5, n)
-        if top5_end > 0:
-            df_sorted.loc[:top5_end-1, 'weightage'] = 0.8 / top5_end
-
-        # Next 10 stocks: 15%
-        next10_end = min(n, top5_end + 10)
-        if next10_end > top5_end:
-            count = next10_end - top5_end
-            df_sorted.loc[top5_end:next10_end-1, 'weightage'] = 0.15 / count
-
-        # Remaining: 5% equal
-        remaining_start = next10_end
-        if remaining_start < n:
-            count = n - remaining_start
-            df_sorted.loc[remaining_start:, 'weightage'] = 0.05 / count
-        elif top5_end < n and next10_end == top5_end:
-            # If no next10 assigned (e.g., n < top5 +1), adjust remaining to 15% + 5% = 20%? Wait, no: if next10_end == top5_end, means n <= top5_end, so no remaining
-            pass
-        else:
-            # If less than full tiers, but some remaining after top5
-            if top5_end < n:
-                remaining_count = n - top5_end
-                df_sorted.loc[top5_end:, 'weightage'] = 0.20 / remaining_count  # 15% + 5% combined
-
-        # Normalize
-        total_w = df_sorted['weightage'].sum()
-        if total_w > 0:
-            df_sorted['weightage'] /= total_w
-        else:
-            df_sorted['weightage'] = 1.0 / n
-
-        return self._allocate_portfolio(df_sorted, sip_amount)
+        tiers = [(5, 0.80), (10, 0.15)]
+        df_with_weights = self._apply_tiered_allocation(df_sorted, tiers=tiers)
+        return self._allocate_portfolio(df_with_weights, sip_amount)
 
 # =====================================
 # NEW: MomentumCascade Strategy
@@ -2404,32 +2403,9 @@ class MomentumCascade(BaseStrategy):
         if n == 0:
             return pd.DataFrame()
 
-        # Top 8: 60%
-        top8_end = min(8, n)
-        df_sorted.loc[:top8_end-1, 'weightage'] = 0.6 / top8_end
-
-        # Next 12: 25%
-        next12_end = min(n, top8_end + 12)
-        if next12_end > top8_end:
-            count = next12_end - top8_end
-            df_sorted.loc[top8_end:next12_end-1, 'weightage'] = 0.25 / count
-
-        # Rest: 15%
-        remaining_start = next12_end
-        if remaining_start < n:
-            count = n - remaining_start
-            df_sorted.loc[remaining_start:, 'weightage'] = 0.15 / count
-        else:
-            # Adjust if fewer stocks
-            if top8_end < n:
-                remaining_count = n - top8_end
-                df_sorted.loc[top8_end:, 'weightage'] = 0.4 / remaining_count  # 25% + 15%
-
-        total_w = df_sorted['weightage'].sum()
-        if total_w > 0:
-            df_sorted['weightage'] /= total_w
-
-        return self._allocate_portfolio(df_sorted, sip_amount)
+        tiers = [(8, 0.60), (12, 0.25)]
+        df_with_weights = self._apply_tiered_allocation(df_sorted, tiers=tiers)
+        return self._allocate_portfolio(df_with_weights, sip_amount)
 
 # =====================================
 # NEW: AlphaVortex Strategy
@@ -2484,28 +2460,9 @@ class AlphaVortex(BaseStrategy):
         if n == 0:
             return pd.DataFrame()
 
-        top7_end = min(7, n)
-        df_sorted.loc[:top7_end-1, 'weightage'] = 0.7 / top7_end
-
-        next13_end = min(n, top7_end + 13)
-        if next13_end > top7_end:
-            count = next13_end - top7_end
-            df_sorted.loc[top7_end:next13_end-1, 'weightage'] = 0.2 / count
-
-        remaining_start = next13_end
-        if remaining_start < n:
-            count = n - remaining_start
-            df_sorted.loc[remaining_start:, 'weightage'] = 0.1 / count
-        else:
-            if top7_end < n:
-                remaining_count = n - top7_end
-                df_sorted.loc[top7_end:, 'weightage'] = 0.3 / remaining_count
-
-        total_w = df_sorted['weightage'].sum()
-        if total_w > 0:
-            df_sorted['weightage'] /= total_w
-
-        return self._allocate_portfolio(df_sorted, sip_amount)
+        tiers = [(7, 0.70), (13, 0.20)]
+        df_with_weights = self._apply_tiered_allocation(df_sorted, tiers=tiers)
+        return self._allocate_portfolio(df_with_weights, sip_amount)
 
 # =====================================
 # NEW: SurgeSentinel Strategy
@@ -2565,24 +2522,9 @@ class SurgeSentinel(BaseStrategy):
         if n == 0:
             return pd.DataFrame()
 
-        top6_end = min(6, n)
-        df_sorted.loc[:top6_end-1, 'weightage'] = 0.65 / top6_end
-
-        next14_end = min(n, top6_end + 14)
-        if next14_end > top6_end:
-            count = next14_end - top6_end
-            df_sorted.loc[top6_end:next14_end-1, 'weightage'] = 0.25 / count
-
-        remaining_start = next14_end
-        if remaining_start < n:
-            count = n - remaining_start
-            df_sorted.loc[remaining_start:, 'weightage'] = 0.1 / count
-
-        total_w = df_sorted['weightage'].sum()
-        if total_w > 0:
-            df_sorted['weightage'] /= total_w
-
-        return self._allocate_portfolio(df_sorted, sip_amount)
+        tiers = [(6, 0.65), (14, 0.25)]
+        df_with_weights = self._apply_tiered_allocation(df_sorted, tiers=tiers)
+        return self._allocate_portfolio(df_with_weights, sip_amount)
 
 # =====================================
 # NEW: VelocityVortex Strategy
@@ -2630,24 +2572,9 @@ class VelocityVortex(BaseStrategy):
         if n == 0:
             return pd.DataFrame()
 
-        top4_end = min(4, n)
-        df_sorted.loc[:top4_end-1, 'weightage'] = 0.75 / top4_end
-
-        next6_end = min(n, top4_end + 6)
-        if next6_end > top4_end:
-            count = next6_end - top4_end
-            df_sorted.loc[top4_end:next6_end-1, 'weightage'] = 0.15 / count
-
-        remaining_start = next6_end
-        if remaining_start < n:
-            count = n - remaining_start
-            df_sorted.loc[remaining_start:, 'weightage'] = 0.1 / count
-
-        total_w = df_sorted['weightage'].sum()
-        if total_w > 0:
-            df_sorted['weightage'] /= total_w
-
-        return self._allocate_portfolio(df_sorted, sip_amount)
+        tiers = [(4, 0.75), (6, 0.15)]
+        df_with_weights = self._apply_tiered_allocation(df_sorted, tiers=tiers)
+        return self._allocate_portfolio(df_with_weights, sip_amount)
 
 # =====================================
 # NEW: BreakoutAlphaHunter Strategy
@@ -2709,24 +2636,9 @@ class BreakoutAlphaHunter(BaseStrategy):
         if n == 0:
             return pd.DataFrame()
 
-        top9_end = min(9, n)
-        df_sorted.loc[:top9_end-1, 'weightage'] = 0.68 / top9_end
-
-        next11_end = min(n, top9_end + 11)
-        if next11_end > top9_end:
-            count = next11_end - top9_end
-            df_sorted.loc[top9_end:next11_end-1, 'weightage'] = 0.22 / count
-
-        remaining_start = next11_end
-        if remaining_start < n:
-            count = n - remaining_start
-            df_sorted.loc[remaining_start:, 'weightage'] = 0.1 / count
-
-        total_w = df_sorted['weightage'].sum()
-        if total_w > 0:
-            df_sorted['weightage'] /= total_w
-
-        return self._allocate_portfolio(df_sorted, sip_amount)
+        tiers = [(9, 0.68), (11, 0.22)]
+        df_with_weights = self._apply_tiered_allocation(df_sorted, tiers=tiers)
+        return self._allocate_portfolio(df_with_weights, sip_amount)
 
 # =====================================
 # NEW: ExtremeMomentumBlitz Strategy
@@ -2783,24 +2695,9 @@ class ExtremeMomentumBlitz(BaseStrategy):
         if n == 0:
             return pd.DataFrame()
 
-        top3_end = min(3, n)
-        df_sorted.loc[:top3_end-1, 'weightage'] = 0.85 / top3_end
-
-        next7_end = min(n, top3_end + 7)
-        if next7_end > top3_end:
-            count = next7_end - top3_end
-            df_sorted.loc[top3_end:next7_end-1, 'weightage'] = 0.10 / count
-
-        remaining_start = next7_end
-        if remaining_start < n:
-            count = n - remaining_start
-            df_sorted.loc[remaining_start:, 'weightage'] = 0.05 / count
-
-        total_w = df_sorted['weightage'].sum()
-        if total_w > 0:
-            df_sorted['weightage'] /= total_w
-
-        return self._allocate_portfolio(df_sorted, sip_amount)
+        tiers = [(3, 0.85), (7, 0.10)]
+        df_with_weights = self._apply_tiered_allocation(df_sorted, tiers=tiers)
+        return self._allocate_portfolio(df_with_weights, sip_amount)
 
 # =====================================
 # NEW: HyperAlphaIgniter Strategy
@@ -2865,27 +2762,9 @@ class HyperAlphaIgniter(BaseStrategy):
         if n == 0:
             return pd.DataFrame()
 
-        # Initialize weightage column
-        df_sorted['weightage'] = 0.0
-
-        top2_end = min(2, n)
-        df_sorted.loc[:top2_end-1, 'weightage'] = 0.82 / top2_end
-
-        next8_end = min(n, top2_end + 8)
-        if next8_end > top2_end:
-            count = next8_end - top2_end
-            df_sorted.loc[top2_end:next8_end-1, 'weightage'] = 0.12 / count
-
-        remaining_start = next8_end
-        if remaining_start < n:
-            count = n - remaining_start
-            df_sorted.loc[remaining_start:, 'weightage'] = 0.06 / count
-
-        total_w = df_sorted['weightage'].sum()
-        if total_w > 0:
-            df_sorted['weightage'] /= total_w
-
-        return self._allocate_portfolio(df_sorted, sip_amount)
+        tiers = [(2, 0.82), (8, 0.12)]
+        df_with_weights = self._apply_tiered_allocation(df_sorted, tiers=tiers)
+        return self._allocate_portfolio(df_with_weights, sip_amount)
 
 # =====================================
 # NEW: VelocityApocalypse Strategy
@@ -2940,24 +2819,9 @@ class VelocityApocalypse(BaseStrategy):
         if n == 0:
             return pd.DataFrame()
 
-        top2_end = min(2, n)
-        df_sorted.loc[:top2_end-1, 'weightage'] = 0.90 / top2_end
-
-        next3_end = min(n, top2_end + 3)
-        if next3_end > top2_end:
-            count = next3_end - top2_end
-            df_sorted.loc[top2_end:next3_end-1, 'weightage'] = 0.08 / count
-
-        remaining_start = next3_end
-        if remaining_start < n:
-            count = n - remaining_start
-            df_sorted.loc[remaining_start:, 'weightage'] = 0.02 / count
-
-        total_w = df_sorted['weightage'].sum()
-        if total_w > 0:
-            df_sorted['weightage'] /= total_w
-
-        return self._allocate_portfolio(df_sorted, sip_amount)
+        tiers = [(2, 0.90), (3, 0.08)]
+        df_with_weights = self._apply_tiered_allocation(df_sorted, tiers=tiers)
+        return self._allocate_portfolio(df_with_weights, sip_amount)
 
 # =====================================
 # NEW: QuantumMomentumLeap Strategy
@@ -3015,27 +2879,9 @@ class QuantumMomentumLeap(BaseStrategy):
         if n == 0:
             return pd.DataFrame()
 
-        # Initialize weightage column
-        df_sorted['weightage'] = 0.0
-
-        top4_end = min(4, n)
-        df_sorted.loc[:top4_end-1, 'weightage'] = 0.78 / top4_end
-
-        next5_end = min(n, top4_end + 5)
-        if next5_end > top4_end:
-            count = next5_end - top4_end
-            df_sorted.loc[top4_end:next5_end-1, 'weightage'] = 0.15 / count
-
-        remaining_start = next5_end
-        if remaining_start < n:
-            count = n - remaining_start
-            df_sorted.loc[remaining_start:, 'weightage'] = 0.07 / count
-
-        total_w = df_sorted['weightage'].sum()
-        if total_w > 0:
-            df_sorted['weightage'] /= total_w
-
-        return self._allocate_portfolio(df_sorted, sip_amount)
+        tiers = [(4, 0.78), (5, 0.15)]
+        df_with_weights = self._apply_tiered_allocation(df_sorted, tiers=tiers)
+        return self._allocate_portfolio(df_with_weights, sip_amount)
 
 class NebulaMomentumStorm(BaseStrategy):
     """
@@ -3087,27 +2933,9 @@ class NebulaMomentumStorm(BaseStrategy):
         if n == 0:
             return pd.DataFrame()
 
-        # Initialize weightage to float
-        df_sorted['weightage'] = 0.0
-
-        top1_end = min(1, n)
-        df_sorted.loc[:top1_end-1, 'weightage'] = 0.88 / top1_end
-
-        next4_end = min(n, top1_end + 4)
-        if next4_end > top1_end:
-            count = next4_end - top1_end
-            df_sorted.loc[top1_end:next4_end-1, 'weightage'] = 0.09 / count
-
-        remaining_start = next4_end
-        if remaining_start < n:
-            count = n - remaining_start
-            df_sorted.loc[remaining_start:, 'weightage'] = 0.03 / count
-
-        total_w = df_sorted['weightage'].sum()
-        if total_w > 0:
-            df_sorted['weightage'] /= total_w
-
-        return self._allocate_portfolio(df_sorted, sip_amount)
+        tiers = [(1, 0.88), (4, 0.09)]
+        df_with_weights = self._apply_tiered_allocation(df_sorted, tiers=tiers)
+        return self._allocate_portfolio(df_with_weights, sip_amount)
 
 # =====================================
 # NEW: ResonanceEcho Strategy
