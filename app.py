@@ -145,6 +145,127 @@ def create_export_link(data_bytes, filename):
     href = f'<a href="data:file/csv;base64,{b64}" download="{filename}" class="download-link">Download Portfolio CSV</a>'
     return href
 
+TRANSACTION_COST_BPS = 20
+
+def compute_portfolio_return(
+    portfolio: pd.DataFrame,
+    next_prices: pd.DataFrame,
+    is_rebalance: bool = False,
+    prev_portfolio: Optional[pd.DataFrame] = None,
+    current_prices: Optional[pd.DataFrame] = None,
+) -> float:
+    """Compute single-period portfolio return with turnover-proportional costs."""
+    if portfolio.empty or 'value' not in portfolio.columns or portfolio['value'].sum() == 0:
+        return 0.0
+    merged = portfolio.merge(next_prices[['symbol', 'price']], on='symbol', how='left', suffixes=('_prev', '_next'))
+    if merged.empty:
+        return 0.0
+    merged['price_next'] = merged['price_next'].fillna(merged['price_prev'])
+    safe_prev = np.where(merged['price_prev'] > 0, merged['price_prev'], 1e-10)
+    returns = (merged['price_next'] - safe_prev) / safe_prev
+    gross_return = float(np.average(returns, weights=merged['value']))
+
+    if is_rebalance and TRANSACTION_COST_BPS > 0:
+        if prev_portfolio is not None and not prev_portfolio.empty and 'value' in prev_portfolio.columns:
+            prices_df = current_prices if current_prices is not None else portfolio
+            drifted_prev = prev_portfolio.merge(prices_df[['symbol', 'price']], on='symbol', how='left')
+            drifted_prev['price_y'] = drifted_prev['price_y'].fillna(drifted_prev['price_x'])
+            drifted_prev['drifted_value'] = drifted_prev['units'] * drifted_prev['price_y']
+            
+            curr_total = portfolio['value'].sum()
+            prev_total = drifted_prev['drifted_value'].sum()
+            if curr_total > 0 and prev_total > 0:
+                curr_v = portfolio.set_index('symbol')['value']
+                prev_v = drifted_prev.set_index('symbol')['drifted_value']
+                all_symbols = curr_v.index.union(prev_v.index)
+                curr_vals = curr_v.reindex(all_symbols, fill_value=0.0)
+                prev_vals = prev_v.reindex(all_symbols, fill_value=0.0)
+                trade_value = float(np.abs(curr_vals - prev_vals).sum())
+                turnover = (trade_value / curr_total) / 2.0
+            else:
+                turnover = 1.0
+        else:
+            turnover = 1.0
+
+        gross_return -= turnover * TRANSACTION_COST_BPS / 10000.0
+    return gross_return
+
+def calculate_advanced_metrics(returns_with_dates: List[Dict]) -> Tuple[Dict, float]:
+    """Calculate comprehensive risk-adjusted performance metrics."""
+    default_metrics = {
+        'total_return': 0, 'annual_return': 0, 'volatility': 0,
+        'sharpe': 0, 'sortino': 0, 'max_drawdown': 0, 'calmar': 0,
+        'win_rate': 0, 'kelly_criterion': 0, 'omega_ratio': 1.0,
+        'tail_ratio': 1.0, 'gain_to_pain': 0, 'profit_factor': 1.0
+    }
+    if len(returns_with_dates) < 2:
+        return default_metrics, 52.0
+
+    returns_df = pd.DataFrame(returns_with_dates).sort_values('date').set_index('date')
+    date_range = returns_df.index
+    if hasattr(date_range, 'min') and hasattr(date_range, 'max'):
+        total_calendar_days = (date_range.max() - date_range.min()).days
+        if total_calendar_days > 0:
+            periods_per_year = len(date_range) * 365.25 / total_calendar_days
+        else:
+            periods_per_year = 52.0
+    else:
+        periods_per_year = 52.0
+    periods_per_year = float(np.clip(periods_per_year, 12, 365))
+
+    returns = returns_df['return'].values
+    core = compute_risk_metrics(returns, periods_per_year=periods_per_year)
+
+    r = np.asarray(returns, dtype=np.float64)
+    gains = r[r > 0]
+    losses = r[r < 0]
+    
+    total_gains = gains.sum() if len(gains) > 0 else 0
+    total_losses = abs(losses.sum()) if len(losses) > 0 else 0
+
+    mu = r.mean()
+    var = r.var()
+    if var > 1e-8:
+        std = np.sqrt(var)
+        z_scores = np.clip((r - mu) / std, -3.0, 3.0)
+        skewness = float(np.mean(z_scores ** 3))
+        base_kelly = mu / var
+        skew_penalty = max(0.0, 1.0 + (mu * skewness) / std)
+        kelly = base_kelly * skew_penalty
+    else:
+        kelly = 0.0
+    kelly = float(np.clip(kelly, -1, 1))
+
+    omega_ratio = total_gains / total_losses if total_losses > 0.0001 else (total_gains * 10 if total_gains > 0 else 1.0)
+    omega_ratio = float(np.clip(omega_ratio, 0, 50))
+    profit_factor = omega_ratio
+
+    upper_tail = np.percentile(r, 95) if len(r) >= 20 else r.max()
+    lower_tail = abs(np.percentile(r, 5)) if len(r) >= 20 else abs(r.min())
+    tail_ratio = upper_tail / lower_tail if lower_tail > 0.0001 else (10.0 if upper_tail > 0 else 1.0)
+    tail_ratio = float(np.clip(tail_ratio, 0, 20))
+
+    pain = abs(losses.sum()) if len(losses) > 0 else 0
+    gain_to_pain = r.sum() / pain if pain > 0.0001 else (r.sum() * 10 if r.sum() > 0 else 0)
+    gain_to_pain = float(np.clip(gain_to_pain, -20, 20))
+
+    metrics = {
+        'total_return': core['total_return'],
+        'annual_return': core['ann_return'],
+        'volatility': core['volatility'],
+        'sharpe': core['sharpe'],
+        'sortino': core['sortino'],
+        'max_drawdown': core['max_drawdown'],
+        'calmar': core['calmar'],
+        'win_rate': core['win_rate'],
+        'kelly_criterion': kelly,
+        'omega_ratio': omega_ratio,
+        'tail_ratio': tail_ratio,
+        'gain_to_pain': gain_to_pain,
+        'profit_factor': profit_factor,
+    }
+    return metrics, periods_per_year
+
 
 def calculate_strategy_weights(
     performance: Dict,
