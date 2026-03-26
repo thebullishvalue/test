@@ -785,7 +785,9 @@ def run_trigger_based_backtest(
                         buy_portfolio = strategy.generate_portfolio(df, capital)
                         
                         if not buy_portfolio.empty and 'value' in buy_portfolio.columns:
-                            total_investment += buy_portfolio['value'].sum()
+                            buy_value = buy_portfolio['value'].sum()
+                            cost = buy_value * (TRANSACTION_COST_BPS / 20000.0)
+                            total_investment += buy_value + cost
                             
                             for _, row in buy_portfolio.iterrows():
                                 sym = row['symbol']
@@ -2672,60 +2674,6 @@ if 'dynamic_strategies_cache' not in st.session_state:
 _dss_logger = logger.getChild("DynamicSelection")
 
 
-def _compute_backtest_metrics(daily_values: List[float], periods_per_year: float = 252.0) -> Dict[str, float]:
-    """
-    Compute performance metrics from daily portfolio values.
-    Returns realistic, unbounded metrics for proper comparison.
-    """
-    empty = {
-        'total_return': 0.0, 'ann_return': 0.0, 'volatility': 0.0,
-        'sharpe': 0.0, 'sortino': 0.0, 'calmar': 0.0,
-        'max_dd': 0.0, 'win_rate': 0.0,
-    }
-
-    if len(daily_values) < 5:
-        return empty
-
-    values = np.array(daily_values, dtype=np.float64)
-    if np.any(values <= 0) or np.any(~np.isfinite(values)):
-        return empty
-
-    initial, final = values[0], values[-1]
-
-    # Compute returns from value series
-    prev_values = values[:-1]
-    safe_prev = np.where(prev_values != 0, prev_values, 1e-10)
-    daily_returns = np.diff(values) / safe_prev
-    daily_returns = daily_returns[np.isfinite(daily_returns)]
-
-    if len(daily_returns) < 3:
-        return empty
-
-    # Pre-compute CAGR from value endpoints (more stable than compounding returns)
-    years = len(values) / periods_per_year
-    cagr = (final / initial) ** (1.0 / years) - 1.0 if years > 0 else 0.0
-    total_return = (final - initial) / initial
-
-    # Delegate to canonical implementation
-    core = compute_risk_metrics(
-        daily_returns,
-        periods_per_year=periods_per_year,
-        total_return=total_return,
-        ann_return=cagr,
-    )
-
-    return {
-        'total_return': core['total_return'],
-        'ann_return': core['ann_return'],
-        'volatility': core['volatility'],
-        'sharpe': core['sharpe'],
-        'sortino': core['sortino'],
-        'calmar': core['calmar'],
-        'max_dd': core['max_drawdown'],
-        'win_rate': core['win_rate'],
-    }
-
-
 def _run_dynamic_strategy_selection(
     historical_data: List[Tuple[datetime, pd.DataFrame]], 
     all_strategies: Dict[str, BaseStrategy],
@@ -2733,47 +2681,26 @@ def _run_dynamic_strategy_selection(
     progress_bar=None,
     status_text=None,
     trigger_df: Optional[pd.DataFrame] = None,
-    trigger_config: Optional[Dict] = None
+    trigger_config: Optional[Dict] = None,
 ) -> Tuple[Optional[List[str]], Dict[str, Dict]]:
     """
-    Backtest all strategies using TRIGGER-BASED methodology (aligned with backtest.py)
-    and select top 4 based on performance metrics.
-    
-    Selection Criteria:
-    - SIP Investment: Top 4 by Calmar Ratio (drawdown recovery)
-    - Swing Trading: Top 4 by Sortino Ratio (risk-adjusted returns)
-    
-    Trigger-Based Methodology:
-    - Buy when REL_BREADTH < buy_threshold
-    - Sell when REL_BREADTH >= sell_threshold (Swing mode only)
-    - SIP: Accumulate on each buy trigger
-    - Swing: Single position, hold until sell trigger
+    Backtest all strategies using the UnifiedBacktestEngine and select top 4.
+    This function is a high-level wrapper around the backtest_engine module,
+    replacing the previous internal backtesting logic.
     """
     
-    # ─────────────────────────────────────────────────────────────────────
-    # CONFIGURATION
-    # ─────────────────────────────────────────────────────────────────────
-    
+    # 1. Configuration
     is_sip = "SIP" in selected_style
-    metric_key = 'calmar' if is_sip else 'sortino'
-    metric_label = "Calmar" if is_sip else "Sortino"
+    mode = 'sip' if is_sip else 'swing'
     
-    # Get trigger configuration from TRIGGER_CONFIG or use provided
     if trigger_config is None:
         trigger_config = TRIGGER_CONFIG.get(selected_style, TRIGGER_CONFIG.get('SIP Investment', {}))
     
-    buy_threshold = trigger_config.get('buy_threshold', SIP_TRIGGER if is_sip else SWING_BUY_TRIGGER)
-    sell_threshold = trigger_config.get('sell_threshold', SWING_SELL_TRIGGER)
-    sell_enabled = trigger_config.get('sell_enabled', not is_sip)  # Swing = enabled, SIP = disabled
-    
     _dss_logger.info("=" * 70)
-    _dss_logger.info("DYNAMIC STRATEGY SELECTION (TRIGGER-BASED)")
+    _dss_logger.info("DYNAMIC STRATEGY SELECTION (via UnifiedBacktestEngine)")
     _dss_logger.info("=" * 70)
-    _dss_logger.info(f"Investment Style: {selected_style}")
-    _dss_logger.info(f"Selection Metric: {metric_label} Ratio")
-    _dss_logger.info(f"Trigger Mode: BUY < {buy_threshold} | SELL > {sell_threshold} (enabled={sell_enabled})")
+    _dss_logger.info(f"Investment Style: {selected_style} (mode: {mode})")
     
-    # Validation
     if not DYNAMIC_SELECTION_AVAILABLE:
         _dss_logger.warning("backtest_engine.py not available - using static selection")
         return None, {}
@@ -2781,356 +2708,74 @@ def _run_dynamic_strategy_selection(
     if not historical_data or len(historical_data) < 10:
         _dss_logger.warning(f"Insufficient data ({len(historical_data) if historical_data else 0} days) - using static selection")
         return None, {}
+        
+        
+    # 2. Initialize the Engine
+    # Capital is standardized for comparison during selection phase
+    engine = UnifiedBacktestEngine(capital=10_000_000) 
+    engine._historical_data = historical_data
+    engine._strategies = all_strategies
     
-    # Extract date range
-    date_start = historical_data[0][0]
-    date_end = historical_data[-1][0]
-    n_days = len(historical_data)
-    capital = 10_000_000
-    
-    _dss_logger.info(f"Backtest Period: {date_start.strftime('%Y-%m-%d')} to {date_end.strftime('%Y-%m-%d')} ({n_days} days)")
-    _dss_logger.info(f"Strategies to evaluate: {len(all_strategies)}")
-    _dss_logger.info("-" * 70)
-    
+    # 3. Run Backtest
     if status_text:
-        status_text.text(f"Building price matrix for {n_days} days...")
+        status_text.text(f"Running {mode} backtest on {len(all_strategies)} strategies...")
     
-    # ─────────────────────────────────────────────────────────────────────
-    # BUILD PRICE MATRIX & DATE INDEX
-    # ─────────────────────────────────────────────────────────────────────
+    backtest_results = engine.run_backtest(
+        mode=mode,
+        external_trigger_df=trigger_df,
+        buy_col='REL_BREADTH',
+        sell_col='REL_BREADTH',
+        buy_threshold=trigger_config.get('buy_threshold', 0.42),
+        sell_threshold=trigger_config.get('sell_threshold', 0.52),
+        progress_callback=lambda p, m: progress_bar.progress(0.25 + p * 0.35, text=m) if progress_bar else None
+    )
     
-    # Collect all symbols
-    all_symbols = set()
-    for _, df in historical_data:
-        all_symbols.update(df['symbol'].tolist())
-    all_symbols = sorted(all_symbols)
-    
-    # Build price matrix and date lookup
-    price_matrix = {}
-    date_to_df = {}
-    simulation_dates = []
-    
-    for date_obj, df in historical_data:
-        sim_date = date_obj.date() if hasattr(date_obj, 'date') else date_obj
-        simulation_dates.append(sim_date)
-        date_to_df[sim_date] = df
-    
-    for symbol in all_symbols:
-        prices = []
-        last_valid = np.nan
-        for _, df in historical_data:
-            sym_df = df[df['symbol'] == symbol]
-            if not sym_df.empty and 'price' in sym_df.columns:
-                price = sym_df['price'].iloc[0]
-                if pd.notna(price) and price > 0:
-                    last_valid = price
-            prices.append(last_valid)
-        price_matrix[symbol] = prices
-    
-    _dss_logger.info(f"Price matrix: {len(all_symbols)} symbols × {n_days} days")
-    
-    # ─────────────────────────────────────────────────────────────────────
-    # PREPARE TRIGGER MASKS (REL_BREADTH-based)
-    # ─────────────────────────────────────────────────────────────────────
-    
-    buy_dates_mask = [False] * n_days
-    sell_dates_mask = [False] * n_days
-    
-    if trigger_df is not None and not trigger_df.empty and 'REL_BREADTH' in trigger_df.columns:
-        _dss_logger.info("Using provided trigger data (REL_BREADTH)")
+    if not backtest_results:
+        _dss_logger.error("Backtest engine returned no results.")
+        return None, {}
         
-        # Ensure trigger_df index is date-comparable
-        if hasattr(trigger_df.index, 'date'):
-            trigger_date_map = {idx.date(): val for idx, val in trigger_df['REL_BREADTH'].items() if pd.notna(val)}
-        else:
-            trigger_date_map = {pd.to_datetime(idx).date(): val for idx, val in trigger_df['REL_BREADTH'].items() if pd.notna(val)}
-        
-        # Build masks
-        for i, sim_date in enumerate(simulation_dates):
-            if sim_date in trigger_date_map:
-                rel_breadth = trigger_date_map[sim_date]
-                if rel_breadth < buy_threshold:
-                    buy_dates_mask[i] = True
-                if sell_enabled and rel_breadth >= sell_threshold:
-                    sell_dates_mask[i] = True
-        
-        _dss_logger.info(f"  Buy triggers: {sum(buy_dates_mask)} days | Sell triggers: {sum(sell_dates_mask)} days")
-    else:
-        # Fallback: Use first day as entry (simple hold)
-        _dss_logger.warning("No trigger data - using first-day entry fallback")
-        buy_dates_mask[0] = True
-    
-    # ─────────────────────────────────────────────────────────────────────
-    # BACKTEST EACH STRATEGY (TRIGGER-BASED)
-    # ─────────────────────────────────────────────────────────────────────
-    
-    _dss_logger.info("-" * 70)
-    _dss_logger.info("BACKTESTING STRATEGIES (TRIGGER-BASED)")
-    _dss_logger.info("-" * 70)
-    
-    results = {}
-    valid_strategies = []
-    
-    for idx, (name, strategy) in enumerate(all_strategies.items()):
-        
-        if progress_bar:
-            pct = 0.25 + (idx / len(all_strategies)) * 0.35
-            progress_bar.progress(pct, text=f"Backtesting: {name}")
-        
-        if status_text:
-            status_text.text(f"Testing: {name} ({idx+1}/{len(all_strategies)})")
-        
-        try:
-            daily_values = []
-            portfolio_units = {}
-            buy_signal_active = False
-            trade_log = []
-            
-            if is_sip:
-                # ─────────────────────────────────────────────────────────
-                # SIP MODE: Accumulate on each buy trigger, track TWR
-                # ─────────────────────────────────────────────────────────
-                # Uses Time-Weighted Return (NAV-index) methodology to
-                # measure pure investment performance independent of 
-                # capital injection effects. Same approach as mutual fund NAV.
-                nav_index = 1.0
-                prev_portfolio_value = 0.0
-                has_position = False
-                sip_amount = capital  # Each SIP installment
-                
-                for j, sim_date in enumerate(simulation_dates):
-                    df = date_to_df[sim_date]
-                    prices_today = df.set_index('symbol')['price']
-                    
-                    # Step 1: Compute current value of EXISTING holdings
-                    current_value = 0.0
-                    if portfolio_units:
-                        current_value = sum(
-                            units * prices_today.get(sym, 0)
-                            for sym, units in portfolio_units.items()
-                        )
-                    
-                    # Step 2: Update NAV based on market movement BEFORE any new investment
-                    if has_position and prev_portfolio_value > 0:
-                        day_return = (current_value - prev_portfolio_value) / prev_portfolio_value
-                        nav_index *= (1 + day_return)
-                    
-                    # Step 3: Check buy/sell triggers
-                    is_buy_day = buy_dates_mask[j]
-                    actual_buy_trigger = is_buy_day and not buy_signal_active
-                    
-                    if is_buy_day:
-                        buy_signal_active = True
-                    else:
-                        buy_signal_active = False
-                    
-                    # Sell (SIP rarely sells, but support it)
-                    if sell_dates_mask[j] and portfolio_units and sell_enabled:
-                        trade_log.append({'Event': 'SELL', 'Date': sim_date})
-                        portfolio_units = {}
-                        has_position = False
-                        current_value = 0.0
-                    
-                    # Step 4: Execute SIP buy (does NOT affect nav_index — TWR principle)
-                    if actual_buy_trigger:
-                        trade_log.append({'Event': 'BUY', 'Date': sim_date})
-                        buy_portfolio = strategy.generate_portfolio(df, sip_amount)
-                        
-                        if buy_portfolio is not None and not buy_portfolio.empty and 'value' in buy_portfolio.columns:
-                            for _, row in buy_portfolio.iterrows():
-                                sym = row['symbol']
-                                units = row.get('units', 0)
-                                if units > 0:
-                                    portfolio_units[sym] = portfolio_units.get(sym, 0) + units
-                            has_position = True
-                            
-                            # Recalculate value after addition for next day's return base
-                            current_value = sum(
-                                units * prices_today.get(sym, 0)
-                                for sym, units in portfolio_units.items()
-                            )
-                    
-                    prev_portfolio_value = current_value
-                    daily_values.append(nav_index)
-            
-            else:
-                # ─────────────────────────────────────────────────────────
-                # SWING MODE: Single position, hold until sell trigger
-                # ─────────────────────────────────────────────────────────
-                current_capital = capital
-                
-                for j, sim_date in enumerate(simulation_dates):
-                    df = date_to_df[sim_date]
-                    
-                    is_buy_day = buy_dates_mask[j]
-                    actual_buy_trigger = is_buy_day and not buy_signal_active
-                    
-                    if is_buy_day:
-                        buy_signal_active = True
-                    else:
-                        buy_signal_active = False
-                    
-                    # Check sell trigger
-                    if sell_dates_mask[j] and portfolio_units:
-                        trade_log.append({'Event': 'SELL', 'Date': sim_date})
-                        prices_today = df.set_index('symbol')['price']
-                        sell_value = sum(
-                            units * prices_today.get(sym, 0)
-                            for sym, units in portfolio_units.items()
-                        )
-                        current_capital += sell_value
-                        portfolio_units = {}
-                        buy_signal_active = False
-                    
-                    # Execute buy (only if no position)
-                    if actual_buy_trigger and not portfolio_units and current_capital > 1000:
-                        trade_log.append({'Event': 'BUY', 'Date': sim_date})
-                        buy_portfolio = strategy.generate_portfolio(df, current_capital)
-                        
-                        if buy_portfolio is not None and not buy_portfolio.empty and 'units' in buy_portfolio.columns:
-                            portfolio_units = pd.Series(
-                                buy_portfolio['units'].values,
-                                index=buy_portfolio['symbol']
-                            ).to_dict()
-                            current_capital -= buy_portfolio['value'].sum()
-                    
-                    # Calculate current value
-                    portfolio_value = 0
-                    if portfolio_units:
-                        prices_today = df.set_index('symbol')['price']
-                        portfolio_value = sum(
-                            units * prices_today.get(sym, 0)
-                            for sym, units in portfolio_units.items()
-                        )
-                    
-                    daily_values.append(portfolio_value + current_capital)
-            
-            # ─────────────────────────────────────────────────────────
-            # COMPUTE METRICS
-            # ─────────────────────────────────────────────────────────
-            
-            if len(daily_values) < 10 or daily_values[0] <= 0:
-                _dss_logger.debug(f"  {name}: Invalid daily values - SKIP")
-                results[name] = {'status': 'skip', 'reason': 'Invalid values'}
-                continue
-            
-            # Compute metrics
-            metrics = _compute_backtest_metrics(daily_values)
-            
-            total_ret = metrics['total_return']
-            max_dd = metrics['max_dd']
-            sharpe = metrics['sharpe']
-            sortino = metrics['sortino']
-            calmar = metrics['calmar']
-            score = metrics[metric_key]
-            
-            # Add trade info
-            metrics['buy_events'] = len([t for t in trade_log if t['Event'] == 'BUY'])
-            metrics['sell_events'] = len([t for t in trade_log if t['Event'] == 'SELL'])
-            metrics['trade_events'] = len(trade_log)
-            
-            # Validate score
-            if not np.isfinite(score):
-                _dss_logger.debug(f"  {name}: Invalid {metric_key} ({score}) - SKIP")
-                results[name] = {'status': 'skip', 'reason': f'Invalid {metric_key}'}
-                continue
-            
-            # Store results
-            results[name] = {
-                'status': 'ok',
-                'metrics': metrics,
-                'score': score,
-                'positions': len(portfolio_units) if portfolio_units else 0,
-                'trade_log': trade_log,
-                'daily_values': daily_values,
-            }
-            valid_strategies.append((name, score, metrics))
-            
-            # Log result
-            _dss_logger.info(
-                f"  {name:<28} │ Ret: {total_ret:>+6.1%} │ MaxDD: {max_dd:>+6.1%} │ "
-                f"Sharpe: {sharpe:>+5.2f} │ Sortino: {sortino:>+6.2f} │ Calmar: {calmar:>+6.2f} │ Trades: {len(trade_log)}"
-            )
-            
-        except Exception as e:
-            _dss_logger.error(f"  {name}: Error - {str(e)[:50]}")
-            results[name] = {'status': 'error', 'reason': str(e)}
-            continue
-    
-    # ─────────────────────────────────────────────────────────────────────
-    # SELECT TOP 4
-    # ─────────────────────────────────────────────────────────────────────
-    
-    _dss_logger.info("-" * 70)
-    _dss_logger.info(f"SELECTION BY {metric_label.upper()} RATIO ({selected_style})")
-    _dss_logger.info("-" * 70)
-    
-    if len(valid_strategies) < 4:
-        _dss_logger.warning(f"Only {len(valid_strategies)} valid strategies (need 4) - using static selection")
-        return None, results
-    
-    # Sort by score
-    valid_strategies.sort(key=lambda x: x[1], reverse=True)
-
-    # Select top 4 with RMT redundancy filter (spectral independence)
-    ranked_pairs = [(name, score) for name, score, _ in valid_strategies]
-    selected = None
-    try:
-        from rmt_core import detect_redundant_strategies, greedy_diversified_select
-
-        # Build returns dict from daily_values stored in results
-        returns_dict = {}
-        for name, score, metrics in valid_strategies:
-            res = results.get(name, {})
-            if res.get('status') == 'ok' and 'metrics' in res:
-                # Reconstruct returns from daily_values if available
-                daily_vals = res.get('daily_values')
-                if daily_vals and len(daily_vals) >= 20:
-                    vals = np.array(daily_vals, dtype=float)
-                    rets = np.diff(vals) / np.where(vals[:-1] != 0, vals[:-1], 1e-10)
-                    rets = np.nan_to_num(rets, nan=0.0, posinf=0.0, neginf=0.0)
-                    returns_dict[name] = rets
-
-        if len(returns_dict) >= 4:
-            redundancy = detect_redundant_strategies(returns_dict)
-            if redundancy.get('cleaned_corr') is not None and redundancy.get('diagnostics') is not None:
-                selected = greedy_diversified_select(
-                    ranked_pairs,
-                    redundancy['cleaned_corr'],
-                    redundancy['strategy_names'],
-                    n_select=4,
-                    max_correlation=0.7,
-                )
-                eff_count = redundancy['effective_strategy_count']
-                noise_frac = redundancy['noise_fraction']
-                _dss_logger.info(
-                    f"  RMT diversified selection applied "
-                    f"(effective={eff_count:.1f}, noise={noise_frac:.1%})"
-                )
-    except Exception as e:
-        _dss_logger.debug(f"  RMT diversification unavailable: {e}")
-
-    # Fallback: pure metric-based selection
-    if not selected:
-        top_4 = valid_strategies[:4]
-        selected = [name for name, _, _ in top_4]
-
-    # Log rankings
-    for rank, (name, score, metrics) in enumerate(valid_strategies, 1):
-        marker = ">>>" if name in selected else "   "
-        status = "[SELECTED]" if name in selected else ""
-        ret = metrics['total_return']
-        trades = metrics.get('trade_events', 0)
-        _dss_logger.info(f"  {marker} #{rank:<2} {name:<28} │ {metric_label}: {score:>+7.2f} │ Return: {ret:>+6.1%} │ Trades: {trades} {status}")
-
-    _dss_logger.info("-" * 70)
-    _dss_logger.info(f"SELECTED: {', '.join(selected)}")
-    _dss_logger.info("=" * 70)
-    
+    # 4. Select Top Strategies
     if status_text:
-        status_text.text(f"Selected: {', '.join(selected)}")
+        status_text.text("Selecting top strategies...")
+        
+    selected_strategies = engine.select_top_strategies(
+        results=backtest_results,
+        mode=mode,
+        n_strategies=4,
+        diversify=True # Use RMT diversification
+    )
     
-    return selected, results
+    # 5. Format results for UI compatibility
+    # The UI expects a specific format for the metrics dictionary.
+    formatted_results = {}
+    for name, data in backtest_results.items():
+        if name.startswith('__'): continue
+        
+        metrics = data.get('metrics', {})
+        
+        # Remap keys to match what the UI expects in _render_backtest_data
+        ui_metrics = {
+            'total_return': metrics.get('total_return', 0.0),
+            'ann_return': metrics.get('annualized_return', 0.0),
+            'volatility': metrics.get('volatility', 0.0),
+            'sharpe': metrics.get('sharpe_ratio', 0.0),
+            'sortino': metrics.get('sortino_ratio', 0.0),
+            'calmar': metrics.get('calmar_ratio', 0.0),
+            'max_dd': metrics.get('max_drawdown', 0.0),
+            'win_rate': metrics.get('win_rate', 0.0),
+            'trade_events': metrics.get('trade_events', 0),
+            'buy_events': metrics.get('buy_events', 0),
+        }
+        
+        formatted_results[name] = {
+            'status': 'ok',
+            'metrics': ui_metrics,
+            'daily_data': data.get('daily_data')
+        }
+
+    _dss_logger.info(f"SELECTED (dynamic): {', '.join(selected_strategies)}")
+    
+    return selected_strategies, formatted_results
 
 
 # --- Main Application ---

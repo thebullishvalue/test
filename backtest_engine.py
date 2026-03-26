@@ -647,6 +647,7 @@ class UnifiedBacktestEngine:
         portfolio_units = {}
         buy_signal_active = False
         current_capital = self.capital
+        trade_log = []
         
         for j, (date, df) in enumerate(self._historical_data):
             is_buy_day = buy_mask[j]
@@ -659,6 +660,7 @@ class UnifiedBacktestEngine:
             
             # Sell Logic
             if sell_mask[j] and portfolio_units:
+                trade_log.append({'Event': 'SELL', 'Date': date})
                 prices_today = df.set_index('symbol')['price']
                 sell_value = sum(
                     units * prices_today.get(symbol, 0)
@@ -672,6 +674,7 @@ class UnifiedBacktestEngine:
             
             # Buy Logic
             if actual_buy_trigger and not portfolio_units and current_capital > 1000:
+                trade_log.append({'Event': 'BUY', 'Date': date})
                 try:
                     buy_portfolio = strategy.generate_portfolio(df, current_capital)
                     if not buy_portfolio.empty and 'units' in buy_portfolio.columns:
@@ -706,6 +709,7 @@ class UnifiedBacktestEngine:
         
         daily_df = pd.DataFrame(daily_values)
         metrics = PerformanceMetrics.calculate(daily_df, self.risk_free_rate)
+        metrics['trade_events'] = len(trade_log)
         
         return metrics, daily_df
     
@@ -722,6 +726,7 @@ class UnifiedBacktestEngine:
         portfolio_units = {}
         daily_values = []
         nav_history = []
+        trade_log = []
         buy_signal_active = False
         
         for j, (date, df) in enumerate(self._historical_data):
@@ -749,6 +754,7 @@ class UnifiedBacktestEngine:
                 buy_signal_active = False
 
             if actual_buy_trigger:
+                trade_log.append({'Event': 'BUY', 'Date': date})
                 try:
                     buy_portfolio = strategy.generate_portfolio(df, sip_amount)
                     if not buy_portfolio.empty and 'units' in buy_portfolio.columns:
@@ -819,6 +825,7 @@ class UnifiedBacktestEngine:
             'trading_days': len(nav_history),
             'final_value': daily_df['value'].iloc[-1]
         }
+        mapped_metrics['buy_events'] = len([t for t in trade_log if t['Event'] == 'BUY'])
         
         return mapped_metrics, daily_df
     

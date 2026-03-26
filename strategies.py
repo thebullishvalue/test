@@ -3214,6 +3214,21 @@ class DivergenceMirage(BaseStrategy):
 
         return self._allocate_portfolio(df, sip_amount)
 
+
+class ButterflyChaos(BaseStrategy):
+    """
+    ButterflyChaos: Chaotic Butterfly Effects in Momentum.
+    - Paradigm: Chaos theory lens – tiny 'butterfly wings' (small indicator perturbations) flap into massive alpha hurricanes; quantify Lyapunov-like sensitivity for explosive momentum.
+    - Innovation: Perturbation divergence ratio between daily/weekly for chaos exponent.
+    - Weighting: Chaos sensitivity scores for turbulent allocation.
+    """
+    def generate_portfolio(self, df: pd.DataFrame, sip_amount: float = 100000.0) -> pd.DataFrame:
+        required_columns = [
+            'symbol', 'price', 'osc latest', 'osc weekly', 'rsi latest', 'rsi weekly',
+            '9ema osc latest', 'zscore latest'
+        ]
+        df = self._clean_data(df, required_columns)
+
 # =====================================
 # NEW: FractalWhisper Strategy
 # =====================================
@@ -3231,14 +3246,17 @@ class FractalWhisper(BaseStrategy):
         ]
         df = self._clean_data(df, required_columns)
 
-        # 1. Pseudo-Hurst Exponent (Fractal persistence approx)
-        # Simple R/S on log-returns proxy via indicators
-        log_rsi = np.log(df['rsi latest'] + 1)
-        rs_rsi = (log_rsi.max() - log_rsi.min()) / (log_rsi.std() + 1e-6) if len(df) > 1 else 0.5
-        log_osc = np.log(np.abs(df['osc latest']) + 1)
-        rs_osc = (log_osc.max() - log_osc.min()) / (log_osc.std() + 1e-6) if len(df) > 1 else 0.5
-        hurst_approx = np.log((rs_rsi + rs_osc) / 2) / np.log(len(df)) if len(df) > 1 else 0.5
-        df['hurst_persist'] = np.clip(hurst_approx + 0.5, 0.2, 1.8)  # Broadcast scalar
+        # 1. Cross-Sectional Persistence (Replaces flawed Hurst Exponent)
+        # The original 'Hurst' calculation was a misapplication of a time-series concept
+        # to cross-sectional data. It was effectively measuring dispersion. We replace
+        # it with a robust, explicit measure of cross-sectional persistence:
+        # (1 - std_dev_of_ranks). High dispersion means low persistence.
+        rsi_ranks = df['rsi latest'].rank(pct=True)
+        osc_ranks = df['osc latest'].rank(pct=True)
+        rsi_persistence = 1.0 - rsi_ranks.std()
+        osc_persistence = 1.0 - osc_ranks.std()
+        avg_persistence = (rsi_persistence + osc_persistence) / 2.0
+        df['fractal_persist'] = np.clip(avg_persistence * 2.0, 0.5, 1.5)
 
         # 2. Self-Similarity Whisper (Scale match daily-weekly)
         scale_match = np.abs((df['dev20 latest'] / df['price']) - (df['dev20 weekly'] / df['price'])) < 0.01
@@ -3246,11 +3264,11 @@ class FractalWhisper(BaseStrategy):
         df['whisper_sim'] = whisper
 
         # 3. Fractal Edge (Persistence in trends)
-        edge = np.where(df['price'] > df['ma90 latest'], df['hurst_persist'] * 1.7, df['hurst_persist'] * 0.6)
+        edge = np.where(df['price'] > df['ma90 latest'], df['fractal_persist'] * 1.7, df['fractal_persist'] * 0.6)
         df['fractal_edge'] = edge
 
         # 4. Composite Whisper Score
-        df['whisper_score'] = df['hurst_persist'] * df['whisper_sim'] * df['fractal_edge']
+        df['whisper_score'] = df['fractal_persist'] * df['whisper_sim'] * df['fractal_edge']
 
         df['whisper_score'] = np.maximum(df['whisper_score'], 0.01)
 
@@ -3412,34 +3430,17 @@ class EntangledMomentum(BaseStrategy):
 
         return self._allocate_portfolio(df, sip_amount)
 
-# =====================================
-# NEW: ButterflyChaos Strategy
-# =====================================
-class ButterflyChaos(BaseStrategy):
-    """
-    ButterflyChaos: Chaotic Butterfly Effects in Momentum.
-    - Paradigm: Chaos theory lens – tiny 'butterfly wings' (small indicator perturbations) flap into massive alpha hurricanes; quantify Lyapunov-like sensitivity for explosive momentum.
-    - Innovation: Perturbation divergence ratio between daily/weekly for chaos exponent.
-    - Weighting: Chaos sensitivity scores for turbulent allocation.
-    """
-    def generate_portfolio(self, df: pd.DataFrame, sip_amount: float = 100000.0) -> pd.DataFrame:
-        required_columns = [
-            'symbol', 'price', 'osc latest', 'osc weekly', 'rsi latest', 'rsi weekly',
-            '9ema osc latest', 'zscore latest'
-        ]
-        df = self._clean_data(df, required_columns)
-
         # 1. Perturbation Wings (Small diffs)
         wings_osc = np.abs(df['osc latest'] - df['osc weekly']) / (np.abs(df['osc weekly']) + 1e-6)
         wings_rsi = np.abs(df['rsi latest'] - df['rsi weekly']) / 50
         df['wings'] = (wings_osc + wings_rsi) / 2 * 2.0
 
         # 2. Divergence Exponent (Chaos sensitivity)
-        if len(df) > 1:
-            div_exp = np.log(1 + df['wings'].std() * 10) / np.log(len(df))
-        else:
-            div_exp = 0.6
-        df['chaos_exp'] = np.clip(div_exp + 0.5, 0.3, 2.2)
+        # The original formula incorrectly used np.log(len(df)), a time-series concept,
+        # on cross-sectional data. We replace it with a direct, scaled measure of
+        # the cross-sectional dispersion of these divergences.
+        chaos_sensitivity = df['wings'].std()
+        df['chaos_exp'] = np.clip(1.0 + chaos_sensitivity * 5.0, 0.5, 2.5)
 
         # 3. Hurricane Potential (Perturb in positive direction)
         hurri = np.where(df['9ema osc latest'] > 0, df['wings'] * df['chaos_exp'] * 2.8, df['wings'] * 0.7)
