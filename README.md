@@ -1,418 +1,330 @@
-# PRAGYAM (प्रज्ञम्)
+# PRAGYAM (प्रज्ञम) — Portfolio Intelligence
 
-<div align="center">
+**Version:** 7.0.5
+**Author:** @thebullishvalue
+**License:** Proprietary (See LICENSE file)
 
-![Version](https://img.shields.io/badge/version-3.7.0-gold)
-![Python](https://img.shields.io/badge/python-3.10+-blue)
-![License](https://img.shields.io/badge/license-Proprietary-red)
-![Status](https://img.shields.io/badge/status-Production-green)
+Conviction-based portfolio curation for Indian equity markets using 80+ quantitative strategies.
 
-**Institutional-Grade Portfolio Intelligence System**
-
-*Walk-forward portfolio curation with regime-aware strategy allocation*
-
-[Features](#features) • [Installation](#installation) • [Quick Start](#quick-start) • [Documentation](#documentation) • [Architecture](#architecture)
-
----
-
-<img src="https://img.shields.io/badge/Hemrek_Capital-FFC300?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iIzBGMEYwRiIgZD0iTTEyIDJMMiA3bDEwIDUgMTAtNS0xMC01ek0yIDE3bDEwIDUgMTAtNS0xMC01LTEwIDV6Ii8+PC9zdmc+" alt="Hemrek Capital"/>
-
-</div>
+**Latest:** v7.0.5 — Production hardening, dead code removal, and refined terminal logging.
 
 ---
 
 ## Overview
 
-**Pragyam** (Sanskrit: प्रज्ञम् - "Wisdom/Intelligence") is a hedge fund-grade portfolio intelligence platform designed for systematic equity investing in Indian markets. It combines 96 quantitative strategies with RMT-based spectral analysis, regime detection, and dynamic allocation to deliver institutional-quality portfolio construction.
+PRAGYAM uses a **pure conviction-based approach** to portfolio construction:
 
-### Key Differentiators
+1. **All 80+ strategies run** — Every strategy generates candidate holdings
+2. **Conviction scoring** — Each symbol scored 0-100 using 4 technical signals
+3. **Top 30 selection** — Highest conviction scores selected
+4. **Simple weighting** — `weight = (conviction / total) × 100`
 
-| Feature | Description |
-|---------|-------------|
-| **Multi-Strategy Engine** | 96 unique alpha-generating strategies spanning momentum, mean-reversion, volatility, and factor-based approaches |
-| **Spectral Signal-Noise Separation** | Random Matrix Theory (Marchenko-Pastur) identifies which correlations are real signal vs statistical noise — the system knows its own noise floor |
-| **Strategy Factor Decomposition** | RMT-based dimensionality reduction projects 60+ correlated strategies onto their true independent factors above the Marchenko-Pastur threshold |
-| **Hierarchical Risk Parity** | Default allocation via Lopez de Prado (2016) dendrogram-based HRP — avoids covariance inversion, robust to estimation error |
-| **Regime-Aware Allocation** | Real-time market regime detection adjusts strategy weights based on momentum, trend, breadth, volatility, and spectral correlation structure |
-| **SPRT Regime Triggers** | Optional Sequential Probability Ratio Test (Wald, 1945) for evidence-accumulating regime change detection — replaces fixed-threshold triggers |
-| **Conformal Prediction Intervals** | Distribution-free 90% coverage guarantee on next-period strategy returns (Vovk et al., 2005) |
-| **Hedge Fund Analytics** | Institutional metrics including Sharpe, Sortino, Calmar, Omega, CVaR, absorption ratio, effective rank, and diversification ratio |
-| **Tier-Based Construction** | Position sizing via conviction tiers with turnover-proportional transaction cost modeling |
+**Execution time:** ~20-40 seconds (10x faster than v6.0.0)
 
 ---
 
 ## Features
 
-### 📊 Portfolio Intelligence
-- **Walk-Forward Backtesting**: Expanding window out-of-sample validation with embargo gaps, turnover-proportional transaction costs, and Modified Dietz TWR
-- **Strategy Factor Decomposition**: RMT projects 60+ strategies onto true independent factors — reveals how many bets you actually have
-- **Conformal Prediction Intervals**: Locally adaptive heteroskedastic 90% coverage bounds on next-period returns (no normality assumption)
-- **Strategy Attribution**: Decompose returns by strategy, tier, and time period
-- **Correlation Analysis**: Inter-strategy correlation monitoring with RMT-cleaned matrices
-- **Weight Evolution**: Track how strategy allocations change through market regimes
-- **Spectral Analysis**: Eigenvalue distribution vs Marchenko-Pastur overlay, absorption ratio tracking, factor loading decomposition
-
-### 🎯 Strategy Universe
-- **Momentum Strategies**: RSI, MACD, Rate of Change, Acceleration
-- **Mean-Reversion**: Bollinger Bands, Z-Score, Kalman Filter
-- **Volatility**: ATR-based, Regime-switching, Breakout detection
-- **Factor-Based**: Value-momentum blends, Quality scores, Size tilts
-- **Advanced**: HMM-based, Wavelet denoising, Copula blending
-
-### 📈 Risk Analytics
-- **Core Metrics**: CAGR, Volatility, Maximum Drawdown, Win Rate
-- **Risk-Adjusted**: Sharpe, Sortino, Calmar, Omega, Information Ratio
-- **Tail Risk**: VaR (95/99), CVaR, Expected Shortfall, Tail Ratio
-- **Statistical**: Bootstrap CI, Lo(2002) Sharpe SE, Jarque-Bera normality
-
-### 🔄 Regime Detection
-- **Momentum Regime**: RSI breadth, momentum persistence scoring
-- **Trend Regime**: 200-DMA positioning, trend quality metrics (Theil-Sen robust estimation)
-- **Volatility Regime**: Bollinger Band Width (with near-zero guard), ATR percentile ranking
-- **Breadth Regime**: Advance-decline analysis, sector rotation signals (separated from momentum)
-- **Correlation Regime**: Spectral absorption ratio from eigendecomposition — detects systemic herding vs healthy dispersion
-- **SPRT Triggers**: Optional evidence-accumulating regime detection via Sequential Probability Ratio Test (Wald, 1945)
+| Feature | Description |
+|---------|-------------|
+| **Conviction Scoring** | 4 signals: RSI (30%), Oscillator (30%), Z-Score (20%), MA Alignment (20%) |
+| **All Strategies** | 80+ quantitative strategies contribute candidates |
+| **Simple Formula** | `weight_i = (conviction_score_i / Σ all_conviction_scores) × 100` |
+| **Position Bounds** | 1% minimum, 10% maximum per position |
+| **Regime Detection** | 7-factor market regime analysis (display only) |
+| **Live Data** | Real-time NSE data via yfinance |
 
 ---
 
 ## Installation
 
-### Prerequisites
-- Python 3.10 or higher
-- pip package manager
-
-### Setup
-
 ```bash
-# Clone the repository
-git clone https://github.com/hemrek/pragyam.git
-cd pragyam
-
-# Create virtual environment (recommended)
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# Clone repository
+git clone <repository-url>
+cd Pragyam-02.01
 
 # Install dependencies
 pip install -r requirements.txt
 ```
 
-### Dependencies
+### Requirements
 
-```
-streamlit>=1.28.0
-pandas>=2.0.0
-numpy>=1.24.0
-plotly>=5.18.0
-yfinance>=0.2.28
-scipy>=1.11.0
-scikit-learn>=1.3.0
-```
+- Python 3.10+
+- streamlit>=1.28.0
+- pandas>=2.0.0
+- numpy>=1.24.0
+- plotly>=5.18.0
+- yfinance>=0.2.28
+- scipy>=1.11.0
+- colorama>=0.4.6
+
+**Note:** `scikit-learn` and `matplotlib` removed as dependencies in v7.0.0 (no longer needed).
 
 ---
 
-## Quick Start
+## Usage
 
-### Running Locally
+### 1. Configure Symbols
+
+Edit `symbols.txt` with your universe of NSE stocks (one symbol per line):
+
+```
+RELIANCE.NS
+TCS.NS
+INFY.NS
+HDFCBANK.NS
+ICICIBANK.NS
+```
+
+### 2. Run Application
 
 ```bash
 streamlit run app.py
 ```
 
-The application will be available at `http://localhost:8501`
+### 3. Use the Interface
 
-### Streamlit Cloud Deployment
+1. **Select Analysis Date** — Choose the date for portfolio curation
+2. **Set Investment Style** — Swing Trading or SIP Investment (UI option, legacy feature)
+3. **Configure Parameters:**
+   - Capital (₹) — Total capital to deploy (default: ₹2,500,000)
+   - Number of Positions — Holdings in final portfolio (default: 30, range: 5-100)
+   - Min/Max Position Weight — Bounds for individual positions (1%-10% default)
+4. **Click "Run Analysis"**
 
-1. Push to GitHub repository
-2. Connect to [Streamlit Cloud](https://share.streamlit.io)
-3. Deploy with `app.py` as the main file
+### 4. Review Results
 
-### Basic Usage
+- **Tab 1: Portfolio** — Holdings with conviction signals and position guide
+- **Tab 2: Performance** — Methodology explanation (walk-forward removed in v7.0.0)
+- **Tab 3: Regime** — Market regime analysis (7-factor composite)
+- **Tab 4: System** — Technical details and configuration
 
-1. **Select Analysis Date**: Choose the portfolio construction date
-2. **Choose Mode**: SIP (accumulation) or Swing (trading)
-3. **Set Lookback**: Historical period for strategy evaluation
-4. **Run Analysis**: Generate curated portfolio with full analytics
+---
+
+## Conviction Scoring Formula
+
+### Signal Components
+
+| Signal | Weight | Calculation |
+|--------|--------|-------------|
+| **RSI** | 30% | >60: +2, >52: +1, <48: -1, <40: -2 |
+| **Oscillator** | 30% | >EMA9 & >0: +2, >EMA9: +1, <EMA9 & <0: -2, else: -1 |
+| **Z-Score** | 20% | <-2: +2, <-1: +1, >2: -2, >1: -1 |
+| **MA Alignment** | 20% | Count of 5 bullish conditions (0-5 scaled to -2 to +2) |
+
+### Composite Score
+
+```python
+raw = (RSI_signal × 0.30 +
+       OSC_signal × 0.30 +
+       Z-Score_signal × 0.20 +
+       MA_signal × 0.20)
+
+# Normalize to 0-100 scale
+conviction_score = (raw + 2) / 4 × 100
+```
+
+### Conviction Dispersion Weighting (v7.0.5)
+
+Style-aware dispersion weighting automatically adjusts based on investment style:
+
+| Style | Boost (Above Median) | Penalty (Below Median) | Top Pick Advantage |
+|-------|---------------------|------------------------|-------------------|
+| **SIP Investment** | +125% (×2.25) | -50% (×0.50) | ~350% more weight |
+| **Swing Trading** | +225% (×3.25) | -75% (×0.25) | ~1200% more weight |
+
+```python
+# SIP Mode (conservative concentration)
+if conviction_score > median:
+    adjusted_score = conviction_score × 2.25  # +125% boost
+else:
+    adjusted_score = conviction_score × 0.50  # -50% penalty
+
+# Swing Mode (aggressive concentration, 2σ more)
+if conviction_score > median:
+    adjusted_score = conviction_score × 3.25  # +225% boost
+else:
+    adjusted_score = conviction_score × 0.25  # -75% penalty
+
+weight_i = (adjusted_conviction_i / Σ all_adjusted_conviction) × 100
+```
+
+**Effect:** 
+- SIP: Strong concentration in high-conviction picks (~350% tilt)
+- Swing: Very aggressive concentration (~1200% tilt) — maximum alpha capture
+
+### Portfolio Weighting
+
+```python
+# For top 30 positions by conviction score
+weight_i = (adjusted_conviction_i / Σ all_adjusted_conviction) × 100
+
+# Apply bounds: 1% ≤ weight_i ≤ 10%
+```
 
 ---
 
 ## Architecture
 
 ```
-pragyam/
-├── app.py                      # Main Streamlit application & portfolio curation
-├── rmt_core.py                 # Random Matrix Theory spectral engine (Marchenko-Pastur)
-├── strategies.py               # 96 strategy implementations + auto-discovery registry
-├── charts.py                   # Unified Plotly visualization components (incl. spectral charts)
-├── strategy_selection.py       # Trigger-based strategy evaluation (REL_BREADTH)
-├── backtest_engine.py          # Walk-forward backtesting framework
-├── backdata.py                 # Data fetching & indicator computation
-├── style.css                   # Hemrek Capital Design System (dark theme)
-├── symbols.txt                 # Universe of tradeable symbols (NSE tickers)
-├── requirements.txt            # Python dependencies
-├── pyproject.toml              # Ruff, mypy, and package configuration
-├── CHANGELOG.md                # Version history
-└── docs/
-    ├── STRATEGY_GUIDE.md       # Strategy documentation
-    ├── MATHEMATICAL_FRAMEWORK.md  # Quantitative methods (incl. RMT)
-    └── PROCESS_ARCHITECTURE.md # System architecture details
+PRAGYAM v7.0.5 — 2 Phases
+
+┌─────────────────────────────────────────────────────────────┐
+│ PHASE 1: DATA FETCHING                                      │
+│ → Fetch historical data for all symbols (yfinance)          │
+│ → Detect market regime (7-factor composite)                 │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ PHASE 2: CONVICTION-BASED CURATION                          │
+│ → Run ALL 80+ strategies                                    │
+│ → Aggregate all candidate holdings (~200-400 symbols)       │
+│ → Compute conviction scores (regime.py)                     │
+│ → Select top 30 by conviction                               │
+│ → Apply formula: weight = (conviction / total) × 100        │
+│ → Apply bounds (1%-10%)                                     │
+│ → Calculate units and value                                 │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### Data Flow
+### Module Structure
 
 ```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                          PRAGYAM DATA FLOW                                │
-├───────────────────────────────────────────────────────────────────────────┤
-│                                                                           │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐            │
-│  │  Yahoo   │───▶│ Indicator│───▶│  Regime  │───▶│ Strategy │            │
-│  │ Finance  │    │  Engine  │    │ Detector │    │ Universe │            │
-│  └──────────┘    └──────────┘    └──────────┘    └──────────┘            │
-│                                  ▲    ▲               │                   │
-│                           SPRT ──┘    │               ▼                   │
-│                         Triggers      │         ┌──────────┐              │
-│                                       │         │  Factor  │              │
-│                                       │         │Reduction │              │
-│                                       │         │  (RMT)   │              │
-│                                       │         └────┬─────┘              │
-│                                       │              ▼                    │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐            │
-│  │Dashboard │◀───│ Backtest │◀───│ Portfolio│◀───│Redundancy│            │
-│  │Conformal │    │  Engine  │    │  Builder │    │  Filter  │            │
-│  │Intervals │    │(Embargo) │    │  (HRP)   │    │  (RMT)   │            │
-│  └──────────┘    └──────────┘    └──────────┘    └──────────┘            │
-│       ▲                                               ▲                   │
-│       │          ┌──────────────────────────┐         │                   │
-│       └──────────│  RMT SPECTRAL ENGINE     │─────────┘                   │
-│                  │  Marchenko-Pastur,       │                             │
-│                  │  Eigenvalue denoising,   │                             │
-│                  │  HRP, Conformal PI,      │                             │
-│                  │  Factor decomposition    │                             │
-│                  └──────────────────────────┘                             │
-│                                                                           │
-└───────────────────────────────────────────────────────────────────────────┘
+Pragyam-02.01/
+├── app.py                    # Main UI (Streamlit) — ~950 lines
+├── portfolio.py              # Conviction-based weighting — ~150 lines
+├── regime.py                 # Market regime + conviction scoring — ~640 lines
+├── strategies.py             # 95 BaseStrategy implementations
+├── backdata.py               # Data fetching (yfinance)
+├── charts.py                 # Plotly visualizations — ~250 lines
+├── circuit_breaker.py        # yfinance rate limiting — ~315 lines
+├── logger_config.py          # Console output system — ~280 lines
+├── metrics.py                # Execution metrics — ~270 lines
+├── style.css                 # UI styling
+├── symbols.txt               # Stock universe
+├── requirements.txt          # Dependencies
+└── pyproject.toml            # Project configuration
 ```
 
 ---
 
-## Configuration
+## Performance
 
-### Symbol Universe
+| Metric | v7.0.0 | v6.0.0 | Improvement |
+|--------|--------|--------|-------------|
+| Execution Time | 20-40 sec | 2-5 min | **6-10x faster** |
+| Code Lines | 3,500 | 5,000+ | **-30%** |
+| Phases | 2 | 4 | Simpler |
+| Strategies | All 80+ | 4 selected | Maximum diversification |
+| Candidate Pool | ~200-400 | ~40-80 | **5x larger** |
 
-Edit `symbols.txt` to customize the stock universe:
+---
+
+## Key Changes from v6.0.0
+
+### Removed Features
+- ❌ Walk-forward evaluation (Phase 3)
+- ❌ Strategy selection (Phase 2 old)
+- ❌ Meta-weighting competition
+- ❌ Tier-based allocation
+- ❌ Conviction threshold filter (>50)
+
+### New Features
+- ✅ All 80+ strategies run (no filtering)
+- ✅ Pure conviction-based weighting
+- ✅ Simple, transparent formula
+- ✅ No threshold (all symbols eligible)
+- ✅ 10x faster execution
+
+---
+
+## Example Output
 
 ```
-RELIANCE.NS
-TCS.NS
-HDFCBANK.NS
-INFY.NS
-...
-```
+Execution Summary
+─────────────────────────────────────────
+Run ID:             20260402_143022
+Strategies Run:     83
+Candidate Symbols:  287
+Positions Selected: 30
+Avg Conviction:     62.3/100
+Top Conviction:     78/100
+Status:             SUCCESS
+─────────────────────────────────────────
 
-### Trigger Configuration
-
-Adjust trigger thresholds for buy/sell signals in `app.py` via `TRIGGER_CONFIG`:
-
-```python
-# strategy_selection.py exposes these defaults
-SIP_TRIGGER = 0.42          # Accumulate when REL_BREADTH < threshold
-SWING_BUY_TRIGGER = 0.42    # Enter when breadth drops below
-SWING_SELL_TRIGGER = 0.50   # Exit when breadth rises above
+Portfolio: 30 positions
+Total Value: ₹2,487,350
+Cash Remaining: ₹12,650
 ```
 
 ---
 
-## Performance Metrics
+## Troubleshooting
 
-### Metric Definitions
+### "No historical data loaded"
+- Check `symbols.txt` format (should be `SYMBOL.NS`)
+- Verify internet connection
+- Reduce lookback period in sidebar
+- Ensure yfinance can access NSE data (may be rate-limited)
 
-| Metric | Formula | Interpretation |
-|--------|---------|----------------|
-| **Sharpe Ratio** | (R - Rf) / σ | Risk-adjusted return; >1 good, >2 excellent |
-| **Sortino Ratio** | (R - Rf) / σd | Downside-adjusted; ignores upside volatility |
-| **Calmar Ratio** | CAGR / \|MaxDD\| | Drawdown efficiency; >1 indicates resilience |
-| **Omega Ratio** | Σ(gains) / Σ(losses) | Full distribution analysis; >1 positive expectancy |
-| **Tail Ratio** | P95 / \|P5\| | Skewness measure; >1 indicates positive skew |
+### "No holdings generated"
+- Some strategies may not generate signals for current market conditions
+- Try a different analysis date
+- Increase number of positions in sidebar
+- Check that `symbols.txt` has sufficient symbols (recommend 50+)
 
-### Statistical Tests
+### "Conviction signals unavailable"
+- Check that `current_df` has indicator columns
+- Verify regime.py is functioning correctly
+- Ensure data fetch completed successfully
 
-- **Lo (2002) Sharpe SE**: Autocorrelation-adjusted standard error
-- **Bootstrap CI**: 1000-sample confidence intervals
-- **Jarque-Bera**: Normality test for return distribution
+### Slow execution or timeouts
+- v7.0.0 executes in 20-40 seconds (6-10x faster than v6.0.0)
+- Reduce number of symbols in `symbols.txt` if needed
+- Check internet connection stability
+- Increase Streamlit server timeout if deploying remotely
 
----
-
-## API Reference
-
-### Core Components
-
-```python
-# Market regime detection
-from app import MarketRegimeDetectorV2
-
-detector = MarketRegimeDetectorV2()
-regime, mix, confidence, details = detector.detect_regime(data)
-
-# Strategy evaluation with trigger-based selection
-from strategy_selection import StrategySelectionEngine
-
-engine = StrategySelectionEngine(strategies, data, breadth_data)
-results = engine.evaluate()
-
-# Generate indicator snapshots
-from backdata import generate_historical_data
-
-snapshots = generate_historical_data(
-    symbols_to_process=["RELIANCE.NS", "TCS.NS"],
-    start_date=start,
-    end_date=end,
-)
-```
-
-### Spectral Analysis (RMT)
-
-```python
-from rmt_core import (
-    compute_spectral_diagnostics,
-    detect_redundant_strategies,
-    rmt_minimum_variance_weights,
-    rmt_risk_parity_weights,
-    hrp_weights,
-    reduce_strategy_space,
-    conformal_strategy_intervals,
-)
-
-# Full spectral analysis of a returns matrix
-diagnostics = compute_spectral_diagnostics(returns_matrix)  # T x N
-print(f"Signal eigenvalues: {diagnostics.mp_dist.n_signal}")
-print(f"Noise eigenvalues:  {diagnostics.mp_dist.n_noise}")
-print(f"Absorption ratio:   {diagnostics.absorption_ratio:.3f}")
-print(f"Effective rank:     {diagnostics.effective_rank:.1f}")
-
-# RMT-cleaned correlation matrix (noise eigenvalues clipped)
-cleaned_corr = diagnostics.cleaned_corr
-
-# Hierarchical Risk Parity weights (default allocation method)
-weights = hrp_weights(returns_matrix, strategy_names)
-
-# Strategy dimensionality reduction
-factors = reduce_strategy_space(strategy_returns_dict)
-print(f"True factors: {factors['n_factors']} / {len(strategy_returns_dict)} strategies")
-
-# Conformal prediction intervals (90% coverage)
-intervals = conformal_strategy_intervals(strategy_returns_dict, alpha=0.10)
-for name, (lower, point, upper) in intervals.items():
-    print(f"{name}: [{lower:.4f}, {upper:.4f}]")
-```
-
-### SPRT Triggers
-
-```python
-from strategy_selection import SPRTRegimeTrigger, get_sprt_trigger_dates
-
-# Evidence-accumulating regime detection
-buy_dates, sell_dates = get_sprt_trigger_dates(breadth_df, alpha=0.05, beta=0.10)
-```
-
----
-
-## Support
-
-### Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| Yahoo Finance rate limiting | Add delays between requests or use cached data |
-| Memory errors on large universes | Reduce symbol count or increase system memory |
-| Slow backtest execution | Enable caching with `@st.cache_data` decorators |
-
-### Contact
-
-- **Technical Support**: tech@hemrekcapital.com
-- **Documentation**: docs.hemrekcapital.com/pragyam
-- **Issues**: GitHub Issues (for licensed users)
+### Rate limiting from yfinance
+- Circuit breaker implemented in `circuit_breaker.py`
+- Add more symbols to universe to distribute requests
+- Consider using premium data source for production
 
 ---
 
 ## License
 
-**Proprietary Software** - © 2024-2026 Hemrek Capital
+Proprietary Software License — See LICENSE file for details.
 
-This software is licensed exclusively to authorized users. Redistribution, modification, or commercial use without explicit written permission is prohibited.
+Copyright (c) 2024-2026 @thebullishvalue. All Rights Reserved.
 
 ---
 
 ## Changelog
 
-### v3.7.0 (March 2026)
-- Epistemic & Execution Hardening: 12 mathematical/architectural fixes across all modules
-- Upgraded to Expanding Window walk-forward methodology for RMT stability
-- Implemented $O(\log N)$ binary search execution topology in strategy evaluation
-- Resolved $O(N)$ DataFrame memory fragmentation and terminal `pd.NA` type pollution
-- Upgraded Softmax temperature scaling to use robust Median Absolute Deviation (MAD)
-- Fixed Modified Dietz Time-Weighted Returns to handle absolute value capital SIP tracking
-- Hardened Hierarchical Risk Parity against zero-variance singularity clusters
-
-### v3.6.0 (March 2026)
-- Quantitative hardening: 12 mathematical/architectural fixes (CRITICAL-1 through MEDIUM-3)
-- Hierarchical Risk Parity (Lopez de Prado, 2016) as default allocation method
-- SPRT regime triggers (Wald, 1945) — evidence-accumulating alternative to fixed thresholds
-- Conformal prediction intervals (Vovk et al., 2005) — distribution-free 90% coverage
-- Strategy factor decomposition — RMT spectral projection reveals true independent bets
-- Walk-forward embargo (Lopez de Prado, 2018) prevents indicator serial correlation leakage
-- Turnover-proportional transaction costs with proper `prev_portfolio` tracking
-- Continuous Kelly criterion, adaptive softmax temperature, iterative MP sigma estimation
-
-### v3.5.0 (March 2026)
-- Adversarial audit: 15 metric/formula fixes (Sortino RMS, SIP TWR, tier Sharpe, spectral matrix)
-- Unified metric pipeline — single canonical `compute_risk_metrics()` replaces 4 duplicate implementations
-- Strategy interface contracts — runtime portfolio validation via `BaseStrategy.__init_subclass__`
-- Transaction cost model (20 bps NSE round-trip) applied to all walk-forward loops
-- Held-position returns on non-trigger days (no more zero-return assumption)
-- Theil-Sen robust trend estimation, configurable trigger thresholds, NSE holiday-safe resampling
-
-### v3.4.0 (March 2026)
-- Charts v2.0 visual redesign — complete rewrite of all chart functions with institutional-grade aesthetics
-- Tab rendering architecture overhaul — dedicated rendering functions for Risk, Strategy, and Backtest tabs
-- Eliminated dual-path chart system (`UNIFIED_CHARTS_AVAILABLE`) and ~600 lines of inline fallback code
-- Transparent chart backgrounds (CSS card handles container styling)
-
-### v3.3.0 (March 2026)
-- Random Matrix Theory (Marchenko-Pastur) integration across the full pipeline
-- Spectral engine (`rmt_core.py`) — eigenvalue denoising, absorption ratio, effective rank
-- RMT-optimized portfolio weights (min-variance, risk-parity using cleaned covariance)
-- Redundancy-aware strategy selection (spectral independence filter)
-- Spectral Analysis dashboard with 5 new visualization types
-- Correlation regime detection via eigendecomposition
-
-### v3.2.0 (March 2026)
-- Code quality audit and refactoring
-- Fixed deprecated Streamlit APIs
-- Removed dead code and unused imports
-- Named loggers across all modules
-
-### v3.1.0 (February 2026)
-- Strategy selection framework with REL_BREADTH triggers
-- Unified chart styling (Hemrek design system)
-- Trigger-based backtesting (SIP & Swing modes)
-
-### v3.0.0 (January 2026)
-- Advanced strategy selector with TOPSIS optimization
-- Bayesian shrinkage estimation
-- Risk parity portfolio construction
-- HMM regime detection integration
-
-### v2.0.0 (December 2025)
-- 80+ strategy implementations
-- Walk-forward backtesting engine
-- Regime-aware allocation system
+See [CHANGELOG.md](CHANGELOG.md) for version history and notable changes.
 
 ---
 
-<div align="center">
+## Version History
 
-**Built with ❤️ by Hemrek Capital**
+| Version | Date | Architecture | Execution Time | Key Feature |
+|---------|------|--------------|----------------|-------------|
+| 7.0.5 | 2026-04-05 | 2 phases | 20-40 sec | Production hardening, dead code removal |
+| 7.0.4 | 2026-04-02 | 2 phases | 20-40 sec | Style-aware dispersion (SIP/Swing) |
+| 7.0.3 | 2026-04-02 | 2 phases | 20-40 sec | Aggressive conviction dispersion (+75%/-50%) |
+| 7.0.2 | 2026-04-02 | 2 phases | 20-40 sec | Strong conviction dispersion (+40%/-30%) |
+| 7.0.1 | 2026-04-02 | 2 phases | 20-40 sec | Conviction dispersion weighting |
+| 7.0.0 | 2026-04-02 | 2 phases | 20-40 sec | Conviction-based curation |
+| 6.0.0 | Previous | 4 phases | 2-5 min | Walk-forward evaluation |
 
-*"Wisdom in Every Trade"*
+---
 
-</div>
+## Disclaimer
+
+This software is for educational and research purposes only. Not financial advice. Past performance does not guarantee future results. Always conduct your own research before making investment decisions.
+
+---
+
+## Contact
+
+**@thebullishvalue** — Portfolio Intelligence Systems

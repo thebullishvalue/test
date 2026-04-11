@@ -1,307 +1,309 @@
 # Changelog
 
-All notable changes to PRAGYAM will be documented in this file.
+All notable changes to PRAGYAM (प्रज्ञम) — Portfolio Intelligence will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [3.7.0] - 2026-03-24
+## [7.0.5] - 2026-04-05
 
-### Fixed
-- **[CRITICAL] Drawdown Ranking Inversion** — Fixed fatal logic in `strategy_selection.py` where the worst maximum drawdowns were mathematically rewarded instead of penalized.
-- **[CRITICAL] TWR Cash-Flow Leakage** — Corrected SIP performance tracking in `MasterPortfolio` to strictly use Modified Dietz Time-Weighted Returns.
-- **[CRITICAL] NaN Cascade in Cross-Sections** — Enforced `ddof=0` standard deviation across all 96 strategies in `strategies.py` to prevent `NaN` generation on single-asset filters.
-- **[CRITICAL] HRP Singularity & NameError** — Fixed missing `gamma_lw` definition in Ledoit-Wolf shrinkage and zero-variance cluster division errors (`1.0 / diag`) in Hierarchical Risk Parity.
-- **[CRITICAL] RSI Wilder Smoothing** — Enforced `adjust=False` in pandas EWM to strictly replicate J. Welles Wilder's original exponential smoothing.
-- **[CRITICAL] Zero-Variance Plotly Crash** — Shielded conviction heatmaps and scatter plots against flat-array JSON serialization crashes in `charts.py` and `app.py`.
-- **[HIGH] Memory Fragmentation** — Rewrote `backdata.py` data ingestion to filter temporal bounds before list concatenation, bypassing 100k+ rows of memory bloat.
-- **[HIGH] O(N) Date Scan Bottleneck** — Replaced linear date scans with $O(\log N)$ `bisect_left` binary searches in strategy selection loops.
-- **[HIGH] Temporal Weekly Bar Leakage** — Modified `resample_data` to map weekly periods to the exact last available trading day, eliminating current-week data loss.
-- **[HIGH] Scale-Invariant Turnover Costs** — Shifted transaction cost modeling from relative weight differences to absolute value traded for accurate SIP capital injection costs.
-- **[MEDIUM] Leptokurtic Softmax Collapse** — Replaced L2 standard deviation with robust L1 Median Absolute Deviation (MAD) for adaptive temperature scaling in `app.py`.
-- **[MEDIUM] Kelly Criterion Bounds** — Clamped Z-scores in the 3rd-order Taylor expansion to prevent gap-risk singularities from inverting the Kelly fraction.
+### 🧹 Removed
 
-### Changed
-- **Expanding Window Walk-Forward** — Upgraded the RMT and Sharpe validation loops in `app.py` from a 50-day rolling window to a continuous expanding window to maximize the $T/N$ ratio.
-- **Conformal Prediction Heteroskedasticity** — Upgraded conformal prediction bands to normalize nonconformity scores by local volatility, preventing coverage collapse during market stress.
-- **Robust Correlation Fallback** — Replaced fragile `np.corrcoef` with robust matrix multiplication `(X^T @ X)/T` inside HRP fallback to gracefully handle zero-variance arrays.
+**Dead Code & Stale Files**
+- Removed `docs/PROCESS_ARCHITECTURE.md` — described obsolete v6.0.0 4-phase architecture
+- Removed `docs/STRATEGY_GUIDE.md` — described TOPSIS optimization removed in v7.0.0
+- Removed 11 unused chart functions from `charts.py` (~1,000 lines):
+  `create_equity_drawdown_chart`, `create_rolling_metrics_chart`, `create_correlation_heatmap`,
+  `create_tier_sharpe_heatmap`, `create_risk_return_scatter`, `create_factor_radar`,
+  `create_weight_evolution_chart`, `create_signal_heatmap`, `create_bar_chart`,
+  `create_regime_factor_bars`, `create_portfolio_breakdown_chart`
+- Removed dead functions from `circuit_breaker.py`:
+  `google_sheets_circuit`, `get_yfinance_circuit()`, `protect_with_circuit()`
+- Removed unused `import plotly.graph_objects as go` from `app.py`
 
----
+### ✨ Added
 
-## [3.6.0] - 2026-03-23
+**Enhanced Terminal Logging**
+- Added main run header with analysis date, investment style, capital, positions, Run ID, and timestamp
+- Added detailed checkpoints for every critical step in Phase 1 and Phase 2
+- Per-run unique Run ID generated on each "Run Analysis" click (previously session-scoped)
+- Signal Distribution card counts now based on raw conviction scores instead of fragile string parsing
 
-### Fixed
-- **[CRITICAL-1] Strategy space not reduced** — 60+ correlated strategies now decomposed into true independent factors via RMT spectral analysis (`reduce_strategy_space` in `rmt_core.py`); UI shows factor groupings and variance explained
-- **[CRITICAL-2] Look-ahead bias in tier Sharpe** — `_calculate_performance_on_window` was called with full `historical_data` instead of `historical_data[:train_cutoff]`, leaking OOS data into tier Sharpe computation
-- **[CRITICAL-3] Flat transaction costs** — replaced per-rebalance flat deduction with turnover-proportional model; `compute_portfolio_return` now accepts `prev_portfolio` and computes half-sum-of-absolute-weight-changes turnover; all walk-forward loops updated to pass previous portfolio
-- **[CRITICAL-4] Periods-per-year estimation** — replaced fragile `365.25/avg_period_days` with robust observation-count method: `len(dates) × 365.25 / calendar_span`, clamped to [12, 365]
-- **[CRITICAL-5] SIP TWR cash-flow leakage** — TWR now uses Modified Dietz: `r = (V_t − (V_{t-1} + CF)) / (V_{t-1} + CF)`, isolating market return from capital injection
-- **[HIGH-1] Regime detector conflating breadth and momentum** — separated `breadth_values` (RSI > 50 fraction) from `pct_change_medians`; classification now uses both dimensions independently
-- **[HIGH-2] Fixed softmax temperature** — replaced hardcoded temperature with adaptive `κ = c / σ_Sharpe` (c=1.5), clamped to [1, 20]; allocation now scale-invariant to Sharpe spread
-- **[HIGH-3] Ledoit-Wolf O(N²) loop** — vectorized off-diagonal shrinkage computation using outer-product formulation; eliminates Python loop over N×N matrix
-- **[HIGH-4] BBW division by zero** — Bollinger Band Width now guards against near-zero MA20 using `np.where(|ma20| > 1.0, ma20, np.nan)` with `np.nanmean`
-- **[MEDIUM-1] MP sigma estimation** — replaced single-pass `eigenvalues.mean()` with iterative (up to 10 rounds) noise-eigenvalue re-estimation that converges to self-consistent σ²
-- **[MEDIUM-2] Survivorship bias** — `load_symbols_from_file()` now emits explicit logger warning about static `symbols.txt` universe excluding delisted stocks
-- **[MEDIUM-3] Kelly criterion** — replaced binary Kelly `(2p − 1)` with continuous Kelly `f* = μ/σ²` (Thorp, 2006) for correlated, non-binary returns
+**Position Guide Tab**
+- Moved Position Guide section from Portfolio tab into dedicated tab
+- Added signal distribution summary with conviction breakdown metrics
 
-### Added
-- **[REC-1] Strategy dimensionality reduction** (`reduce_strategy_space` in `rmt_core.py`) — PCA projection onto signal eigenvectors above Marchenko-Pastur threshold; returns factor portfolios, labels, strategy-to-factor mapping, explained variance
-- **[REC-2] Walk-forward embargo** — 1-day embargo gap between training and test windows in both walk-forward functions; prevents indicator serial correlation leakage (Lopez de Prado, 2018, Ch. 7)
-- **[REC-3] SPRT trigger system** (`SPRTRegimeTrigger` in `strategy_selection.py`) — Sequential Probability Ratio Test (Wald, 1945) for evidence-accumulating regime change detection; `get_sprt_trigger_dates()` as drop-in alternative to fixed-threshold triggers; configurable via `use_sprt` flag in `TRIGGER_CONFIG`
-- **[REC-4] Conformal prediction intervals** (`conformal_prediction_interval`, `conformal_strategy_intervals` in `rmt_core.py`) — split conformal method with finite-sample valid 90% coverage guarantee (Vovk et al., 2005); displayed in Risk Intelligence tab as strategy-level interval table
-- **[REC-5] Hierarchical Risk Parity** (`hrp_weights` in `rmt_core.py`) — Lopez de Prado (2016) dendrogram-based allocation; avoids covariance matrix inversion; now the **default allocation method** when sufficient return data exists (replaces `rmt_risk_parity`)
-- **Strategy Factor Decomposition UI** — Risk Intelligence tab now shows signal factor count, variance explained, redundancy count, and strategy-to-factor groupings
-- **Conformal Prediction Intervals UI** — Risk Intelligence tab shows 90% prediction intervals (lower, point estimate, upper, width) per strategy
+**Market Regime Auto-Detection**
+- Sidebar regime display now updates automatically when analysis date changes (no "Run Analysis" required)
 
-### Changed
-- `curate_final_portfolio` default method changed from `'rmt_risk_parity'` to `'hrp'`
-- `compute_portfolio_return` signature extended with `prev_portfolio` parameter for turnover calculation
-- Both walk-forward functions now track and pass `prev_portfolio` state for accurate turnover-proportional costs
-- Both walk-forward functions return `conformal_intervals` and `strategy_factors` in results dict
-- `get_sprt_trigger_dates` handles both `DATE` column and datetime index formats
-- `TRIGGER_CONFIG` entries now include `use_sprt` flag (default: `False`)
+### 🔧 Changed
+
+- Simplified section headers from `P1: PHASE 1: DATA FETCHING` → `Phase 1: Data Fetching` (eliminated redundancy)
+- Removed redundant "Regime Analysis" text section from Regime tab
+- Updated `metrics.py` counters to populate correctly (symbols, strategies, portfolios)
+- Fixed `conviction_curation` phase timing (previously showed 0.00s)
+- Removed redundant `EXECUTION METRICS` header from `metrics.print_summary()`
+- Replaced deprecated `use_container_width=True` with `width='stretch'` (Streamlit compatibility)
+
+### 🐛 Fixed
+
+- Investment style selector default index always evaluated to 1 (SIP) — now correctly defaults to 0 (Swing Trading)
+- Signal Distribution card counts misclassified positions due to emoji-prefixed signal strings
 
 ---
 
-## [3.5.0] - 2026-03-23
+## [7.0.4] - 2026-04-02
 
-### Fixed
-- **[C1] Sortino ratio formula** — all 3 implementations (`calculate_advanced_metrics`, `calculate_trigger_based_metrics`, `_compute_backtest_metrics`) now use canonical RMS of downside returns: `sqrt(mean(min(r,0)²))` instead of incorrect `std(downside)`
-- **[C2] SIP Time-Weighted Return** — TWR now isolates market return from capital injection by computing `(V_t - CF_t - V_{t-1}) / V_{t-1}` per period, eliminating cash-flow leakage into performance
-- **[C3] Tier-level Sharpe ratios** — replaced fabricated linear decay formula (`sharpe * (1 - t * 0.05)`) with actual per-tier Sharpe computed from real tier-level returns across all buy days
-- **[C4] Spectral analysis matrix** — now builds T×N return time-series matrix from per-strategy OOS returns instead of single-day cross-sectional indicator matrix; applies to both trigger-based and standard walk-forward
-- **[C5] Trigger thresholds configurable** — thresholds now overridable via `PRAGYAM_SIP_TRIGGER`, `PRAGYAM_SWING_BUY`, `PRAGYAM_SWING_SELL` env vars; added `compute_adaptive_thresholds()` for percentile-based calibration
-- **[H1] Softmax temperature** — introduced `SOFTMAX_TEMPERATURE = 5.0` parameter and removed the `+2` additive shift that killed weight differentiation in `calculate_strategy_weights`
-- **[H2] Missing symbol handling** — `compute_portfolio_return` now uses `how='left'` merge; missing/halted symbols get 0 return instead of being silently dropped (redistributing weight)
-- **[H4] Non-annualized Sharpe/Sortino** in `strategy_selection.py` `MasterPortfolio.get_metrics()` — now annualized by `sqrt(N)` factor; Sortino uses RMS downside
-- **[H5] Ledoit-Wolf estimator** — replaced broken formula (dead variables `mu`, `delta`) with Oracle Approximating Shrinkage (OAS) estimator per Chen, Wiesel, Eldar & Hero (2010)
-- **[H6] Zero returns on held days** — non-trigger days now compute actual returns from last held portfolio instead of reporting 0; portfolio prices updated daily for correct chaining
-- **[M1] Correlation regime weight** — enabled from 0.0 → 0.10 in composite regime scoring; redistributed from momentum (0.30→0.25) and velocity (0.15→0.10)
-- **[M2] Order-dependent clustering** — replaced greedy sequential clustering with Union-Find algorithm for order-independent correlation clustering in `rmt_core.py`
-- **[M3] NSE holiday resampling** — `resample_data` now filters out partial weeks (< 2 trading days) to avoid noisy single-day bars from Friday closures
-- **[M4] Robust trend estimation** — replaced `np.polyfit` with Theil-Sen slopes in `_analyze_momentum_regime` and `_analyze_trend_quality` for outlier resilience
-- **[M5] Division-by-zero guards** — standardized all epsilon constants to canonical `_EPS = 1e-10` in `rmt_core.py`
+### ✨ Added
 
-### Added
-- **[A1] Canonical `compute_risk_metrics()`** in `backtest_engine.py` — single source of truth for Sharpe, Sortino, Calmar, max drawdown, win rate, volatility, and CAGR; all 4 duplicate implementations now delegate to it
-- **[A2] Strategy interface contracts** — `BaseStrategy.__init_subclass__` auto-wraps `generate_portfolio()` with `_validate_portfolio()` runtime validation (column presence, non-negative price/value, duplicate symbol removal); `PORTFOLIO_COLUMNS` tuple defines the contract
-- **Transaction cost model** — `TRANSACTION_COST_BPS = 20` (NSE round-trip: brokerage + STT + GST + stamp duty); applied as one-way cost on rebalance days in all walk-forward loops
-- `compute_adaptive_thresholds()` in `strategy_selection.py` — percentile-based threshold calibration from historical breadth distribution
-- `scipy.stats.theilslopes` import for robust trend estimation
+**Style-Aware Conviction Dispersion**
 
-### Changed
-- **[A1]** `calculate_advanced_metrics()`, `calculate_trigger_based_metrics()`, `_compute_backtest_metrics()` in `app.py` and `MasterPortfolio.get_metrics()` in `strategy_selection.py` all delegate core ratio math to `compute_risk_metrics()`; higher-order metrics (Kelly, Omega, tail ratio) remain in `calculate_advanced_metrics()` only
-- `compute_portfolio_return` signature extended with `is_rebalance` parameter for transaction cost deduction
-- Walk-forward loops track `last_curated_port` and `last_strategy_ports` state for held-position return computation
-- Regime scoring weights rebalanced: momentum 0.25, trend 0.25, breadth 0.15, velocity 0.10, correlation 0.10, extremes 0.10, volatility 0.05
+Different dispersion profiles for SIP vs Swing Trading investment styles:
 
----
+| Style | Boost | Penalty | Top Pick Advantage | Use Case |
+|-------|-------|---------|-------------------|----------|
+| **SIP Investment** | +125% (×2.25) | -50% (×0.50) | ~350% more weight | Long-term wealth building |
+| **Swing Trading** | +225% (×3.25) | -75% (×0.25) | ~1200% more weight | Active trading, alpha capture |
 
-## [3.4.0] - 2026-03-23
+**Formula:**
+```python
+# Auto-selected based on investment_style parameter
 
-### Added
-- **Charts v2.0 visual redesign** — complete rewrite of all 15 chart functions in `charts.py` with institutional-grade aesthetics
-  - `_axis()` helper for consistent axis configuration across all charts
-  - `_hex_to_rgba()` utility for alpha-channel color conversions
-  - Design tokens: `_GRID`, `_ZERO`, `_TICK`, `_LABEL`, `_FONT` for single-source styling
-  - Zone shading bands in rolling metrics (replaces reference lines)
-  - Quantile-based y-range clipping for outlier resilience
-  - Stacked area charts via `stackgroup` with desaturated palette
-  - Text labels on risk-return scatter with 12-char truncation
-  - CML (Capital Market Line) overlay on scatter plots
-- **Tab rendering architecture** — from-scratch rendering functions for tabs 3–5
-  - `_render_risk_intelligence()` — correlation heatmaps, spectral analysis
-  - `_render_strategy_analysis()` — scatter, radar, tier heatmap, conviction heatmap
-  - `_render_backtest_data()` — walk-forward data and metrics
+# SIP Mode (conservative concentration)
+if score > median:
+    adjusted = score × 2.25  # +125% boost
+else:
+    adjusted = score × 0.50  # -50% penalty
 
-### Changed
-- `charts.py` version bumped to v2.0 (Hemrek Capital Design System v2.0)
-- COLORS palette desaturated for cleaner stacking: gold, emerald, cyan, amber, violet, rose, lime, orange
-- Equity-drawdown chart: 74/26 row split, gold line 1.8px, fill alpha 0.07, HWM at 15% white opacity
-- Risk-return scatter: markers+text mode, opacity 0.95, white border 2px, diamond optimal marker
-- Factor radar: fill alpha 0.20, line width 2, angular tick 11pt, radial tick 9pt
-- Weight evolution: stacked area with 0.65 alpha fills, 0.3px borders, bottom legend
-- Heatmaps: `xgap`/`ygap` breathing room, adaptive colorscales (positive-only vs mixed)
-- All chart backgrounds now transparent (CSS `.stPlotlyChart` card handles container)
+# Swing Mode (aggressive, 2σ more concentration)
+if score > median:
+    adjusted = score × 3.25  # +225% boost
+else:
+    adjusted = score × 0.25  # -75% penalty
 
-### Removed
-- `UNIFIED_CHARTS_AVAILABLE` dual-path chart system — eliminated all 6 branch points and ~150 lines of inline fallback chart code from `app.py`
-- `_chart_layout_base()` from `app.py` — replaced by `get_chart_layout()` from `charts.py`
-- `plotly.express` and `plotly.subplots` imports from `app.py` (no longer needed)
-- ~500 lines of inline tab content from `main()` (replaced by dedicated rendering functions)
+weight = (adjusted / Σ all_adjusted) × 100
+```
+
+**Effect:**
+- SIP: Strong concentration with moderate risk (~350% tilt to top picks)
+- Swing: Maximum concentration in best ideas (~1200% tilt) for alpha capture
+- Both maintain 30-position diversification with 1-10% bounds
+
+### 🔧 Changed
+
+- `portfolio.py::compute_conviction_based_weights()` now accepts `investment_style` parameter
+- Dispersion auto-selects based on style when `dispersion_params=None`
 
 ---
 
-## [3.3.0] - 2026-03-22
+## [7.0.3] - 2026-04-02
 
-### Added
-- **Random Matrix Theory Engine** (`rmt_core.py`) — standalone spectral analysis module
-  - Marchenko-Pastur distribution (PDF, edge computation, noise threshold)
-  - Eigenvalue-based correlation matrix denoising (clipping + trace preservation)
-  - Ledoit-Wolf shrinkage estimator (oracle-approximating)
-  - Spectral diagnostics: absorption ratio, effective rank (ENB), Herfindahl eigenvalue index, condition number
-  - Strategy redundancy detection via cleaned correlations
-  - Greedy diversified selection algorithm (spectral independence filter)
-  - Minimum-variance and risk-parity portfolio optimization using cleaned covariance
-  - Rolling spectral analysis and spectral turnover metrics
-  - Diversification ratio computation: DR = (weighted avg vol) / (portfolio vol)
-- **Spectral Analysis UI section** in app.py — eigenvalue histogram with MP overlay, cleaned vs raw correlation comparison, rolling absorption ratio chart, factor loading heatmap, spectral risk dashboard (2x2 panel)
-- **5 new visualization functions** in charts.py — `create_eigenvalue_histogram`, `create_cleaned_vs_raw_correlation`, `create_absorption_ratio_chart`, `create_factor_loading_heatmap`, `create_spectral_risk_dashboard`
-- Walk-forward spectral tracking — absorption ratio, effective rank, condition number, and largest eigenvalue recorded every 5th step
-- Spectral summary metrics in walk-forward results (mean AR, AR volatility, mean effective rank)
-- Cross-strategy spectral metrics computed at end of each backtest run (effective strategy count, noise fraction, strategy clusters, signal eigenvalues)
+### 🔧 Changed
 
-### Changed
-- `PrincipalComponentStrategy` now computes real eigenvectors via eigendecomposition instead of hardcoded PC loadings (falls back to hardcoded when cross-section too small)
-- `select_top_strategies()` in backtest_engine.py applies RMT redundancy filter — selects spectrally independent strategies via greedy diversified selection (cleaned correlation < 0.7 threshold)
-- `calculate_strategy_weights()` in app.py supports `method` parameter: `'softmax_sharpe'` (default, backward compatible), `'rmt_min_variance'`, `'rmt_risk_parity'`, `'equal'`
-- `_analyze_correlation_regime()` in MarketRegimeDetectorV2 uses absorption ratio from eigendecomposition instead of indicator-agreement heuristic; original heuristic preserved as `_fallback_correlation_regime()`
-- `curate_final_portfolio()` computes diversification ratio using RMT-cleaned covariance after portfolio assembly
-- Added `rmt_core` to `known-first-party` in pyproject.toml Ruff isort config
-- charts.py version bumped to 1.1.0
+**Aggressive Conviction Dispersion**
 
-### Design Notes
-- All RMT integrations use `try/except` for graceful degradation — system runs identically without rmt_core.py
-- No new dependencies — uses only numpy and scipy (already in requirements)
-- With T/N = 50/95 ~ 0.53, MP upper edge lambda+ ~ 3.88; any eigenvalue below this is indistinguishable from noise
+Maximum concentration in high-conviction picks:
+- Symbols with conviction **above median**: **+75% boost** (was +40%)
+- Symbols with conviction **at/below median**: **-50% penalty** (was -30%)
+
+**Formula:**
+```python
+median = median(all_conviction_scores)
+
+if score > median:
+    adjusted = score × 1.75  # +75% boost
+else:
+    adjusted = score × 0.50  # -50% penalty
+
+weight = (adjusted / Σ all_adjusted) × 100
+```
+
+**Effect:**
+- High-conviction symbols receive ~250% more weight vs linear allocation
+- Aggressive concentration in best ideas while maintaining 30-position diversification
+- Configurable via `dispersion_params` tuple in `portfolio.py`
 
 ---
 
-## [3.2.0] - 2026-03-16
+## [7.0.2] - 2026-04-02
 
-### Added
-- Strategy registry with auto-discovery (`STRATEGY_REGISTRY`, `discover_strategies()` in strategies.py)
-- `style.css` — extracted ~360 lines of inline CSS into standalone Hemrek Capital Design System file
-- `pyproject.toml` with Ruff linter/formatter and mypy configuration
-- `__all__` exports to all modules (strategies.py, backtest_engine.py, backdata.py; fixed stale entry in charts.py)
-- `.gitignore` for Python, IDE, OS, and application artifacts
+### 🔧 Changed
 
-### Changed
-- Named loggers across all modules (replaced bare `logging.info/error/warning`)
-- Removed `logging.basicConfig` calls that overrode root logger config
-- Migrated deprecated Streamlit `use_container_width` → `width='stretch'` across all modules
-- Replaced redundant `elif not is_buy_day` with `else` in trigger backtest
-- Fixed Sortino ratio formula in `backtest_engine.py` to use proper RMS of downside deviations
-- Fixed week numbering collision across year boundaries in SIP backtest
-- Widened return clipping from ±50% to ±100% in `PerformanceMetrics`
-- Fixed rolling downside calculation in charts.py (was modifying data in-place)
-- Removed magic-number metric fallbacks in `strategy_selection.py` (Sortino `*1.5`, Calmar `*10`)
-- Eliminated double `calculate_advanced_metrics()` call in `_calculate_performance_on_window`
-- Vectorized row-wise `.apply()` calls in CL2Strategy and CL3Strategy with `np.select`/`np.where`
-- Replaced 97-line manual strategy instantiation block with `discover_strategies()` auto-registry
-- Replaced 25-line manual strategy import block with single `from strategies import discover_strategies`
+**Increased Conviction Dispersion**
 
-### Removed
-- Dead code: `fix_csv_export` in strategies.py, `get_axis_config` in charts.py
-- Unused imports: `time`, `ABC`/`abstractmethod`, `scipy.stats`, `StandardScaler`, `io` (from strategies.py)
-- Stale `pragati.py` comment in strategies.py
-- `matplotlib` and `openpyxl` from requirements.txt (not imported anywhere)
-- `time.sleep(0.5)` UI delay in app.py
-- Inline CSS block from app.py (~360 lines, moved to style.css)
+Stronger concentration in high-conviction picks:
+- Symbols with conviction **above median**: **+40% boost** (was +15%)
+- Symbols with conviction **at/below median**: **-30% penalty** (was -10%)
 
-### Fixed
-- Bare `except:` clause → `except Exception:` in app.py conviction analysis
-- `from datetime import timezone` moved from function body to top-level imports
-- References to non-existent `pragati.py` and `advanced_strategy_selector.py` in README
-- Version mismatch: README badge, requirements.txt header, and CHANGELOG now all say v3.2.0
-- Stale `get_axis_config` entry in charts.py `__all__` (function was removed)
+**Formula:**
+```python
+median = median(all_conviction_scores)
+
+if score > median:
+    adjusted = score × 1.40  # +40% boost
+else:
+    adjusted = score × 0.70  # -30% penalty
+
+weight = (adjusted / Σ all_adjusted) × 100
+```
+
+**Effect:**
+- High-conviction symbols receive ~100% more weight vs linear allocation
+- Strong concentration in best ideas while maintaining 30-position diversification
+- Configurable via `dispersion_params` tuple in `portfolio.py`
 
 ---
 
-## [3.1.0] - 2026-02-04
+## [7.0.1] - 2026-04-02
 
-### Added
-- **Strategy Selection Framework** (`strategy_selection.py`)
-  - Fetches REL_BREADTH data from Google Sheets (400 rows lookback)
-  - SIP Mode: Accumulates portfolio on every trigger (REL_BREADTH < 0.42)
-  - Swing Mode: Buy-sell cycles (Buy < 0.42, Sell >= 0.50)
-  - MasterPortfolio class tracks cumulative holdings across SIP entries
-  - Dispersion-weighted ranking (no fixed formula weights)
-- Chart annotations restored ("Growth of ₹1 Investment", "Underwater Curve")
+### ✨ Added
 
-### Changed
-- Performance tab redesigned with clean metric layout using st.metric()
-- Strategy Deep Dive tab simplified with minimal headers
-- Selection scoring uses rank-based adaptive weights
-- Equity chart y-axis starts from sensible minimum (not zero)
+**Conviction Dispersion Weighting**
 
-### Removed
-- Fixed threshold selection formulas (0.30×Sharpe + 0.25×Sortino...)
-- Verbose section headers and info-boxes
+To concentrate capital in high-conviction picks:
+- Symbols with conviction **above median**: **+15% boost**
+- Symbols with conviction **at/below median**: **-10% penalty**
 
-### Fixed
-- Plotly `titlefont` deprecation error
-- `use_container_width` deprecation warnings
-- Equity curve appearing flat due to y-axis starting at zero
+**Formula:**
+```python
+median = median(all_conviction_scores)
 
----
+if score > median:
+    adjusted = score × 1.15  # Boost
+else:
+    adjusted = score × 0.90  # Penalty
 
-## [3.0.0] - 2026-01-30
+weight = (adjusted / Σ all_adjusted) × 100
+```
 
-### Added
-- Advanced Strategy Selector with TOPSIS multi-criteria optimization
-- Bayesian shrinkage estimation for small sample periods
-- Risk parity portfolio construction with SLSQP optimization
-- Hidden Markov Model (HMM) regime detection integration
-- Bootstrap confidence intervals for Sharpe ratio
-- Lo (2002) standard error adjustment for serial correlation
-- Pareto frontier identification for strategy selection
-- Maximum diversification selection algorithm
-- Strategy clustering via hierarchical clustering
+**Effect:**
+- High-conviction symbols receive ~28% more weight vs linear allocation
+- Maintains diversification (still 30 positions)
+- Preserves bounds (1% min, 10% max)
 
-### Changed
-- Complete rewrite of strategy selection logic
-- Enhanced backtest engine with walk-forward validation
-- Improved regime detection with multi-factor approach
+### 🔧 Changed
+
+- `portfolio.py::compute_conviction_based_weights()` now has `apply_dispersion` parameter (default: `True`)
+- Version bumped to 7.0.1 across all files
 
 ---
 
-## [2.5.0] - 2025-12-15
+## [7.0.0] - 2026-04-02
 
-### Added
-- 80+ quantitative strategies implementation
-- Tier-based position sizing system
-- Regime-aware allocation framework
-- Strategy correlation monitoring
+### 🎯 Major Changes
 
-### Changed
-- Migrated to Streamlit 1.28+ API
-- Improved data caching mechanisms
-- Enhanced error handling
+**Complete system refactoring to implement pure conviction-based portfolio curation.**
+
+### ✨ Added
+
+- Pure conviction-based portfolio weighting formula: `weight_i = (conviction_score_i / Σ all_conviction_scores) × 100`
+- No conviction threshold filter — all symbols eligible for portfolio inclusion
+- Top 30 positions selected by conviction score (0-100 range)
+- Position bounds: 1% minimum, 10% maximum per position
+- 2-phase architecture (Data Fetching + Conviction-Based Curation)
+
+### 🚀 Performance Improvements
+
+- **6-10x faster execution**: 20-40 seconds vs 2-5 minutes (v6.0.0)
+- **5x larger candidate pool**: ~200-400 symbols vs ~40-80 symbols
+- **Maximum diversification**: All 80+ strategies run (no filtering)
+- **30% code reduction**: ~3,500 lines vs ~5,000+ lines
+
+### 🔧 Technical Changes
+
+- Removed walk-forward evaluation (Phase 3)
+- Removed strategy selection meta-weighting (Phase 2 old)
+- Removed tier-based allocation logic
+- Removed SLSQP portfolio optimization
+- Unified conviction scoring: single source of truth in `regime.py::compute_conviction_signals()`
+- Simplified `walk_forward.py`: 1,308 lines → 95 lines (-93%)
+- Simplified `app.py`: 1,608 lines → 815 lines (-49%)
+
+### ❌ Removed
+
+- Walk-forward performance tracking
+- Strategy selection competition
+- Meta-weighting (6-method competition)
+- Tier-based portfolio allocation
+- Conviction threshold filter (>50)
+- `strategy_selector.py` module
+- `backup_refactor_20260328/` directory
+
+### 📝 Documentation
+
+- Updated `README.md` with v7.0.0 architecture
+- Added `REFACTORING_SUMMARY.md` with migration guide
+- Added `CHANGELOG.md` (this file)
+
+### 🐛 Bug Fixes
+
+- Fixed duplicate conviction scoring logic (now single source of truth)
+- Removed dead code and unused imports
+- Cleaned up session state variables
 
 ---
 
-## [2.0.0] - 2025-10-01
+## [6.0.0] - Previous Version (Walk-Forward with Meta-Weighting)
 
-### Added
-- Walk-forward backtesting engine
-- Multi-strategy portfolio construction
-- Performance attribution analytics
-- Interactive visualizations with Plotly
+### Features
 
-### Changed
-- Complete architecture redesign
-- Modular strategy framework
+- 4-phase architecture (Data Fetching, Strategy Selection, Walk-Forward Evaluation, Portfolio Curation)
+- Strategy selection via meta-weighting competition
+- Walk-forward performance evaluation
+- SLSQP optimization for portfolio weights
+- Tier-based allocation
+- Conviction threshold filter (>50)
 
----
+### Known Issues
 
-## [1.0.0] - 2025-07-01
-
-### Added
-- Initial release
-- Basic momentum strategies
-- Simple backtesting framework
-- Streamlit dashboard
+- Slow execution (2-5 minutes)
+- Complex architecture (4 phases)
+- Duplicate conviction scoring logic
+- Limited candidate pool (~40-80 symbols)
 
 ---
 
-## Legend
+## Version History Summary
 
-- **Added**: New features
-- **Changed**: Changes in existing functionality
-- **Deprecated**: Features to be removed in future versions
-- **Removed**: Features removed in this version
-- **Fixed**: Bug fixes
-- **Security**: Vulnerability fixes
+| Version | Date | Architecture | Execution Time | Key Feature |
+|---------|------|--------------|----------------|-------------|
+| 7.0.0 | 2026-04-02 | 2 phases | 20-40 sec | Conviction-based curation |
+| 6.0.0 | Previous | 4 phases | 2-5 min | Walk-forward evaluation |
+
+---
+
+## Upcoming (Future Versions)
+
+### Recommended Enhancements
+
+- [ ] Optional walk-forward tracking (advanced mode)
+- [ ] Conviction threshold slider (user-configurable)
+- [ ] Strategy filtering UI (manual selection)
+- [ ] Portfolio performance tracking over time
+- [ ] Parallel strategy execution
+- [ ] Improved caching for strategy outputs
+- [ ] Conviction explainability breakdown
+
+---
+
+## Migration Notes
+
+### From v6.0.0 to v7.0.0
+
+**Breaking Changes:**
+- Walk-forward evaluation removed — Tab 2 (Performance) now shows methodology explanation
+- Strategy selection removed — All 80+ strategies run by default
+- Meta-weighting removed — Simple conviction-based formula used instead
+
+**Migration Path:**
+If you need walk-forward evaluation:
+1. Restore `walk_forward.py` from backup
+2. Restore `strategy_selector.py` from backup
+3. Re-add imports in `app.py`
+4. Re-enable Phase 3 in `_run_analysis()` function
+
+---
+
+**PRAGYAM** — Portfolio Intelligence | @thebullishvalue

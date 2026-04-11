@@ -1,26 +1,14 @@
 import yfinance as yf
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
 import warnings
 import os
-from typing import List, Optional, Tuple, Dict, Any
-import logging
+from typing import List, Tuple, Dict, Any
+import time
 
-from scipy.stats import norm as _norm
-
-from quant_core import (
-    amihud_illiquidity,
-    corwin_schultz_spread,
-    empirical_quantile_rank_timeseries,
-    load_point_in_time_universe,
-)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger("backdata")
+# Import circuit breaker and metrics
+from circuit_breaker import yfinance_circuit, RetryWithBackoff
+from metrics import get_metrics
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -42,7 +30,7 @@ class LiquidityOscillator:
         df = data.copy()
         df['spread'] = (df['high'] + df['low']) / 2 - df['open']
         df['vol_ma'] = df['volume'].rolling(window=self.length).mean()
-        safe_vol_ma = df['vol_ma'].replace(0, np.nan)
+        safe_vol_ma = df['vol_ma'].replace(0, pd.NA)
         df['vwap_spread'] = (df['spread'] * df['volume'] / safe_vol_ma).rolling(window=self.length).mean()
         close_shifted = df['close'].shift(self.impact_window)
         df['price_impact'] = ((df['close'] - close_shifted) * df['volume'] / safe_vol_ma).rolling(window=self.length).mean()
@@ -51,70 +39,16 @@ class LiquidityOscillator:
         df['lowest_value'] = df['source_value'].rolling(window=self.length).min()
         df['highest_value'] = df['source_value'].rolling(window=self.length).max()
         range_value = df['highest_value'] - df['lowest_value']
-        safe_range_value = range_value.replace(0, np.nan)
+        safe_range_value = range_value.replace(0, pd.NA)
         oscillator = 200 * (df['source_value'] - df['lowest_value']) / safe_range_value - 100
         return oscillator.rename('liquidity_oscillator')
 
-def calculate_amihud_illiquidity(data: pd.DataFrame, window: int = 20) -> pd.Series:
-    """
-    Amihud (2002) illiquidity ratio: mean(|return| / volume) over a rolling window.
-
-    Higher values indicate less liquid stocks.  This is a validated, peer-reviewed
-    liquidity proxy that replaces the ad-hoc Liquidity Oscillator for cross-sectional
-    liquidity ranking (C-5).
-    """
-    if data.empty or not {'close', 'volume'}.issubset(data.columns):
-        return pd.Series(dtype=float, index=data.index)
-    returns = data['close'].pct_change().values
-    volume = data['volume'].values.astype(float)
-    raw = amihud_illiquidity(returns, volume, window)
-    return pd.Series(raw, index=data.index, name='amihud_illiquidity')
-
-
-def calculate_corwin_schultz(data: pd.DataFrame, window: int = 20) -> pd.Series:
-    """
-    Corwin & Schultz (2012) high-low spread estimator.
-
-    Estimates the bid-ask spread from daily high/low prices.  Validated
-    liquidity indicator replacing ad-hoc constructs (C-5).
-    """
-    if data.empty or not {'high', 'low'}.issubset(data.columns):
-        return pd.Series(dtype=float, index=data.index)
-    high = data['high'].values.astype(float)
-    low = data['low'].values.astype(float)
-    raw = corwin_schultz_spread(high, low, window)
-    return pd.Series(raw, index=data.index, name='corwin_schultz_spread')
-
-
 def resample_data(df: pd.DataFrame, rule: str = 'W-FRI') -> pd.DataFrame:
-    """Resample daily OHLCV data to a different timeframe.
-
-    Uses last-available trading day per week to handle NSE holidays
-    and incomplete current weeks, preventing temporal lookahead bias 
-    and ensuring current-week data is never dropped during reindexing.
-    """
+    """Resample daily OHLCV data to a different timeframe."""
     if df.empty or not isinstance(df.index, pd.DatetimeIndex):
         return pd.DataFrame()
-        
-    # Group by standard pandas period to maintain week boundaries
-    grouped = df.groupby(pd.Grouper(freq=rule))
     agg_map = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
-    resampled = grouped.agg(agg_map)
-    
-    # CRITICAL FIX: Align index to the actual LAST available trading day in that period.
-    # This prevents dropping the current incomplete week (e.g., Wed) during daily reindexing.
-    # Execution Fix: Fully vectorized retrieval bypasses O(N) lambda evaluation
-    last_dates = df.index.to_series().groupby(pd.Grouper(freq=rule)).last()
-    resampled.index = last_dates
-    resampled = resampled[resampled.index.notna()]
-    
-    # Drop past weeks with < 2 trading days, but explicitly retain the current (last) week 
-    # even if it only has 1 day (e.g., running backtest on a Monday).
-    counts = grouped['close'].count()
-    counts.index = last_dates
-    valid_mask = (counts >= 2) | (counts.index == df.index[-1])
-    
-    return resampled[valid_mask]
+    return df.resample(rule).agg(agg_map).dropna()
 
 
 def calculate_rsi(data: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -126,17 +60,13 @@ def calculate_rsi(data: pd.DataFrame, period: int = 14) -> pd.Series:
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
 
-    # CRITICAL FIX: adjust=False strictly enforces J.W. Wilder's original exponential smoothing.
-    # Default adjust=True calculates a standard EMA, causing RSI divergence vs canonical platforms.
-    avg_gain = gain.ewm(com=period - 1, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(com=period - 1, min_periods=period, adjust=False).mean()
+    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
+    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
 
-    # CRITICAL FIX: Mathematically isolate exact 0.0 division without polluting warmup NaNs
-    rs = avg_gain / avg_loss.replace(0.0, np.nan)
-    rsi = pd.Series(100.0 - (100.0 / (1.0 + rs)), index=data.index)
-    rsi = np.where((avg_loss == 0.0) & (avg_gain > 0.0), 100.0, rsi)
-    
-    return pd.Series(rsi, index=data.index)
+    rs = avg_gain / avg_loss.replace(0, pd.NA)
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    rsi = rsi.fillna(100.0)  # avg_loss == 0 means all gains → RSI = 100
+    return rsi
 
 def calculate_all_indicators(
     symbol_data: pd.DataFrame,
@@ -172,18 +102,10 @@ def calculate_all_indicators(
             all_results_df[f'21ema osc {tf_name}'] = osc.ewm(span=21).mean()
 
             if len(osc.dropna()) >= 20:
-                # C-4 FIX: Distribution-free "robust z-score" via empirical quantile + probit.
-                # Step 1: Empirical quantile rank — distribution-free, no Gaussian assumption.
-                # Step 2: Probit transform (inverse normal CDF) — maps [0,1] back to z-score
-                #         scale (~[-3, 3]) so ALL downstream strategy thresholds remain valid.
-                # This gives the same familiar scale while eliminating the normality bias.
-                qr = empirical_quantile_rank_timeseries(osc.dropna(), expanding_min=50)
-                # Clip to (0.001, 0.999) to avoid ±inf from norm.ppf(0) and norm.ppf(1)
-                qr_clipped = np.clip(qr, 0.001, 0.999)
-                robust_zscore = _norm.ppf(qr_clipped)
-                all_results_df[f'zscore {tf_name}'] = pd.Series(
-                    robust_zscore, index=osc.dropna().index, name=f'zscore {tf_name}'
-                )
+                osc_sma20 = osc.rolling(window=20).mean()
+                osc_std20 = osc.rolling(window=20).std()
+                safe_std20 = osc_std20.replace(0, pd.NA)
+                all_results_df[f'zscore {tf_name}'] = (osc - osc_sma20) / safe_std20
 
         rsi_series = calculate_rsi(df)
         if rsi_series is not None and not rsi_series.dropna().empty:
@@ -195,89 +117,28 @@ def calculate_all_indicators(
                 if period == 20:
                     all_results_df[f'dev{period} {tf_name}'] = df['close'].rolling(window=period).std()
 
-    # C-5: Add validated liquidity indicators (Amihud, Corwin-Schultz)
-    amihud = calculate_amihud_illiquidity(daily_data, window=20)
-    if not amihud.dropna().empty:
-        all_results_df['amihud_illiquidity'] = amihud
-
-    cs_spread = calculate_corwin_schultz(daily_data, window=20)
-    if not cs_spread.dropna().empty:
-        all_results_df['corwin_schultz_spread'] = cs_spread
-
     all_results_df = all_results_df.reindex(daily_data.index)
-
+    
     weekly_cols = [col for col in all_results_df.columns if 'weekly' in col]
     all_results_df[weekly_cols] = all_results_df[weekly_cols].ffill()
-
+    
     return all_results_df
 
 
 def load_symbols_from_file(filepath: str = "symbols.txt") -> List[str]:
     """Load a list of stock symbols from a text file (one per line)."""
     if not os.path.exists(filepath):
-        logger.error("Symbol file not found at: %s", filepath)
         return []
 
     try:
         with open(filepath, 'r') as f:
             symbols = [line.strip().upper() for line in f if line.strip()]
-        logger.info("Loaded %d symbols from %s", len(symbols), filepath)
-        # MEDIUM-2: Survivorship bias warning — a static symbol file only
-        # contains stocks that exist TODAY.  Any stock removed from the index
-        # (delisted, merged, or dropped from NIFTY) is absent, systematically
-        # overstating backtest returns for mean-reversion strategies.
-        logger.warning(
-            "SURVIVORSHIP BIAS: symbols.txt is a static file containing only "
-            "current constituents.  Historical backtest results may be upward-"
-            "biased because delisted or removed stocks are excluded.  Consider "
-            "using a point-in-time constituent list for rigorous backtesting."
-        )
         return symbols
-    except Exception as e:
-        logger.error("Error reading symbol file %s: %s", filepath, e)
+    except Exception:
         return []
 
-# Load the fixed universe (static fallback)
+# Load the fixed universe
 SYMBOLS_UNIVERSE = load_symbols_from_file()
-
-
-def get_universe_for_date(
-    date: Optional[datetime] = None,
-    historical_constituents_path: Optional[str] = None,
-) -> List[str]:
-    """
-    Return the appropriate symbol universe for a given date.
-
-    If a historical constituents file is available, uses point-in-time
-    membership to avoid survivorship bias (C-3 / Priority 5).  Otherwise
-    falls back to the static ``symbols.txt`` universe with a warning.
-
-    Args:
-        date: The as-of date.  Defaults to today.
-        historical_constituents_path: Path to a CSV mapping dates → constituents.
-
-    Returns:
-        List of ticker symbols valid for that date.
-    """
-    snapshot = load_point_in_time_universe(
-        date=date or datetime.now(),
-        historical_constituents_path=historical_constituents_path,
-        static_symbols=SYMBOLS_UNIVERSE,
-    )
-    if snapshot.source == "static":
-        logger.warning(
-            "Using static universe (%d symbols) — survivorship bias present. "
-            "Provide historical_constituents_path for point-in-time accuracy.",
-            len(snapshot.constituents),
-        )
-    else:
-        logger.info(
-            "Point-in-time universe for %s: %d constituents (source: %s)",
-            snapshot.date.strftime("%Y-%m-%d"),
-            len(snapshot.constituents),
-            snapshot.source,
-        )
-    return snapshot.constituents
 
 # Define the column order here so it can be used by the generator
 COLUMN_ORDER = [
@@ -288,8 +149,7 @@ COLUMN_ORDER = [
     'zscore latest', 'zscore weekly',
     'ma20 latest', 'ma90 latest', 'ma200 latest',
     'ma20 weekly', 'ma90 weekly', 'ma200 weekly',
-    'dev20 latest', 'dev20 weekly',
-    'amihud_illiquidity', 'corwin_schultz_spread',
+    'dev20 latest', 'dev20 weekly'
 ]
 
 # --- NEW: Export max indicator period ---
@@ -304,6 +164,13 @@ def generate_historical_data(
 ) -> List[Tuple[datetime, pd.DataFrame]]:
     """
     Generate historical indicator snapshots for a list of symbols.
+    
+    LITERATURE-RIGOROUS VALIDATION:
+    - Validates symbol universe
+    - Validates date range
+    - Validates data quality
+    - Propagates errors explicitly
+    - Uses circuit breaker for yfinance
 
     Args:
         symbols_to_process: Stock ticker symbols (e.g. ``["RELIANCE.NS"]``).
@@ -312,54 +179,108 @@ def generate_historical_data(
 
     Returns:
         Chronologically ordered list of ``(date, indicator_df)`` tuples.
+        
+    Raises:
+        ValueError: If symbol universe is empty or date range is invalid
+        ConnectionError: If yfinance API fails
+        RuntimeError: If no valid data received
     """
+    # Get metrics tracker
+    metrics = get_metrics()
+    
+    # === VALIDATION 1: Symbol Universe ===
     if not symbols_to_process:
-        logger.error("No symbols provided to generate_historical_data.")
-        return []
-
-    # --- Download ---
-    try:
-        logger.info("yfinance: downloading %d symbols...", len(symbols_to_process))
-        all_data = yf.download(
-            symbols_to_process,
-            start=start_date,
-            end=end_date + timedelta(days=1),  # yfinance is end-exclusive
-            progress=False,
-            auto_adjust=True,  # Prevent stock splits from causing massive false indicator spikes
+        metrics.add_error("ValueError", "Symbol universe is empty", "generate_historical_data")
+        raise ValueError("Symbol universe is empty - please add tickers to symbols.txt")
+    
+    if len(symbols_to_process) > 500:
+        metrics.add_warning(f"Large universe ({len(symbols_to_process)} symbols) - may be slow")
+        console_message = f"⚠️ Large universe: {len(symbols_to_process)} symbols (recommended: <300)"
+        try:
+            from logger_config import console
+            console.warning(console_message)
+        except Exception:
+            pass
+    
+    # === VALIDATION 2: Date Range ===
+    if start_date > end_date:
+        metrics.add_error(
+            "ValueError",
+            f"Start date ({start_date}) is after end date ({end_date})",
+            "generate_historical_data"
         )
+        raise ValueError(f"Start date ({start_date}) cannot be after end date ({end_date})")
+    
+    # Note: No limit on date range - allow user to fetch any range they need
+    # Large date ranges will take longer but are valid
+    
+    # Update metrics
+    metrics.symbols_count = len(symbols_to_process)
+    
+    # === DOWNLOAD WITH CIRCUIT BREAKER ===
+    try:
+        # Use circuit breaker for yfinance calls
+        @yfinance_circuit.protect
+        def download_data():
+            return yf.download(
+                symbols_to_process,
+                start=start_date,
+                end=end_date + timedelta(days=1),
+                progress=False,
+            )
+        
+        all_data = download_data()
+        
     except Exception as e:
-        logger.error("yf.download failed: %s", e)
-        all_data = pd.DataFrame()
-
-    # Prevent after-hours lookahead bias
-    if not all_data.empty:
-        if all_data.index.tz is not None:
-            all_data.index = all_data.index.tz_localize(None)
-        # Strip time and strictly clip to requested end_date to drop Yahoo's live/partial injections
-        all_data.index = all_data.index.normalize()
-        end_boundary = pd.to_datetime(end_date).normalize()
-        all_data = all_data.loc[all_data.index <= end_boundary]
-
+        # Circuit breaker or download failed
+        metrics.add_error(type(e).__name__, str(e), "yfinance.download")
+        
+        # Check if it's a circuit breaker error
+        if "Circuit" in str(e) and "OPEN" in str(e):
+            raise ConnectionError(
+                f"yfinance service unavailable (circuit breaker OPEN): {str(e)}"
+            ) from e
+        else:
+            raise ConnectionError(f"yfinance API failed: {str(e)}") from e
+    
+    # === VALIDATION 3: Data Received ===
     if all_data.empty or all_data['Close'].dropna(how='all').empty:
-        logger.error("yf.download returned empty or all-NaN Close data.")
-        return []
-
-    # --- Remove failed tickers ---
+        metrics.add_error("RuntimeError", "No valid market data received from yfinance", "data_validation")
+        raise ValueError("No valid market data received from yfinance - check symbols and date range")
+    
+    # === VALIDATION 4: Remove Failed Tickers ===
     if len(symbols_to_process) > 1:
         valid_tickers = all_data['Close'].dropna(how='all', axis=1).columns
         invalid_tickers = [s for s in symbols_to_process if s not in valid_tickers]
-
+        
         if invalid_tickers:
-            logger.warning("Skipping tickers with no data: %s", ", ".join(invalid_tickers))
+            invalid_ratio = len(invalid_tickers) / len(symbols_to_process)
+            if invalid_ratio > 0.5:
+                metrics.add_warning(
+                    f"More than 50% of tickers have no data ({len(invalid_tickers)}/{len(symbols_to_process)})"
+                )
+                try:
+                    from logger_config import console
+                    console.warning(
+                        f"⚠️ {len(invalid_tickers)}/{len(symbols_to_process)} tickers have no data - check symbol validity"
+                    )
+                except Exception:
+                    pass
+            
+            if len(invalid_tickers) == len(symbols_to_process):
+                metrics.add_error(
+                    "RuntimeError", 
+                    "No valid tickers in data - all symbols failed", 
+                    "ticker_validation"
+                )
+                raise ValueError("No valid tickers in data - all symbols failed. Check symbols.txt")
+            
             all_data = all_data.loc[:, (slice(None), valid_tickers)]
             symbols_to_process = list(valid_tickers)
-
-            if not symbols_to_process:
-                logger.error("No valid tickers remaining after download.")
-                return []
-
-    logger.info("Download OK. Shape: %s, tickers: %d", all_data.shape, len(symbols_to_process))
-
+    
+    # Update metrics with actual valid symbols
+    metrics.symbols_count = len(symbols_to_process)
+    
     all_data.columns.names = ['Indicator', 'Symbol']
     oscillator_calculator = LiquidityOscillator(length=20, impact_window=3)
     
@@ -385,51 +306,52 @@ def generate_historical_data(
                 indicators_df = calculate_all_indicators(symbol_df, oscillator_calculator)
                 ticker_indicator_cache[ticker] = indicators_df
                 
-        except (pd.errors.DataError, KeyError, IndexError) as e:
-            logger.warning("Skipping %s: data quality error during indicator calculation (%s)", ticker, e)
+        except (pd.errors.DataError, KeyError, IndexError):
             continue
 
     # 3. --- Generate Daily Snapshots in Memory ---
     pragati_data_list: List[Tuple[datetime, pd.DataFrame]] = []
-    
-    if not ticker_indicator_cache:
-        return []
+    # Use the index of the downloaded data as the authoritative date range
+    date_range = all_data.index.normalize().unique()
 
-    # Memory Optimization: Apply temporal boundary before concatenation.
-    # Prevents O(N * Warmup) memory bloat by strictly joining required rows.
-    all_ticker_dfs = []
-    valid_start = start_date + timedelta(days=MAX_INDICATOR_PERIOD)
-    
-    for ticker, df in ticker_indicator_cache.items():
-        mask = (df.index >= valid_start) & (df.index <= end_date)
-        sliced_df = df.loc[mask]
-        if not sliced_df.empty:
-            # .assign() creates a rapid shallow copy to prevent memory fragmentation
-            all_ticker_dfs.append(sliced_df.assign(symbol=ticker.replace('.NS', '')))
+    for snapshot_date in date_range:
+        # --- NEW: Only start generating snapshots *after* the indicator period
+        # We also only care about dates *within* the requested range (end_date)
+        if snapshot_date < (start_date + timedelta(days=MAX_INDICATOR_PERIOD)) or snapshot_date > end_date:
+            continue
+
+        daily_results: List[Dict[str, Any]] = []
+        for ticker in symbols_to_process:
+            if ticker not in ticker_indicator_cache:
+                continue
             
-    if not all_ticker_dfs:
-        return []
+            full_indicator_df = ticker_indicator_cache[ticker]
+            
+            if snapshot_date not in full_indicator_df.index:
+                continue
+                
+            try:
+                indicator_row = full_indicator_df.loc[snapshot_date]
+                if indicator_row.isnull().all() or pd.isna(indicator_row.get('price')):
+                    continue # Skip if all data is NaN or price is NaN
+
+                indicators = indicator_row.to_dict()
+                indicators['symbol'] = ticker.replace('.NS', '')
+                indicators['date'] = snapshot_date.strftime('%d %b')
+                indicators['% change'] = indicators['% change'] * 100
+                
+                daily_results.append(indicators)
+            except KeyError:
+                continue
         
-    master_df = pd.concat(all_ticker_dfs)
-    master_df = master_df.dropna(subset=['price'])
-    
-    # Vectorized formatting
-    master_df['date'] = master_df.index.strftime('%d %b')
-    master_df['% change'] = master_df['% change'] * 100
-    
-    # Ensure column contract
-    for col in COLUMN_ORDER:
-        if col not in master_df.columns:
-            # Prevent Pandas extension type pollution which crashes downstream RMT/NumPy math
-            master_df[col] = np.nan
-    master_df = master_df[COLUMN_ORDER]
-    
-    # Group by index (date) and build the final list
-    for snapshot_date, group_df in master_df.groupby(master_df.index):
-        pragati_data_list.append((snapshot_date, group_df.reset_index(drop=True)))
-        
-    # Ensure chronological order
-    pragati_data_list.sort(key=lambda x: x[0])
+        if daily_results:
+            final_df = pd.DataFrame(daily_results)
+            for col in COLUMN_ORDER:
+                if col not in final_df.columns:
+                    final_df[col] = pd.NA
+            
+            final_df = final_df[COLUMN_ORDER]
+            pragati_data_list.append((snapshot_date, final_df))
 
     return pragati_data_list
 
@@ -546,13 +468,10 @@ def main():
 
 __all__ = [
     'LiquidityOscillator',
-    'calculate_amihud_illiquidity',
-    'calculate_corwin_schultz',
     'resample_data',
     'calculate_rsi',
     'calculate_all_indicators',
     'load_symbols_from_file',
-    'get_universe_for_date',
     'generate_historical_data',
     'SYMBOLS_UNIVERSE',
     'MAX_INDICATOR_PERIOD',
