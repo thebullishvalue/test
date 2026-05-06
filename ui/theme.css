@@ -234,7 +234,7 @@ footer {
 }
 
 .premium-header h1::after {
-    content: "प्रज्ञम";
+    content: "संकेत";
     position: absolute;
     right: 0;
     top: 0;
@@ -1231,18 +1231,6 @@ footer {
     border-top: 1px solid rgba(212, 168, 83, 0.15);
 }
 
-/* Nishkarsh convention aliases */
-.signal-card.undervalued {
-    @apply: signal-card.buy;
-}
-
-.signal-card.overvalued {
-    @apply: signal-card.sell;
-}
-
-.signal-card.fair {
-    @apply: signal-card.hold;
-}
 
 .signal-card.undervalued {
     border-top: 1px solid rgba(52, 211, 153, 0.15);
@@ -1725,7 +1713,7 @@ footer {
 .section-divider {
     height: 1px;
     background: linear-gradient(90deg, var(--border) 0%, transparent 100%);
-    margin: var(--sp-6) 0;
+    margin: var(--sp-3) 0;
     border: none;
 }
 
@@ -1746,7 +1734,7 @@ footer {
     color: var(--ink-tertiary);
     text-transform: uppercase;
     letter-spacing: 0.12em;
-    margin: var(--sp-6) 0 var(--sp-3) 0;
+    margin: var(--sp-2) 0 var(--sp-2) 0;
 }
 
 .stTextInput input,
@@ -1774,11 +1762,20 @@ footer {
    ================================================================ */
 [data-testid="stDataFrame"] {
     border-radius: var(--r-md);
-    overflow: hidden;
+    overflow: auto;
     border: 1px solid var(--border);
     background: linear-gradient(145deg, var(--glass) 0%, rgba(17, 24, 39, 0.4) 100%);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
+}
+
+/* Allow Streamlit's height parameter to work */
+[data-testid="stDataFrame"] > div {
+    max-height: none !important;
+}
+
+[data-testid="stDataFrame"] > div > div {
+    max-height: none !important;
 }
 
 [data-testid="stDataFrame"] table {
@@ -2516,7 +2513,7 @@ footer {
 }
 
 /* ================================================================
-   Plotly unified hover tooltip — custom spikeline styling (matches Nishkarsh)
+   Plotly unified hover tooltip — custom spikeline styling (matches Sanket)
    ================================================================ */
 .js-plotly-plot .plotly .hoverlayer .spikeline {
     stroke: rgba(148, 163, 184, 0.25) !important;
@@ -2953,6 +2950,167 @@ footer {
 }
 
 /* ================================================================
+   Correlation Mode — CSS Classes
+   ================================================================ */
+
+.corr-tier {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: var(--r-sm);
+    font-family: var(--data);
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+}
+
+.corr-tier.strong-pos {
+    color: var(--emerald);
+    background: rgba(45, 212, 168, 0.12);
+    border: 1px solid rgba(45, 212, 168, 0.25);
+}
+
+.corr-tier.moderate-pos {
+    color: var(--emerald-bright);
+    background: rgba(45, 212, 168, 0.08);
+    border: 1px solid rgba(45, 212, 168, 0.15);
+}
+
+.corr-tier.weak-pos {
+    color: var(--ink-secondary);
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border);
+}
+
+.corr-tier.neutral {
+    color: var(--ink-tertiary);
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+}
+
+.corr-tier.weak-neg {
+    color: var(--rose-bright);
+    background: rgba(232, 85, 90, 0.08);
+    border: 1px solid rgba(232, 85, 90, 0.15);
+}
+
+.corr-tier.moderate-neg {
+    color: var(--rose);
+    background: rgba(232, 85, 90, 0.12);
+    border: 1px solid rgba(232, 85, 90, 0.25);
+}
+
+.corr-tier.strong-neg {
+    color: var(--rose);
+    background: rgba(232, 85, 90, 0.18);
+    border: 1px solid rgba(232, 85, 90, 0.4);
+}
+
+.corr-bar-track {
+    width: 80px;
+    height: 6px;
+    background: var(--bg-elevated);
+    border-radius: 3px;
+    position: relative;
+    overflow: visible;
+}
+
+.corr-bar-center {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    width: 1px;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.corr-bar-fill {
+    position: absolute;
+    top: 0;
+    height: 6px;
+    border-radius: 3px;
+}
+
+.corr-bar-fill.pos {
+    background: linear-gradient(90deg, rgba(45, 212, 168, 0.4), var(--emerald));
+    left: 50%;
+}
+
+.corr-bar-fill.neg {
+    background: linear-gradient(90deg, var(--rose), rgba(232, 85, 90, 0.4));
+    right: 50%;
+}
+
+.div-badge {
+    font-family: var(--data);
+    font-size: 0.65rem;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
+.div-badge.laggard {
+    color: var(--emerald);
+    background: rgba(45, 212, 168, 0.1);
+}
+
+.div-badge.runaway {
+    color: var(--rose);
+    background: rgba(232, 85, 90, 0.1);
+}
+
+.div-badge.converging {
+    color: var(--amber);
+    background: rgba(212, 168, 83, 0.1);
+}
+
+.div-badge.contra {
+    color: var(--violet);
+    background: rgba(139, 92, 246, 0.1);
+}
+
+.corr-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--sp-3) var(--sp-4);
+    background: var(--glass);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-md);
+    margin-bottom: var(--sp-2);
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.corr-row:hover {
+    border-color: rgba(139, 92, 246, 0.25);
+    background: var(--glass-hover);
+}
+
+.corr-row .name {
+    font-family: var(--data);
+    font-size: 0.78rem;
+    color: var(--ink-primary);
+    font-weight: 600;
+}
+
+.corr-row .sub {
+    font-family: var(--data);
+    font-size: 0.65rem;
+    color: var(--ink-tertiary);
+    margin-top: 2px;
+}
+
+.chart-container.corr::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: radial-gradient(circle at 1px 1px, rgba(139, 92, 246, 0.15) 1px, transparent 0);
+    background-size: 24px 24px;
+    pointer-events: none;
+    z-index: 0;
+}
+
+/* ================================================================
    Responsive Design
    ================================================================ */
 @media (prefers-reduced-motion: reduce) {
@@ -3098,6 +3256,152 @@ footer {
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
     }
+
+    /* Fix table cutoff on small mobile screens */
+    [data-testid="stDataFrame"] {
+        height: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+    }
+
+    [data-testid="stDataFrame"] > div {
+        height: auto !important;
+        max-height: none !important;
+    }
+
+    [data-testid="stDataFrame"] [role="grid"] {
+        height: auto !important;
+        min-height: auto !important;
+    }
+
+    [data-testid="stDataFrame"] tbody tr:last-child td {
+        padding-bottom: 3rem !important;
+    }
+}
+
+/* ================================================================
+   SIGNAL INTERPRETATION GUIDE
+   ================================================================ */
+
+.signal-guide {
+    position: relative;
+    margin: 2rem 0;
+    padding: 1.5rem;
+    background: linear-gradient(145deg, rgba(17, 24, 39, 0.35) 0%, rgba(10, 14, 23, 0.25) 100%);
+    border: 1px solid rgba(212, 168, 83, 0.2);
+    border-radius: 10px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+}
+
+.signal-guide-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #D4A853;
+}
+
+.signal-guide-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.signal-type {
+    padding: 1rem;
+    border-radius: 6px;
+    border-left: 3px solid transparent;
+}
+
+.signal-type.momentum {
+    background: rgba(45, 212, 168, 0.08);
+    border-left-color: rgba(45, 212, 168, 0.4);
+}
+
+.signal-type.crossover {
+    background: rgba(212, 168, 83, 0.08);
+    border-left-color: rgba(212, 168, 83, 0.4);
+}
+
+.signal-type.threshold {
+    background: rgba(148, 163, 184, 0.08);
+    border-left-color: rgba(148, 163, 184, 0.4);
+}
+
+.signal-type.squeeze {
+    background: rgba(139, 92, 246, 0.08);
+    border-left-color: rgba(139, 92, 246, 0.4);
+}
+
+.signal-type-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 0.75rem;
+}
+
+.signal-type.momentum .signal-type-label {
+    color: #2DD4A8;
+}
+
+.signal-type.crossover .signal-type-label {
+    color: #D4A853;
+}
+
+.signal-type.threshold .signal-type-label {
+    color: #94A3B8;
+}
+
+.signal-type.squeeze .signal-type-label {
+    color: #8B5CF6;
+}
+
+.signal-type-desc {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.7rem;
+    color: #94A3B8;
+    line-height: 1.5;
+}
+
+.signal-guide-metrics {
+    padding-top: 1.5rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.signal-guide-metrics-title {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #F1F5F9;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 0.75rem;
+}
+
+.signal-guide-metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 0.75rem;
+}
+
+.metric-item {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.7rem;
+    color: #94A3B8;
+}
+
+.metric-label {
+    color: #F1F5F9;
+    font-weight: 600;
 }
 
 /* ================================================================
@@ -3711,6 +4015,7 @@ footer {
     [data-testid="stDataFrame"],
     .stMarkdown table {
         overflow-x: auto;
+        overflow-y: visible;
         -webkit-overflow-scrolling: touch;
     }
 
@@ -3718,6 +4023,14 @@ footer {
     [data-testid="stDataFrame"] table,
     .stMarkdown table {
         min-width: 600px;
+    }
+
+    [data-testid="stDataFrame"] tbody {
+        display: table-row-group;
+    }
+
+    [data-testid="stDataFrame"] tbody tr:last-child td {
+        padding-bottom: calc(var(--sp-3) + 0.5rem);
     }
 }
 
@@ -3746,6 +4059,52 @@ footer {
     /* Keyboard shortcuts — hide on mobile */
     .kbd-shortcuts {
         display: none !important;
+    }
+
+    /* Ensure dataframe tables don't clip last row on mobile */
+    [data-testid="stDataFrame"] {
+        overflow-y: visible !important;
+        overflow-x: auto !important;
+        height: auto !important;
+        max-height: none !important;
+        min-height: auto !important;
+        display: block !important;
+    }
+
+    /* Remove height constraints from all nested Streamlit wrappers */
+    [data-testid="stDataFrame"] > div,
+    [data-testid="stDataFrame"] > div > div,
+    [data-testid="stDataFrame"] > div > div > div {
+        height: auto !important;
+        max-height: none !important;
+        min-height: auto !important;
+        display: block !important;
+    }
+
+    [data-testid="stDataFrame"] [role="grid"],
+    [data-testid="stDataFrame"] [role="presentation"],
+    [data-testid="stDataFrame"] [role="rowgroup"] {
+        height: auto !important;
+        min-height: auto !important;
+        max-height: none !important;
+        display: block !important;
+    }
+
+    [data-testid="stDataFrame"] table {
+        margin-bottom: var(--sp-10) !important;
+        width: 100%;
+    }
+
+    [data-testid="stDataFrame"] tbody {
+        display: table-row-group !important;
+    }
+
+    [data-testid="stDataFrame"] tbody tr {
+        display: table-row !important;
+    }
+
+    [data-testid="stDataFrame"] tbody tr:last-child td {
+        padding-bottom: calc(var(--sp-3) + 3rem) !important;
     }
 }
 
@@ -3905,4 +4264,40 @@ footer {
     .interp-card {
         padding: var(--sp-3) var(--sp-4) !important;
     }
+}
+/* ================================================================
+   Narrative Matrix Guide
+   ================================================================ */
+.narrative-guide-grid { 
+    display: grid; 
+    grid-template-columns: repeat(4, 1fr); 
+    gap: 0.8rem; 
+    margin-bottom: 2rem; 
+}
+.crush-card { 
+    background: rgba(239, 68, 68, 0.06) !important; 
+    border-left: 3px solid rgba(239, 68, 68, 0.4) !important; 
+}
+.crush-card .signal-type-label { color: #ef4444 !important; }
+.soft-card { 
+    background: rgba(148, 163, 184, 0.06) !important; 
+    border-left: 3px solid rgba(148, 163, 184, 0.4) !important; 
+}
+.soft-card .signal-type-label { color: #94a3b8 !important; }
+.firm-card { 
+    background: rgba(74, 158, 255, 0.06) !important; 
+    border-left: 3px solid rgba(74, 158, 255, 0.4) !important; 
+}
+.firm-card .signal-type-label { color: #4a9eff !important; }
+.surge-card { 
+    background: rgba(34, 197, 94, 0.06) !important; 
+    border-left: 3px solid rgba(34, 197, 94, 0.4) !important; 
+}
+.surge-card .signal-type-label { color: #22c55e !important; }
+.narr-desc { 
+    font-size: 0.58rem; 
+    line-height: 1.3; 
+    color: #94A3B8; 
+    text-transform: uppercase; 
+    font-weight: 500; 
 }

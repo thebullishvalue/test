@@ -1,5 +1,5 @@
 """
-Pragyam v7.0.5 — Reusable UI components: metric cards, signal badges, headers, section headers.
+Pragyam v7.1.0 — Reusable UI components: metric cards, signal badges, headers, section headers.
 
 UI — Obsidian Quant Terminal design language.
 """
@@ -33,6 +33,7 @@ ICONS = {
     "download":   '<svg aria-label="Download icon" role="img" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
     "briefcase":  '<svg aria-label="Portfolio icon" role="img" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>',
     "compass":    '<svg aria-label="Regime icon" role="img" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>',
+    "link":       '<svg aria-label="Link/Correlation icon" role="img" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
 }
 
 
@@ -53,12 +54,12 @@ def render_section_header(
     svg = ICONS.get(icon, ICONS["chart"])
     icon_class = f"icon {accent}" if accent else "icon"
     hdr_class = f"section-hdr {accent}" if accent else "section-hdr"
-    desc_html = f'<div class="desc">{html_mod.escape(description)}</div>' if description else ""
+    desc_html = f'<div class="desc">{html_mod.escape(str(description))}</div>' if description else ""
     st.markdown(
         f'<div class="{hdr_class}">'
         f'<div class="{icon_class}">{svg}</div>'
         f'<div class="text">'
-        f'<h3>{html_mod.escape(title)}</h3>'
+        f'<h3>{html_mod.escape(str(title))}</h3>'
         f'{desc_html}'
         f'</div>'
         f'</div>',
@@ -99,14 +100,50 @@ def render_metric_card(
         )
 
     st.markdown(
-        f'<div class="metric-card {html_mod.escape(color_class)}">'
-        f"<h4>{html_mod.escape(label)}</h4>"
-        f"<h2>{html_mod.escape(value)}</h2>"
-        f'{f"<div class=\"sub-metric\">{html_mod.escape(subtext)}</div>" if subtext else ""}'
+        f'<div class="metric-card {html_mod.escape(str(color_class))}">'
+        f"<h4>{html_mod.escape(str(label))}</h4>"
+        f"<h2>{html_mod.escape(str(value))}</h2>"
+        f'{f"<div class=\"sub-metric\">{html_mod.escape(str(subtext))}</div>" if subtext else ""}'
         f"{tooltip_html}"
         f"</div>",
         unsafe_allow_html=True,
     )
+
+
+def render_metric_row(metrics: list[dict[str, str]]) -> None:
+    """Render a row of metric cards.
+
+    Args:
+        metrics: List of dicts with keys: label, value, delta (opt), kind (opt).
+    """
+    cols = st.columns(len(metrics))
+    for i, m in enumerate(metrics):
+        with cols[i]:
+            render_metric_card(
+                m["label"],
+                m["value"],
+                m.get("delta", ""),
+                m.get("kind", "primary")
+            )
+
+
+def render_signal_item(symbol: str, price: float, change: float, signal: str, score: float) -> None:
+    """Render a premium signal list item."""
+    kind = "success" if signal == "BUY" else "danger" if signal == "SELL" else "neutral"
+    icon = "trending_up" if signal == "BUY" else "trending_down" if signal == "SELL" else "activity"
+    
+    st.markdown(f"""
+    <div class="symbol-row">
+        <div style="display:flex; align-items:center; gap:0.75rem;">
+            <div class="signal-icon {kind}">{signal}</div>
+            <div>
+                <div class="symbol-name">{symbol}</div>
+                <div class="symbol-price">{price:,.2f} <span style="color: {'var(--emerald)' if change >= 0 else 'var(--rose)'};">{change:+.2f}%</span></div>
+            </div>
+        </div>
+        <div class="symbol-score" style="color: var(--amber);">Score {score:,.1f}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 def render_conviction_signal(
@@ -130,25 +167,25 @@ def render_conviction_signal(
     if conviction >= 65:
         signal_class = "buy"
         signal_text = "Strong Buy"
-        emoji = "🟢"
+        icon_svg = ICONS["target"].replace('1.5', '2') # Bolder icon
         conviction_bar_width = min(100, conviction)
         conviction_bar_color = "var(--emerald)"
     elif conviction >= 50:
         signal_class = "buy"
         signal_text = "Buy"
-        emoji = "🟩"
+        icon_svg = ICONS["activity"]
         conviction_bar_width = min(100, conviction)
         conviction_bar_color = "var(--emerald-bright)"
     elif conviction >= 35:
         signal_class = "hold"
         signal_text = "Hold"
-        emoji = "🟡"
+        icon_svg = ICONS["cube"]
         conviction_bar_width = min(100, conviction)
         conviction_bar_color = "var(--amber)"
     else:
         signal_class = "sell"
         signal_text = "Caution"
-        emoji = "🔴"
+        icon_svg = ICONS["shield"]
         conviction_bar_width = min(100, conviction)
         conviction_bar_color = "var(--rose)"
 
@@ -175,8 +212,8 @@ def render_conviction_signal(
                 </div>
             </div>
             <div style="font-family:var(--data); font-size:0.75rem; font-weight:700; color:var(--ink-primary); min-width:40px; text-align:right; position:relative; z-index:1;">{int(conviction)}</div>
-            <div class="signal-pill {signal_class}" style="display:inline-flex; align-items:center; gap:0.3rem; padding:0.3rem 0.75rem; border-radius:20px; font-size:0.72rem; font-weight:600; position:relative; z-index:1;">
-                {emoji} {signal_text}
+            <div class="signal-pill {signal_class}" style="display:inline-flex; align-items:center; gap:0.4rem; padding:0.3rem 0.75rem; border-radius:20px; font-size:0.72rem; font-weight:600; position:relative; z-index:1;">
+                <div style="width:12px; height:12px;">{icon_svg}</div> {signal_text}
             </div>
         </div>
         """,
@@ -437,9 +474,58 @@ def render_interpretation_card(
         color: Semantic color — "neutral", "success", "danger", "warning", "info".
     """
     st.markdown(
-        f'<div class="interp-card {html_mod.escape(color)}">'
-        f'<div class="interp-title">{html_mod.escape(title)}</div>'
-        f'<div class="interp-body">{html_mod.escape(body)}</div>'
+        f'<div class="interp-card {html_mod.escape(str(color))}">'
+        f'<div class="interp-title">{html_mod.escape(str(title))}</div>'
+        f'<div class="interp-body">{html_mod.escape(str(body))}</div>'
         f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_signal_guide() -> None:
+    """Render the Signal Interpretation Guide with three signal types.
+
+    Displays Momentum (A), Crossover (B), and Threshold (C) explanations
+    in a premium glassmorphic card matching the terminal design.
+    """
+    st.markdown(
+        '''
+        <div class="signal-guide">
+            <div class="signal-guide-header">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <path d="M12 6v6l4 2"></path>
+                </svg>
+                Signal Types Reference
+            </div>
+
+            <div class="signal-guide-grid">
+                <div class="signal-type momentum">
+                    <div class="signal-type-label">Set A: Momentum</div>
+                    <div class="signal-type-desc">Composite Line crosses Signal Line anywhere • No zone filter • Captures building momentum</div>
+                </div>
+
+                <div class="signal-type crossover">
+                    <div class="signal-type-label">Set B: Crossover</div>
+                    <div class="signal-type-desc">Lines cross in extreme zones (±40) • Momentum exhaustion • High precision timing</div>
+                </div>
+
+                <div class="signal-type threshold">
+                    <div class="signal-type-label">Set C: Threshold</div>
+                    <div class="signal-type-desc">Freshly enters OS/OB zone from neutral • First bar of entry • Earliest actionable signal</div>
+                </div>
+            </div>
+
+            <div class="signal-guide-metrics">
+                <div class="signal-guide-metrics-title">Key Metrics</div>
+                <div class="signal-guide-metrics-grid">
+                    <div class="metric-item"><span class="metric-label">Pulse</span> · Abnormal Acceleration (Velocity * Z-Score)</div>
+                    <div class="metric-item"><span class="metric-label">Δ Pulse</span> · Velocity change in Abnormal Acceleration</div>
+                    <div class="metric-item"><span class="metric-label">Conviction</span> · Signal magnitude + trend confluence</div>
+                    <div class="metric-item"><span class="metric-label">Δ Conv</span> · Rate of change in system conviction</div>
+                </div>
+            </div>
+        </div>
+        ''',
         unsafe_allow_html=True,
     )
