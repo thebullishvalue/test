@@ -1,57 +1,66 @@
-PROPRIETARY SOFTWARE LICENSE AGREEMENT
+SANKET — Proprietary Software License
 
-Copyright (c) 2024-2026 @thebullishvalue. All Rights Reserved.
+Copyright (c) 2026 Antigravity. All rights reserved.
 
-NOTICE: This software and associated documentation files (the "Software") 
-are proprietary to @thebullishvalue and are protected by copyright law and 
-international treaties.
+SANKET is proprietary software developed by Antigravity as part of the
+Pragyam product family. This software and all associated source code,
+documentation, design assets, and analytical methodologies are the
+exclusive intellectual property of Antigravity.
 
-GRANT OF LICENSE
-Subject to the terms of this Agreement, @thebullishvalue grants to the 
-Licensee a non-exclusive, non-transferable license to use the Software 
-solely for the Licensee's internal business purposes.
+PERMITTED USES
+
+You may use this software solely for personal, internal, or
+organisational market analysis purposes in accordance with the terms
+under which it was provided to you.
 
 RESTRICTIONS
-The Licensee shall NOT:
-1. Copy, modify, or distribute the Software
-2. Reverse engineer, decompile, or disassemble the Software
-3. Rent, lease, or lend the Software to third parties
-4. Remove or alter any proprietary notices on the Software
-5. Use the Software to develop competing products
-6. Share access credentials or API keys with unauthorized users
 
-CONFIDENTIALITY
-The Software contains trade secrets and proprietary information of
-@thebullishvalue. The Licensee agrees to maintain the confidentiality
-of the Software and not disclose it to any third party.
+Without the prior written consent of Antigravity, you may not:
 
-DISCLAIMER OF WARRANTIES
-THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS 
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
-FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+  1. Copy, reproduce, or distribute this software or any portion of it,
+     in source or binary form, to any third party.
 
-LIMITATION OF LIABILITY
-IN NO EVENT SHALL @THEBULLISHVALUE BE LIABLE FOR ANY INDIRECT, INCIDENTAL, 
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES ARISING OUT OF OR IN 
-CONNECTION WITH THE USE OF THE SOFTWARE.
+  2. Modify, adapt, translate, reverse-engineer, decompile, disassemble,
+     or create derivative works based on this software.
 
-INVESTMENT DISCLAIMER
-The Software is for informational and educational purposes only. It does 
-not constitute investment advice, and past performance does not guarantee 
-future results. Users should conduct their own due diligence and consult 
-with qualified financial advisors before making investment decisions.
+  3. Sublicense, sell, rent, lease, transfer, assign, or otherwise
+     commercially exploit this software.
 
-TERMINATION
-This license is effective until terminated. @thebullishvalue may terminate 
-this license at any time if the Licensee breaches any term of this Agreement.
+  4. Remove or alter any proprietary notices, trademarks, or labels
+     contained within the software.
 
-GOVERNING LAW
-This Agreement shall be governed by the laws of India.
+  5. Use the WRCI engine, signal detection logic, or UI design system
+     in any other product or service without a separate written licence.
+
+DISCLAIMER
+
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+NON-INFRINGEMENT.
+
+IN NO EVENT SHALL ANTIGRAVITY BE LIABLE FOR ANY CLAIM, DAMAGES, OR
+OTHER LIABILITY ARISING FROM THE USE OF, OR INABILITY TO USE, THIS
+SOFTWARE, INCLUDING BUT NOT LIMITED TO FINANCIAL LOSSES RESULTING FROM
+TRADING OR INVESTMENT DECISIONS MADE ON THE BASIS OF SIGNALS PRODUCED
+BY THIS SOFTWARE.
+
+MARKET DATA NOTICE
+
+This software fetches market data from third-party providers (NSE India,
+Yahoo Finance, nsepython). Use of that data is subject to the respective
+providers' terms of service. Antigravity makes no representations
+regarding the accuracy, completeness, or timeliness of data obtained
+from these sources.
 
 CONTACT
-For licensing inquiries: thebullishvalue@gmail.com
+
+For licensing enquiries, custom deployments, or permissions beyond the
+scope of this licence, contact Antigravity.
 
 ---
-@thebullishvalue
-India
-thebullishvalue@gmail.com
+
+Product: SANKET v1.0.0
+Family:  Pragyam
+Author:  Antigravity · @thebullishvalue
+Year:    2026
