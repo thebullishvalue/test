@@ -2,11 +2,11 @@
 // ║  WRCI · Wave-Regime Composite Index                                     ║
 // ║  INTELLIGENCE: Abnormal Acceleration (Pulse) Engine                     ║
 // ║  LOGIC: 5D Velocity * 20D Volatility Z-Score                            ║
-// ║  VERSION: v3.0.0                                                        ║
+// ║  VERSION: v3.1.0                                                        ║
 // ╚═════════════════════════════════════════════════════════════════════════╝
 
-//@version=6
-indicator("Wave-Regime Composite Index [Sanket Pulse]", shorttitle="WRCI", overlay=false)
+//@version=5
+indicator("WRCI [Sanket Core]", "WRCI (v3.1.0)", overlay=false, precision=2, max_bars_back=500)
 
 // ╔═════════════════════════════════════════════════════════════════════════╗
 // ║  SECTION 1 · INPUTS & CONFIGURATION                                     ║
@@ -76,12 +76,12 @@ tci        = ta.ema(ci, n2)
 wt1        = tci
 wt2        = ta.sma(wt1, 4)
 
-// ── 3B · CONVICTION V3 ENGINE ──────────────────────────────────────────────
+// ── 3B · CONVICTION ENGINE ──────────────────────────────────────────────────
 // Component 1: Trend Strength (structural, slow, magnitude-aware)
 hma_close = ta.hma(close, reg_len)
-slope_v3 = ta.linreg(hma_close, reg_len, 0) - ta.linreg(hma_close, reg_len, 1)
+slope = ta.linreg(hma_close, reg_len, 0) - ta.linreg(hma_close, reg_len, 1)
 avg_price = ta.sma(close, reg_len)
-slope_pct = slope_v3 / math.max(avg_price, 0.001)
+slope_pct = slope / math.max(avg_price, 0.001)
 
 tr_val = ta.tr(true)
 atr = ta.sma(tr_val, reg_len)
@@ -110,7 +110,7 @@ flow = 0.7 * participation + 0.3 * rsi_norm
 // Composite Conviction [−100, +100]
 conviction = 100 * (0.50 * trend_str + 0.30 * wt_sep_n + 0.20 * flow)
 
-// ── 3C · PULSE V3 ENGINE ───────────────────────────────────────────────────
+// ── 3C · PULSE ENGINE ───────────────────────────────────────────────────
 // Use 3-bar velocity and 30-bar baseline (no overlap)
 conv_vel_3 = conviction - nz(conviction[3], conviction)
 baseline_30 = ta.sma(nz(conviction[3], conviction), 27)
@@ -161,6 +161,17 @@ c_state = cd_norm > 1.0 ? ">>" : cd_norm > 0.0 ? ">" : cd_norm > -1.0 ? "<" : "<
 p_label = p_state == ">>" ? "SURGE" : p_state == ">" ? "FIRM" : p_state == "<" ? "SOFT" : "CRUSH"
 c_label = c_state == ">>" ? "LEAD"  : c_state == ">" ? "DEEP" : c_state == "<" ? "LIGHT" : "HOLLOW"
 
+// ── Orthogonal Factors (Sanket v4 Cohesion) ──
+f1_log_ret  = math.log(close / nz(close[5], close))
+f1_atr_pct  = (ta.sma(ta.tr, 14) / close)
+f1_pricemom = math.max(-5, math.min(5, f1_log_ret / math.max(f1_atr_pct, 1e-6)))
+
+f2_vol_mean  = ta.sma(volume, 20)
+f2_vol_std   = ta.stdev(volume, 20)
+f2_vol_z     = (volume - f2_vol_mean) / math.max(f2_vol_std, 1e-6)
+f2_price_dir = math.sign(close - nz(close[5], close))
+f2_volqual   = ta.sma(f2_vol_z * f2_price_dir, 5)
+
 var string narrative = "NEUTRAL"
 var color  narr_col  = C_TXT_NORM
 var string narr_icon = "⚙️"
@@ -207,9 +218,14 @@ bear_zone_depth = math.max(0, math.min(1, (wt1 - obLevel2) / (obLevel1 - obLevel
 is_bullish = conviction > 0
 final_p_mult = is_bullish ? p_mult : (2.1 - p_mult)
 zone_bonus   = is_bullish ? bull_zone_depth : bear_zone_depth
-// Priority V3 uses the same 60/40 blend logic for visual parity
-// Scaling Pulse by 10 to match Conviction scale (100 vs 6)
-priority_val = (math.abs(conviction) * 0.6 + math.abs(pulse) * 10.0 * 0.4) * (1 + zone_bonus * 0.4) * final_p_mult
+
+// v4 Additive Composition (BP Equivalent pseudo-priority)
+p4_f1 = f1_pricemom * 15.0
+p4_f2 = f2_volqual * 8.0
+p4_f3 = (conviction / 20.0) * 10.0
+p4_f4 = pulse * 12.0
+// Regime (F5) and Cross-Sectional (F6) estimated as constants for Pine
+priority_val = p4_f1 + p4_f2 + p4_f3 + p4_f4 + 25.0
 
 
 // ╔═════════════════════════════════════════════════════════════════════════╗
@@ -288,7 +304,7 @@ plot(-100,  "Conviction Delta Trace", color=conv_delta  > 0 ? C_POS    : C_NEG, 
 plot(100, "Pulse Delta Trace",      color=pulse_delta > 0 ? C_ACCENT : C_WARN, linewidth=3)
  
 // ── 5D · Intelligence Table ──
-var table intel_tbl = table.new(position.top_right, 2, 7, bgcolor=C_BG_DARK, border_width=0, frame_width=1, frame_color=#333333)
+var table intel_tbl = table.new(position.top_right, 2, 8, bgcolor=C_BG_DARK, border_width=0, frame_width=1, frame_color=#333333)
 if barstate.islast
     // Header
     table.cell(intel_tbl, 0, 0, "METRIC",     text_halign=text.align_left,  text_color=C_TXT_DIM, bgcolor=C_BG_HEADER, text_size=size.tiny)
@@ -314,9 +330,13 @@ if barstate.islast
     table.cell(intel_tbl, 0, 5, "Matrix (C|P)", text_halign=text.align_left,  text_color=C_TXT_NORM, bgcolor=C_BG_EVEN, text_size=size.small)
     table.cell(intel_tbl, 1, 5, c_label + " | " + p_label, text_halign=text.align_right, text_color=C_TXT_BRIGHT, bgcolor=C_BG_EVEN, text_size=size.small)
 
-    // Row 6: Narrative & Priority
+    // Row 6: Narrative
     table.cell(intel_tbl, 0, 6, "Narrative",  text_halign=text.align_left,  text_color=C_TXT_NORM, bgcolor=C_BG_DARK, text_size=size.small)
-    table.cell(intel_tbl, 1, 6, narr_icon + " " + narrative + " (" + str.tostring(priority_val, "#.#") + ")", text_halign=text.align_right, text_color=narr_col, bgcolor=C_BG_DARK, text_size=size.small)
+    table.cell(intel_tbl, 1, 6, narr_icon + " " + narrative, text_halign=text.align_right, text_color=narr_col, bgcolor=C_BG_DARK, text_size=size.small)
+
+    // Row 7: Priority (BP Equivalent)
+    table.cell(intel_tbl, 0, 7, "Priority L (bp)", text_halign=text.align_left,  text_color=C_TXT_NORM, bgcolor=C_BG_EVEN, text_size=size.small)
+    table.cell(intel_tbl, 1, 7, str.tostring(priority_val, "#.##"), text_halign=text.align_right, text_color=priority_val > 0 ? C_POS : C_NEG, bgcolor=C_BG_EVEN, text_size=size.small)
 
 
 // ╔═════════════════════════════════════════════════════════════════════════╗
