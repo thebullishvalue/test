@@ -34,6 +34,7 @@ ICONS = {
     "briefcase":  '<svg aria-label="Portfolio icon" role="img" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>',
     "compass":    '<svg aria-label="Regime icon" role="img" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>',
     "link":       '<svg aria-label="Link/Correlation icon" role="img" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
+    "brain":      '<svg aria-label="Intelligence icon" role="img" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.79-2.79 2.5 2.5 0 0 1 .44-4.96 2.5 2.5 0 0 1-.44-4.96 2.5 2.5 0 0 1 2.79-2.79A2.5 2.5 0 0 1 9.5 2z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.79-2.79 2.5 2.5 0 0 0-.44-4.96 2.5 2.5 0 0 0 .44-4.96 2.5 2.5 0 0 0-2.79-2.79A2.5 2.5 0 0 0 14.5 2z"/></svg>',
 }
 
 
@@ -433,8 +434,8 @@ def render_export_button_row(
     label: str = "Export",
     icon: str = "download",
     data: bytes = b"",
-    file_name: str = "export.csv",
-    mime: str = "text/csv",
+    file_name: str = "export.xlsx",
+    mime: str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ) -> None:
     """Render a right-aligned export button with icon.
 
