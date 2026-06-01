@@ -1,12 +1,12 @@
 /* ================================================================
-   Arthagati v2.7.0 — Obsidian Quant Terminal CSS
-   Adapted from Nishkarsh v1.2.0 — same design thesis & fidelity.
-
+   Pragyam v3.2.1 — Obsidian Quant Terminal CSS
+   Extracted to theme.css for maintainability
+   
    Aesthetic: "Obsidian Quant" — Institutional Research Terminal
-   Primary Accent: Amber Gold (#D4A853)
+   Primary Accent: Amber Gold (#D4A853) — matching Pragyam branding
    ================================================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&family=Syne:wght@400;500;600;700;800&family=Instrument+Serif:wght@400&family=IBM+Plex+Mono:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&family=Syne:wght@400;500;600;700;800&family=Instrument+Serif:wght@400&family=IBM+Plex+Mono:wght@300;400;500;600&family=Noto+Sans+Devanagari:wght@400;500&display=swap');
 
 /* ================================================================
    DESIGN TOKENS — Obsidian Quant
@@ -73,6 +73,7 @@
     --display: 'Space Grotesk', 'Syne', -apple-system, sans-serif;
     --display-serif: 'Instrument Serif', Georgia, serif;
     --data: 'IBM Plex Mono', 'JetBrains Mono', 'Fira Code', monospace;
+    --devanagari: 'Noto Sans Devanagari', 'Mangal', sans-serif;
 
     /* ---- Card shared variables (DRY) ---- */
     --card-base: linear-gradient(145deg, var(--glass) 0%, rgba(17, 24, 39, 0.4) 100%);
@@ -84,28 +85,6 @@
     --r-md: 10px;
     --r-lg: 14px;
     --r-xl: 20px;
-
-    /* ---- Backward-compat aliases (legacy Arthagati tokens) ----
-       These map the old colour-name variables that legacy markup in
-       arthagati.py references onto the Obsidian Quant palette, so
-       existing HTML strings render correctly without rewriting each
-       block. New code should prefer the canonical tokens above. */
-    --primary-color: var(--amber);
-    --primary-rgb: 212, 168, 83;
-    --background-color: var(--bg-deep);
-    --secondary-background-color: var(--bg-elevated);
-    --bg-card: var(--bg-elevated);
-    --bg-elevated-legacy: var(--bg-surface);
-    --text-primary: var(--ink-primary);
-    --text-secondary: var(--ink-secondary);
-    --text-muted: var(--ink-tertiary);
-    --border-color: var(--border);
-    --border-light: rgba(255, 255, 255, 0.10);
-    --success-green: var(--emerald-bright);
-    --danger-red: var(--rose-bright);
-    --warning-amber: var(--amber);
-    --info-cyan: var(--cyan);
-    --neutral: var(--slate-warm);
 }
 
 /* ================================================================
@@ -163,11 +142,6 @@ body,
     font-family: var(--data);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-}
-
-svg {
-    vertical-align: middle;
-    shape-rendering: geometricPrecision;
 }
 
 .stApp {
@@ -261,11 +235,11 @@ footer {
 }
 
 .premium-header h1::after {
-    content: "अर्थगति";
+    content: "\0938\0902\0915\0947\0924";
     position: absolute;
     right: 0;
     top: 0;
-    font-family: var(--display-serif);
+    font-family: var(--devanagari);
     font-size: 2rem;
     font-weight: 400;
     color: var(--amber-dim);
@@ -670,6 +644,12 @@ footer {
     flex-direction: column;
 }
 
+/* Push the spec list to the bottom regardless of paragraph length —
+   keeps all three landing cards visually aligned even if one card's
+   paragraph wraps to a different number of lines. */
+.system-card .spec {
+    margin-top: auto;
+}
 
 /* Force the column row containing system-cards to stretch all columns
    to the height of the tallest card. Targets only Streamlit horizontal
@@ -684,70 +664,29 @@ footer {
     flex-direction: column;
 }
 
-/* ────────────────────────────────────────────────────────────────────────
-   Equal-height metric cards — robust against Streamlit DOM changes.
-
-   The fragile approach is cascading `height: 100%` through every nested
-   div: it depends on the entire chain having an explicit height, which
-   breaks the moment Streamlit inserts a new wrapper (stVerticalBlock,
-   stColumn, etc.).
-
-   The robust approach is **flex-grow all the way down**:
-     - The horizontal block is a flex row with `align-items: stretch`
-       so every column gets the height of the tallest sibling automatically.
-     - Every descendant inside the column is set to a flex column with
-       `flex: 1 1 auto`, so it claims whatever vertical space its parent
-       gives it — without needing an explicit `height: 100%`.
-     - The card itself uses `flex: 1 1 auto` and `min-height` to set
-       a floor while letting the tallest sibling drive the row height.
-
-   The universal selector ` * ` is scoped to rows that *contain* a
-   metric-card (via `:has`), so the rule only affects metric-card rows.
-   ──────────────────────────────────────────────────────────────────────── */
+/* Equal-height metric cards — complete the flex/height chain from stColumn
+   all the way down to .metric-card regardless of Streamlit DOM depth.
+   Covers both testid variants (element-container / stElementContainer)
+   used across Streamlit versions, plus stMarkdownContainer. */
 [data-testid="stHorizontalBlock"]:has(.metric-card) {
-    display: flex !important;
     align-items: stretch !important;
 }
-
-/* Each column (direct child of horizontal block) is a flex column that
-   stretches to row height. */
-[data-testid="stHorizontalBlock"]:has(.metric-card) > * {
+/* Propagate height through every unnamed intermediate div inside the column */
+[data-testid="stHorizontalBlock"]:has(.metric-card) > [data-testid="stColumn"] > div,
+[data-testid="stHorizontalBlock"]:has(.metric-card) > [data-testid="stColumn"] > div > div,
+[data-testid="stHorizontalBlock"]:has(.metric-card) > [data-testid="stColumn"] > div > div > div,
+[data-testid="stHorizontalBlock"]:has(.metric-card) > [data-testid="stColumn"] > div > div > div > div {
+    height: 100% !important;
     display: flex !important;
     flex-direction: column !important;
-    align-self: stretch !important;
-    flex: 1 1 0 !important;
 }
-
-/* Wrapper DIVs between the column and the card (up to 6 levels of Streamlit's
-   nesting) propagate the flex chain. Using `> div > div > ...` instead of `*`
-   so the rule only matches plain wrappers — NOT <h4>, <h2>, <span> inside
-   the card itself, which would otherwise inherit `flex-direction: column`
-   and (combined with `align-items: center`) accidentally center text. */
-[data-testid="stHorizontalBlock"]:has(.metric-card) > * > div,
-[data-testid="stHorizontalBlock"]:has(.metric-card) > * > div > div,
-[data-testid="stHorizontalBlock"]:has(.metric-card) > * > div > div > div,
-[data-testid="stHorizontalBlock"]:has(.metric-card) > * > div > div > div > div,
-[data-testid="stHorizontalBlock"]:has(.metric-card) > * > div > div > div > div > div {
-    display: flex !important;
-    flex-direction: column !important;
-    flex: 1 1 auto !important;
-}
-
-/* Cover Streamlit's testid-named wrappers (covers DOM variants across versions). */
-[data-testid="stHorizontalBlock"]:has(.metric-card) [data-testid="stVerticalBlock"],
+/* Cover both testid variants for element container + markdown wrapper */
 [data-testid="stHorizontalBlock"]:has(.metric-card) [data-testid="element-container"],
 [data-testid="stHorizontalBlock"]:has(.metric-card) [data-testid="stElementContainer"],
 [data-testid="stHorizontalBlock"]:has(.metric-card) [data-testid="stMarkdownContainer"] {
+    height: 100% !important;
     display: flex !important;
     flex-direction: column !important;
-    flex: 1 1 auto !important;
-}
-
-/* The card itself fills the column it lives in. */
-[data-testid="stHorizontalBlock"]:has(.metric-card) .metric-card {
-    flex: 1 1 auto !important;
-    height: auto !important;
-    align-self: stretch !important;
 }
 
 /* Diagonal accent line */
@@ -828,9 +767,6 @@ footer {
     z-index: 1;
 }
 
-/* Push the spec list to the bottom regardless of paragraph length —
-   keeps all three landing cards visually aligned even if one card's
-   paragraph wraps to a different number of lines. */
 .system-card .spec {
     font-family: var(--data);
     font-size: 0.68rem;
@@ -1077,24 +1013,6 @@ footer {
     margin: 0 0 var(--sp-3) 0;
     position: relative;
     z-index: 1;
-    display: flex;
-    flex-direction: row;        /* horizontal flow: icon then label */
-    align-items: center;        /* vertical centering of icon + text */
-    justify-content: flex-start;/* lock to left edge */
-    text-align: left;
-}
-
-.card-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    margin-right: 0.45rem;
-    opacity: 0.9;
-    vertical-align: middle;
-}
-
-.card-icon svg {
-    display: block;
 }
 
 .metric-card h2 {
@@ -1107,7 +1025,6 @@ footer {
     letter-spacing: -0.02em;
     position: relative;
     z-index: 1;
-    text-align: left;
 }
 
 /* Equal-height columns defined above — DRY, single source */
@@ -1253,20 +1170,17 @@ footer {
     background: linear-gradient(0deg, var(--violet-glow) 0%, transparent 100%);
 }
 
-/* Metric card tooltip — 12×12 ring centered concentrically on the 6×6 ::before glow dot */
+/* Metric card tooltip */
 .metric-tooltip {
     position: absolute;
-    top: calc(var(--sp-3) - 3px);
-    right: calc(var(--sp-3) - 3px);
-    width: 12px;
-    height: 12px;
+    top: var(--sp-3);
+    right: var(--sp-3);
     color: var(--ink-tertiary);
     cursor: help;
     opacity: 0.5;
     transition: opacity 200ms ease;
     display: flex;
     align-items: center;
-    justify-content: center;
 }
 
 .metric-tooltip:hover {
@@ -1306,101 +1220,74 @@ footer {
 /* ================================================================
    Signal cards
    ================================================================ */
-/* Hero signal card — same design language as .metric-card (corner dot, bottom
-   sweep, gradient-tinted background, matching easing) but with larger padding
-   and typography for hero placement. */
 .signal-card {
-    --card-accent: var(--slate-warm);
-    --card-glow: rgba(139, 126, 106, 0.15);
-    --card-bg: var(--card-base);
-    --card-border: var(--card-border-default);
-    --card-bg-hover: var(--card-base-hover);
-
-    background: var(--card-bg);
+    background: var(--glass);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
-    border: 1px solid var(--card-border);
+    border: 1px solid var(--border);
     border-radius: var(--r-lg);
     padding: var(--sp-8) var(--sp-10);
     position: relative;
     overflow: hidden;
-    transition: all 350ms cubic-bezier(0.16, 1, 0.3, 1);
-    animation: cardIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-/* Corner accent dot — matches .metric-card::before placement */
-.signal-card::before {
-    content: "";
-    position: absolute;
-    top: calc(var(--sp-3) + 3px);
-    right: calc(var(--sp-3) + 3px);
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--card-accent);
-    box-shadow: 0 0 12px var(--card-glow);
-    transition: all 350ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-/* Bottom gradient sweep on hover */
-.signal-card::after {
-    content: "";
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    height: 0;
-    background: linear-gradient(0deg, var(--card-glow) 0%, transparent 100%);
-    opacity: 0;
-    transition: all 350ms cubic-bezier(0.16, 1, 0.3, 1);
-    pointer-events: none;
+    transition: border-color 300ms ease, box-shadow 300ms ease, transform 300ms ease;
+    animation: cardIn 0.6s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
 .signal-card:hover {
-    background: var(--card-bg-hover);
-    border-color: rgba(255, 255, 255, 0.1);
-    transform: translateY(-3px) scale(1.005);
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25), 0 4px 12px rgba(0, 0, 0, 0.15);
+    border-color: rgba(255, 255, 255, 0.12);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+    transform: translateY(-2px);
 }
 
-.signal-card:hover::before {
-    transform: scale(1.5);
-    box-shadow: 0 0 16px var(--card-accent);
+.signal-card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--ink-tertiary);
+    transition: background 300ms ease, box-shadow 300ms ease;
 }
 
-.signal-card:hover::after {
-    height: 40%;
-    opacity: 0.15;
+.signal-card.buy::before {
+    background: var(--emerald);
+    box-shadow: 0 0 20px var(--emerald-glow);
 }
 
-/* Variant tints — emerald (buy/undervalued) */
-.signal-card.buy,
+.signal-card.sell::before {
+    background: var(--rose);
+    box-shadow: 0 0 20px var(--rose-glow);
+}
+
+.signal-card.hold::before {
+    background: var(--amber);
+    box-shadow: 0 0 16px var(--amber-glow);
+}
+
+.signal-card.buy {
+    border-top: 1px solid rgba(52, 211, 153, 0.15);
+}
+
+.signal-card.sell {
+    border-top: 1px solid rgba(251, 113, 133, 0.15);
+}
+
+.signal-card.hold {
+    border-top: 1px solid rgba(212, 168, 83, 0.15);
+}
+
+
 .signal-card.undervalued {
-    --card-accent: var(--emerald);
-    --card-glow: var(--emerald-glow);
-    --card-bg: linear-gradient(145deg, rgba(45, 212, 168, 0.04) 0%, rgba(17, 24, 39, 0.4) 100%);
-    --card-border: rgba(45, 212, 168, 0.2);
-    --card-bg-hover: linear-gradient(145deg, rgba(45, 212, 168, 0.08) 0%, rgba(21, 28, 44, 0.5) 100%);
+    border-top: 1px solid rgba(52, 211, 153, 0.15);
 }
 
-/* Variant tints — rose (sell/overvalued) */
-.signal-card.sell,
 .signal-card.overvalued {
-    --card-accent: var(--rose);
-    --card-glow: var(--rose-glow);
-    --card-bg: linear-gradient(145deg, rgba(232, 85, 90, 0.04) 0%, rgba(17, 24, 39, 0.4) 100%);
-    --card-border: rgba(232, 85, 90, 0.2);
-    --card-bg-hover: linear-gradient(145deg, rgba(232, 85, 90, 0.08) 0%, rgba(21, 28, 44, 0.5) 100%);
+    border-top: 1px solid rgba(251, 113, 133, 0.15);
 }
 
-/* Variant tints — amber (hold/fair) */
-.signal-card.hold,
 .signal-card.fair {
-    --card-accent: var(--amber);
-    --card-glow: var(--amber-glow);
-    --card-bg: linear-gradient(145deg, rgba(212, 168, 83, 0.04) 0%, rgba(17, 24, 39, 0.4) 100%);
-    --card-border: rgba(212, 168, 83, 0.2);
-    --card-bg-hover: linear-gradient(145deg, rgba(212, 168, 83, 0.08) 0%, rgba(21, 28, 44, 0.5) 100%);
+    border-top: 1px solid rgba(212, 168, 83, 0.15);
 }
 
 @keyframes cardIn {
@@ -1444,18 +1331,15 @@ footer {
     line-height: 1.6;
 }
 
-.signal-card.buy .value,
-.signal-card.undervalued .value {
+.signal-card.buy .value {
     color: var(--emerald);
 }
 
-.signal-card.sell .value,
-.signal-card.overvalued .value {
+.signal-card.sell .value {
     color: var(--rose);
 }
 
-.signal-card.hold .value,
-.signal-card.fair .value {
+.signal-card.hold .value {
     color: var(--amber);
 }
 
@@ -1610,23 +1494,18 @@ footer {
 }
 
 /* ================================================================
-   Regime badge
+   Regime badge (Pragyam-specific)
    ================================================================ */
 .regime-badge {
     background: var(--glass);
     backdrop-filter: blur(12px);
     border: 1px solid var(--border);
     border-radius: var(--r-lg);
-    padding: var(--sp-8);
+    padding: var(--sp-6);
     text-align: center;
     position: relative;
     overflow: hidden;
     transition: all 300ms ease;
-    min-height: 285px;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
 }
 
 .regime-badge:hover {
@@ -1635,10 +1514,9 @@ footer {
 }
 
 .regime-icon {
-    margin-bottom: var(--sp-2);
-    display: flex;
-    justify-content: center;
-    align-items: center;
+    font-size: 3rem;
+    margin-bottom: var(--sp-3);
+    display: block;
 }
 
 .regime-name {
@@ -1885,11 +1763,6 @@ footer {
     border: none;
 }
 
-/* Sidebar-scoped: tighter rhythm between consecutive settings groups */
-[data-testid="stSidebar"] .section-divider {
-    margin: var(--sp-2) 0;
-}
-
 /* ================================================================
    Inputs & Sidebar
    ================================================================ */
@@ -1907,7 +1780,7 @@ footer {
     color: var(--ink-tertiary);
     text-transform: uppercase;
     letter-spacing: 0.12em;
-    margin: var(--sp-3) 0 var(--sp-2) 0;
+    margin: var(--sp-2) 0 var(--sp-2) 0;
 }
 
 .stTextInput input,
@@ -1935,11 +1808,20 @@ footer {
    ================================================================ */
 [data-testid="stDataFrame"] {
     border-radius: var(--r-md);
-    overflow: hidden;
+    overflow: auto;
     border: 1px solid var(--border);
     background: linear-gradient(145deg, var(--glass) 0%, rgba(17, 24, 39, 0.4) 100%);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
+}
+
+/* Allow Streamlit's height parameter to work */
+[data-testid="stDataFrame"] > div {
+    max-height: none !important;
+}
+
+[data-testid="stDataFrame"] > div > div {
+    max-height: none !important;
 }
 
 [data-testid="stDataFrame"] table {
@@ -2677,7 +2559,7 @@ footer {
 }
 
 /* ================================================================
-   Plotly unified hover tooltip — custom spikeline styling (matches Nishkarsh)
+   Plotly unified hover tooltip — custom spikeline styling (matches Sanket)
    ================================================================ */
 .js-plotly-plot .plotly .hoverlayer .spikeline {
     stroke: rgba(148, 163, 184, 0.25) !important;
@@ -3114,6 +2996,167 @@ footer {
 }
 
 /* ================================================================
+   Correlation Mode — CSS Classes
+   ================================================================ */
+
+.corr-tier {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: var(--r-sm);
+    font-family: var(--data);
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+}
+
+.corr-tier.strong-pos {
+    color: var(--emerald);
+    background: rgba(45, 212, 168, 0.12);
+    border: 1px solid rgba(45, 212, 168, 0.25);
+}
+
+.corr-tier.moderate-pos {
+    color: var(--emerald-bright);
+    background: rgba(45, 212, 168, 0.08);
+    border: 1px solid rgba(45, 212, 168, 0.15);
+}
+
+.corr-tier.weak-pos {
+    color: var(--ink-secondary);
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border);
+}
+
+.corr-tier.neutral {
+    color: var(--ink-tertiary);
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+}
+
+.corr-tier.weak-neg {
+    color: var(--rose-bright);
+    background: rgba(232, 85, 90, 0.08);
+    border: 1px solid rgba(232, 85, 90, 0.15);
+}
+
+.corr-tier.moderate-neg {
+    color: var(--rose);
+    background: rgba(232, 85, 90, 0.12);
+    border: 1px solid rgba(232, 85, 90, 0.25);
+}
+
+.corr-tier.strong-neg {
+    color: var(--rose);
+    background: rgba(232, 85, 90, 0.18);
+    border: 1px solid rgba(232, 85, 90, 0.4);
+}
+
+.corr-bar-track {
+    width: 80px;
+    height: 6px;
+    background: var(--bg-elevated);
+    border-radius: 3px;
+    position: relative;
+    overflow: visible;
+}
+
+.corr-bar-center {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    width: 1px;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.corr-bar-fill {
+    position: absolute;
+    top: 0;
+    height: 6px;
+    border-radius: 3px;
+}
+
+.corr-bar-fill.pos {
+    background: linear-gradient(90deg, rgba(45, 212, 168, 0.4), var(--emerald));
+    left: 50%;
+}
+
+.corr-bar-fill.neg {
+    background: linear-gradient(90deg, var(--rose), rgba(232, 85, 90, 0.4));
+    right: 50%;
+}
+
+.div-badge {
+    font-family: var(--data);
+    font-size: 0.65rem;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
+.div-badge.laggard {
+    color: var(--emerald);
+    background: rgba(45, 212, 168, 0.1);
+}
+
+.div-badge.runaway {
+    color: var(--rose);
+    background: rgba(232, 85, 90, 0.1);
+}
+
+.div-badge.converging {
+    color: var(--amber);
+    background: rgba(212, 168, 83, 0.1);
+}
+
+.div-badge.contra {
+    color: var(--violet);
+    background: rgba(139, 92, 246, 0.1);
+}
+
+.corr-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--sp-3) var(--sp-4);
+    background: var(--glass);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--r-md);
+    margin-bottom: var(--sp-2);
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.corr-row:hover {
+    border-color: rgba(139, 92, 246, 0.25);
+    background: var(--glass-hover);
+}
+
+.corr-row .name {
+    font-family: var(--data);
+    font-size: 0.78rem;
+    color: var(--ink-primary);
+    font-weight: 600;
+}
+
+.corr-row .sub {
+    font-family: var(--data);
+    font-size: 0.65rem;
+    color: var(--ink-tertiary);
+    margin-top: 2px;
+}
+
+.chart-container.corr::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: radial-gradient(circle at 1px 1px, rgba(139, 92, 246, 0.15) 1px, transparent 0);
+    background-size: 24px 24px;
+    pointer-events: none;
+    z-index: 0;
+}
+
+/* ================================================================
    Responsive Design
    ================================================================ */
 @media (prefers-reduced-motion: reduce) {
@@ -3259,6 +3302,152 @@ footer {
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
     }
+
+    /* Fix table cutoff on small mobile screens */
+    [data-testid="stDataFrame"] {
+        height: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+    }
+
+    [data-testid="stDataFrame"] > div {
+        height: auto !important;
+        max-height: none !important;
+    }
+
+    [data-testid="stDataFrame"] [role="grid"] {
+        height: auto !important;
+        min-height: auto !important;
+    }
+
+    [data-testid="stDataFrame"] tbody tr:last-child td {
+        padding-bottom: 3rem !important;
+    }
+}
+
+/* ================================================================
+   SIGNAL INTERPRETATION GUIDE
+   ================================================================ */
+
+.signal-guide {
+    position: relative;
+    margin: 2rem 0;
+    padding: 1.5rem;
+    background: linear-gradient(145deg, rgba(17, 24, 39, 0.35) 0%, rgba(10, 14, 23, 0.25) 100%);
+    border: 1px solid rgba(212, 168, 83, 0.2);
+    border-radius: 10px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+}
+
+.signal-guide-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #D4A853;
+}
+
+.signal-guide-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.signal-type {
+    padding: 1rem;
+    border-radius: 6px;
+    border-left: 3px solid transparent;
+}
+
+.signal-type.momentum {
+    background: rgba(45, 212, 168, 0.08);
+    border-left-color: rgba(45, 212, 168, 0.4);
+}
+
+.signal-type.crossover {
+    background: rgba(212, 168, 83, 0.08);
+    border-left-color: rgba(212, 168, 83, 0.4);
+}
+
+.signal-type.threshold {
+    background: rgba(148, 163, 184, 0.08);
+    border-left-color: rgba(148, 163, 184, 0.4);
+}
+
+.signal-type.squeeze {
+    background: rgba(139, 92, 246, 0.08);
+    border-left-color: rgba(139, 92, 246, 0.4);
+}
+
+.signal-type-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 0.75rem;
+}
+
+.signal-type.momentum .signal-type-label {
+    color: #2DD4A8;
+}
+
+.signal-type.crossover .signal-type-label {
+    color: #D4A853;
+}
+
+.signal-type.threshold .signal-type-label {
+    color: #94A3B8;
+}
+
+.signal-type.squeeze .signal-type-label {
+    color: #8B5CF6;
+}
+
+.signal-type-desc {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.7rem;
+    color: #94A3B8;
+    line-height: 1.5;
+}
+
+.signal-guide-metrics {
+    padding-top: 1.5rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.signal-guide-metrics-title {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #F1F5F9;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 0.75rem;
+}
+
+.signal-guide-metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 0.75rem;
+}
+
+.metric-item {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.7rem;
+    color: #94A3B8;
+}
+
+.metric-label {
+    color: #F1F5F9;
+    font-weight: 600;
 }
 
 /* ================================================================
@@ -3483,7 +3672,7 @@ footer {
 }
 
 .signal-pill.buy:hover {
-    background: rgba(16, 185, 129, 0.2);
+    background: rgba(52, 211, 153, 0.2);
     box-shadow: 0 0 12px var(--emerald-glow);
 }
 
@@ -3493,19 +3682,8 @@ footer {
 }
 
 .signal-pill.sell:hover {
-    background: rgba(239, 68, 68, 0.2);
+    background: rgba(251, 113, 133, 0.2);
     box-shadow: 0 0 12px var(--rose-glow);
-}
-
-.signal-pill.caution:hover {
-    background: rgba(239, 68, 68, 0.2);
-    box-shadow: 0 0 12px rgba(239, 68, 68, 0.2);
-}
-
-.signal-pill .signal-icon {
-    display: inline-flex;
-    align-items: center;
-    flex-shrink: 0;
 }
 
 /* ================================================================
@@ -3659,285 +3837,8 @@ footer {
 }
 
 /* ================================================================
-   INTELLIGENCE TAB ENHANCEMENTS
+   THEME TOGGLE ENHANCEMENT
    ================================================================ */
-
-.intel-table-wrap {
-    overflow-x: auto;
-    border: 1px solid var(--border);
-    border-radius: var(--r-md);
-    background: var(--card-base);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    /* Match .interp-card vertical rhythm so both columns in the Intelligence
-       tab align their top edges directly under their section headers. */
-    margin: var(--sp-6) 0;
-}
-
-.portfolio-table-2col {
-    width: 100%;
-    border-collapse: collapse;
-    table-layout: fixed;
-}
-
-.portfolio-table-2col th,
-.portfolio-table-2col td {
-    padding: var(--sp-3) var(--sp-3);
-    font-size: 0.78rem;
-}
-
-.portfolio-table-2col thead th {
-    background: linear-gradient(180deg, rgba(10, 14, 23, 0.95) 0%, rgba(10, 14, 23, 0.85) 100%);
-    color: var(--ink-tertiary);
-    font-family: var(--display);
-    font-size: 0.62rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    border-bottom: 2px solid var(--border-active);
-}
-
-.portfolio-table-2col tbody tr {
-    border-bottom: 1px solid var(--border-subtle);
-    transition: background 200ms ease;
-}
-
-.portfolio-table-2col tbody tr:last-child {
-    border-bottom: none;
-}
-
-.portfolio-table-2col tbody tr:hover {
-    background: rgba(212, 168, 83, 0.04);
-}
-
-div[data-multi-file-uploader] > div {
-    gap: 0;
-}
-
-.col-iw-factor {
-    width: 35%;
-    font-family: var(--display);
-    font-weight: 600;
-    letter-spacing: 0.01em;
-    white-space: nowrap;
-    color: var(--ink-primary);
-}
-
-.col-iw-long,
-.col-iw-short {
-    width: 32.5%;
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-    font-weight: 600;
-    font-family: var(--data);
-}
-
-.iw-delta {
-    font-size: 0.65rem;
-    font-weight: 400;
-    opacity: 0.7;
-    margin-left: 0.25rem;
-}
-
-/* Intelligence — Σ row under the Active Weights table */
-.intel-sigma {
-    text-align: right;
-    margin-top: var(--sp-2);
-    color: var(--ink-tertiary);
-    font-size: 0.7rem;
-    font-family: var(--data);
-    letter-spacing: 0.04em;
-}
-
-/* ================================================================
-   INTELLIGENCE — Method card (Obsidian Quant fidelity)
-   ================================================================ */
-
-.intel-method-card {
-    position: relative;
-    overflow: hidden;
-    background: var(--card-base);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid var(--border);
-    border-radius: var(--r-lg);
-    padding: var(--sp-5) var(--sp-6);
-    margin-top: var(--sp-5);
-    transition: all 400ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.intel-method-card:hover {
-    background: var(--card-base-hover);
-}
-
-/* Diagonal accent sweep — emerald, signature of the Intelligence module */
-.intel-method-card::before {
-    content: "";
-    position: absolute;
-    top: -34px;
-    right: -34px;
-    width: 160px;
-    height: 4px;
-    background: linear-gradient(90deg, var(--emerald) 0%, var(--emerald-glow) 40%, transparent 80%);
-    box-shadow: 0 0 18px var(--emerald-glow);
-    transform: rotate(25deg);
-    transform-origin: 100% 50%;
-    pointer-events: none;
-}
-
-/* Bottom gradient sweep on hover (mirrors system-card pattern) */
-.intel-method-card::after {
-    content: "";
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    height: 0;
-    background: linear-gradient(180deg, transparent 0%, var(--emerald-glow) 100%);
-    opacity: 0.4;
-    pointer-events: none;
-    transition: height 400ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-.intel-method-card:hover::after {
-    height: 35%;
-}
-
-.intel-method-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: var(--sp-4);
-    position: relative;
-    z-index: 1;
-}
-
-.intel-method-title {
-    font-family: var(--display);
-    font-size: 0.78rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: var(--emerald);
-    text-shadow: 0 0 24px var(--emerald-glow);
-}
-
-.intel-method-pill {
-    font-family: var(--data);
-    font-size: 0.68rem;
-    color: var(--ink-secondary);
-    padding: 0.35rem 0.85rem;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: rgba(10, 14, 23, 0.5);
-    letter-spacing: 0.04em;
-}
-
-.intel-method-lede {
-    color: var(--ink-secondary);
-    font-size: 0.82rem;
-    line-height: 1.7;
-    font-family: var(--data);
-    margin-bottom: var(--sp-5);
-    position: relative;
-    z-index: 1;
-}
-
-.intel-method-lede strong {
-    color: var(--ink-primary);
-    font-weight: 600;
-}
-
-.intel-method-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: var(--sp-3);
-    position: relative;
-    z-index: 1;
-}
-
-@media (max-width: 900px) {
-    .intel-method-grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
-}
-
-.intel-method-tile {
-    position: relative;
-    overflow: hidden;
-    background: rgba(10, 14, 23, 0.45);
-    border: 1px solid var(--border);
-    border-radius: var(--r-md);
-    padding: var(--sp-4);
-    transition: all 250ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.intel-method-tile:hover {
-    background: rgba(10, 14, 23, 0.65);
-    border-color: rgba(255, 255, 255, 0.1);
-    transform: translateY(-2px);
-}
-
-/* Corner dot accent — matches metric-card pattern */
-.intel-method-tile::before {
-    content: "";
-    position: absolute;
-    top: var(--sp-3);
-    right: var(--sp-3);
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--tile-accent, var(--emerald));
-    box-shadow: 0 0 10px var(--tile-accent-glow, var(--emerald-glow));
-    opacity: 0.85;
-    transition: transform 250ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.intel-method-tile:hover::before {
-    transform: scale(1.5);
-}
-
-/* Per-tile accent assignments */
-.intel-method-tile.tile-learns { --tile-accent: var(--emerald); --tile-accent-glow: var(--emerald-glow); }
-.intel-method-tile.tile-how    { --tile-accent: #4A9EFF;       --tile-accent-glow: rgba(74, 158, 255, 0.25); }
-.intel-method-tile.tile-obj    { --tile-accent: var(--amber);  --tile-accent-glow: var(--amber-glow); }
-.intel-method-tile.tile-safety { --tile-accent: #F472B6;       --tile-accent-glow: rgba(244, 114, 182, 0.25); }
-
-.intel-method-tile .tile-label {
-    font-family: var(--display);
-    font-size: 0.62rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: var(--tile-accent, var(--emerald));
-    margin-bottom: var(--sp-2);
-    padding-right: var(--sp-4); /* room for the corner dot */
-}
-
-.intel-method-tile .tile-body {
-    color: var(--ink-secondary);
-    font-size: 0.74rem;
-    line-height: 1.65;
-    font-family: var(--data);
-}
-
-.intel-method-tile .tile-body strong {
-    color: var(--ink-primary);
-    font-weight: 600;
-}
-
-.intel-method-tile .tile-body code {
-    color: var(--tile-accent, var(--emerald));
-    background: rgba(255, 255, 255, 0.04);
-    padding: 0.08rem 0.4rem;
-    border-radius: var(--r-sm);
-    font-family: var(--data);
-    font-size: 0.72rem;
-    letter-spacing: 0.02em;
-}
-
-/* ================================================================
-    FOOTER
-    ================================================================ */
 
 .theme-toggle {
     animation: fadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.5s both;
@@ -4160,6 +4061,7 @@ div[data-multi-file-uploader] > div {
     [data-testid="stDataFrame"],
     .stMarkdown table {
         overflow-x: auto;
+        overflow-y: visible;
         -webkit-overflow-scrolling: touch;
     }
 
@@ -4167,6 +4069,14 @@ div[data-multi-file-uploader] > div {
     [data-testid="stDataFrame"] table,
     .stMarkdown table {
         min-width: 600px;
+    }
+
+    [data-testid="stDataFrame"] tbody {
+        display: table-row-group;
+    }
+
+    [data-testid="stDataFrame"] tbody tr:last-child td {
+        padding-bottom: calc(var(--sp-3) + 0.5rem);
     }
 }
 
@@ -4195,6 +4105,52 @@ div[data-multi-file-uploader] > div {
     /* Keyboard shortcuts — hide on mobile */
     .kbd-shortcuts {
         display: none !important;
+    }
+
+    /* Ensure dataframe tables don't clip last row on mobile */
+    [data-testid="stDataFrame"] {
+        overflow-y: visible !important;
+        overflow-x: auto !important;
+        height: auto !important;
+        max-height: none !important;
+        min-height: auto !important;
+        display: block !important;
+    }
+
+    /* Remove height constraints from all nested Streamlit wrappers */
+    [data-testid="stDataFrame"] > div,
+    [data-testid="stDataFrame"] > div > div,
+    [data-testid="stDataFrame"] > div > div > div {
+        height: auto !important;
+        max-height: none !important;
+        min-height: auto !important;
+        display: block !important;
+    }
+
+    [data-testid="stDataFrame"] [role="grid"],
+    [data-testid="stDataFrame"] [role="presentation"],
+    [data-testid="stDataFrame"] [role="rowgroup"] {
+        height: auto !important;
+        min-height: auto !important;
+        max-height: none !important;
+        display: block !important;
+    }
+
+    [data-testid="stDataFrame"] table {
+        margin-bottom: var(--sp-10) !important;
+        width: 100%;
+    }
+
+    [data-testid="stDataFrame"] tbody {
+        display: table-row-group !important;
+    }
+
+    [data-testid="stDataFrame"] tbody tr {
+        display: table-row !important;
+    }
+
+    [data-testid="stDataFrame"] tbody tr:last-child td {
+        padding-bottom: calc(var(--sp-3) + 3rem) !important;
     }
 }
 
@@ -4355,399 +4311,55 @@ div[data-multi-file-uploader] > div {
         padding: var(--sp-3) var(--sp-4) !important;
     }
 }
-
 /* ================================================================
-   FILE UPLOADER ENHANCEMENTS — Obsidian Quant
+   Narrative Matrix Guide
    ================================================================ */
-[data-testid="stFileUploader"] {
-    background: transparent !important;
-    padding: 0 !important;
+.narrative-guide-grid { 
+    display: grid; 
+    grid-template-columns: repeat(4, 1fr); 
+    gap: 0.8rem; 
+    margin-bottom: 2rem; 
 }
-
-[data-testid="stFileUploadDropzone"] {
-    background: var(--glass) !important;
-    border: 1px dashed var(--border) !important;
-    border-radius: var(--r-md) !important;
-    backdrop-filter: blur(12px) !important;
-    transition: all 400ms cubic-bezier(0.16, 1, 0.3, 1) !important;
-    padding: var(--sp-8) var(--sp-6) !important;
-    display: flex !important;
-    flex-direction: column !important;
-    align-items: center !important;
-    justify-content: center !important;
-    gap: var(--sp-4) !important;
+.crush-card { 
+    background: rgba(239, 68, 68, 0.06) !important; 
+    border-left: 3px solid rgba(239, 68, 68, 0.4) !important; 
 }
-
-[data-testid="stFileUploadDropzone"]:hover {
-    border-color: var(--amber-dim) !important;
-    background: var(--glass-hover) !important;
-    box-shadow: 0 0 30px var(--amber-glow);
-    transform: translateY(-1px);
+.crush-card .signal-type-label { color: #ef4444 !important; }
+.soft-card { 
+    background: rgba(148, 163, 184, 0.06) !important; 
+    border-left: 3px solid rgba(148, 163, 184, 0.4) !important; 
 }
-
-/* Drag & Drop Label */
-[data-testid="stFileUploadDropzone"] .st-emotion-cache-1ae8k9d,
-[data-testid="stFileUploadDropzone"] span {
-    font-family: var(--display) !important;
-    color: var(--ink-primary) !important;
-    font-weight: 700 !important;
-    font-size: 0.78rem !important;
-    letter-spacing: 0.02em !important;
-    text-transform: uppercase !important;
+.soft-card .signal-type-label { color: #94a3b8 !important; }
+.firm-card { 
+    background: rgba(74, 158, 255, 0.06) !important; 
+    border-left: 3px solid rgba(74, 158, 255, 0.4) !important; 
 }
-
-/* Limit & Type Metadata */
-[data-testid="stFileUploadDropzone"] .st-emotion-cache-v065sh,
-[data-testid="stFileUploadDropzone"] small {
-    font-family: var(--data) !important;
-    color: var(--ink-tertiary) !important;
-    font-size: 0.58rem !important;
-    text-transform: uppercase !important;
-    letter-spacing: 0.06em !important;
-    margin-top: -0.15rem !important;
-    opacity: 0.7;
+.firm-card .signal-type-label { color: #4a9eff !important; }
+.surge-card { 
+    background: rgba(34, 197, 94, 0.06) !important; 
+    border-left: 3px solid rgba(34, 197, 94, 0.4) !important; 
 }
-
-/* "Browse files" Button Overhaul */
-[data-testid="stFileUploadDropzone"] button {
-    background: rgba(212, 168, 83, 0.06) !important;
-    border: 1px solid rgba(212, 168, 83, 0.25) !important;
-    color: var(--amber) !important;
-    font-family: var(--data) !important;
-    text-transform: uppercase !important;
-    letter-spacing: 0.12em !important;
-    font-size: 0.68rem !important;
-    font-weight: 600 !important;
-    padding: 0.4rem 1.2rem !important;
-    border-radius: var(--r-sm) !important;
-    transition: all 300ms ease !important;
-    margin-top: var(--sp-2) !important;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2) !important;
-}
-
-[data-testid="stFileUploadDropzone"] button:hover {
-    background: rgba(212, 168, 83, 0.12) !important;
-    border-color: var(--amber) !important;
-    box-shadow: 0 0 15px var(--amber-glow) !important;
-    color: var(--amber-bright) !important;
-    transform: scale(1.02);
-}
-
-/* Upload Icon Styling */
-[data-testid="stFileUploadDropzone"] svg {
-    color: var(--amber-dim) !important;
-    width: 24px !important;
-    height: 24px !important;
-    margin-bottom: var(--sp-2) !important;
-    filter: drop-shadow(0 0 8px var(--amber-glow));
-}
-
-/* Success State: File List Item */
-[data-testid="stFileUploaderFileName"] {
-    font-family: var(--data) !important;
-    color: var(--emerald-bright) !important;
-    font-size: 0.75rem !important;
-}
-
-[data-testid="stFileUploaderFileData"] {
-    background: rgba(45, 212, 168, 0.05) !important;
-    border: 1px solid rgba(45, 212, 168, 0.15) !important;
-    border-radius: var(--r-sm) !important;
-    padding: var(--sp-2) var(--sp-4) !important;
-}
-/* Custom Tables (Obsidian Quant Style - Matched to Portfolio Table) */
-.kv-table-container {
-    width: 100%;
-    margin: 1rem 0;
-    border-radius: 10px;
-    overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    background: linear-gradient(145deg, rgba(17, 24, 39, 0.45) 0%, rgba(17, 24, 39, 0.4) 100%);
-}
-
-.kv-table {
-    width: 100%;
-    border-collapse: collapse;
-}
-
-.kv-table thead th {
-    background: linear-gradient(180deg, rgba(10, 14, 23, 0.95) 0%, rgba(10, 14, 23, 0.85) 100%);
-    color: #4B5563;
-    font-size: 0.62rem;
-    font-weight: 600;
+.surge-card .signal-type-label { color: #22c55e !important; }
+.narr-desc { 
+    font-size: 0.58rem; 
+    line-height: 1.3;
+    color: #94A3B8;
     text-transform: uppercase;
-    letter-spacing: 0.1em;
-    padding: 0.75rem 0.75rem;
-    border-bottom: 2px solid rgba(212, 168, 83, 0.3);
-    text-align: left;
-    white-space: nowrap;
-}
-
-.kv-table tbody td {
-    padding: 0.75rem 0.75rem;
-    color: #F1F5F9;
-    font-size: 0.75rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-    font-family: 'IBM Plex Mono', monospace;
-    vertical-align: middle;
-}
-
-.kv-table tbody tr:last-child td {
-    border-bottom: none;
-}
-
-.kv-table tbody td.key {
-    font-weight: 700;
-    font-size: 0.78rem;
-    letter-spacing: 0.02em;
-    font-family: 'Space Grotesk', sans-serif;
-    color: #F1F5F9;
-    width: 40%;
-}
-
-.kv-table tbody td.value {
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-}
-
-.kv-table tbody tr:hover {
-    background: rgba(212, 168, 83, 0.05);
+    font-weight: 500;
 }
 
 /* ================================================================
-   Nishkarsh-specific: System card variants (aarambh/nirnay/convergence)
+   Smoothness overrides — eliminate flash / shimmer on reruns
    ================================================================ */
-.system-card.aarambh {
-    border-left: none;
+
+/* Suppress Streamlit's native skeleton shimmer that appears briefly
+   when a widget triggers a full-page rerun. Custom skeleton-pulse
+   classes (defined in this file) are unaffected. */
+[data-testid="stSkeleton"] {
+    display: none !important;
 }
 
-.system-card.aarambh::after {
-    background: var(--violet);
-    box-shadow: 0 0 14px var(--violet-glow);
-}
-
-.system-card.aarambh h3 {
-    color: var(--violet);
-}
-
-.system-card.aarambh h3 svg {
-    color: var(--violet);
-    filter: drop-shadow(0 0 8px var(--violet-glow));
-}
-
-.system-card.aarambh .spec span {
-    color: var(--violet);
-}
-
-.system-card.nirnay {
-    border-left: none;
-}
-
-.system-card.nirnay::after {
-    background: var(--cyan);
-    box-shadow: 0 0 14px var(--cyan-glow);
-}
-
-.system-card.nirnay h3 {
-    color: var(--cyan);
-}
-
-.system-card.nirnay h3 svg {
-    color: var(--cyan);
-    filter: drop-shadow(0 0 8px var(--cyan-glow));
-}
-
-.system-card.nirnay .spec span {
-    color: var(--cyan);
-}
-
-.system-card.convergence {
-    border-left: none;
-}
-
-.system-card.convergence::after {
-    background: var(--amber);
-    box-shadow: 0 0 14px var(--amber-glow);
-}
-
-.system-card.convergence h3 {
-    color: var(--amber);
-}
-
-.system-card.convergence h3 svg {
-    color: var(--amber);
-    filter: drop-shadow(0 0 8px var(--amber-glow));
-}
-
-.system-card.convergence .spec span {
-    color: var(--amber);
-}
-
-/* ================================================================
-   Nishkarsh-specific: Chart container tab patterns
-   ================================================================ */
-.chart-container.aarambh::before {
-    background-image:
-        linear-gradient(rgba(167, 139, 250, 0.5) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(167, 139, 250, 0.5) 1px, transparent 1px);
-    background-size: 24px 24px;
-    opacity: 0.04;
-}
-
-.chart-container.nirnay::before {
-    background-image: repeating-linear-gradient(45deg,
-            rgba(34, 211, 238, 0.4) 0px,
-            rgba(34, 211, 238, 0.4) 1px,
-            transparent 1px,
-            transparent 12px);
-    opacity: 0.035;
-}
-
-.chart-container.convergence::before {
-    background-image:
-        repeating-linear-gradient(45deg, rgba(212, 168, 83, 0.4) 0px, rgba(212, 168, 83, 0.4) 1px, transparent 1px, transparent 10px),
-        repeating-linear-gradient(-45deg, rgba(212, 168, 83, 0.4) 0px, rgba(212, 168, 83, 0.4) 1px, transparent 1px, transparent 10px);
-    opacity: 0.03;
-}
-
-.chart-container.diagnostics::before {
-    background-image: radial-gradient(circle, rgba(148, 163, 184, 0.5) 1px, transparent 1px);
-    background-size: 16px 16px;
-    opacity: 0.05;
-}
-
-/* ================================================================
-   Nishkarsh-specific: Tab background ambient gradients
-   ================================================================ */
-.tab-bg {
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 0;
-    opacity: 0.015;
-    transition: opacity 400ms ease;
-}
-
-.tab-bg.aarambh {
-    background: radial-gradient(ellipse 50% 50% at 30% 40%, rgba(167, 139, 250, 0.3) 0%, transparent 70%);
-}
-
-.tab-bg.nirnay {
-    background: radial-gradient(ellipse 50% 50% at 70% 60%, rgba(34, 211, 238, 0.3) 0%, transparent 70%);
-}
-
-.tab-bg.convergence {
-    background: radial-gradient(ellipse 50% 50% at 50% 50%, rgba(212, 168, 83, 0.3) 0%, transparent 70%);
-}
-
-.tab-bg.diagnostics {
-    background: radial-gradient(ellipse 50% 50% at 60% 30%, rgba(251, 113, 133, 0.2) 0%, transparent 70%);
-}
-
-/* ================================================================
-   Arthagati-specific: System card variants (mood / similar / corr)
-   ================================================================ */
-.system-card.mood {
-    border-left: none;
-}
-
-.system-card.mood::after {
-    background: var(--amber);
-    box-shadow: 0 0 14px var(--amber-glow);
-}
-
-.system-card.mood h3 {
-    color: var(--amber);
-}
-
-.system-card.mood h3 svg {
-    color: var(--amber);
-    filter: drop-shadow(0 0 8px var(--amber-glow));
-}
-
-.system-card.mood .spec span {
-    color: var(--amber-bright);
-}
-
-.system-card.similar {
-    border-left: none;
-}
-
-.system-card.similar::after {
-    background: var(--emerald);
-    box-shadow: 0 0 14px var(--emerald-glow);
-}
-
-.system-card.similar h3 {
-    color: var(--emerald);
-}
-
-.system-card.similar h3 svg {
-    color: var(--emerald);
-    filter: drop-shadow(0 0 8px var(--emerald-glow));
-}
-
-.system-card.similar .spec span {
-    color: var(--emerald-bright);
-}
-
-.system-card.corr {
-    border-left: none;
-}
-
-.system-card.corr::after {
-    background: var(--cyan);
-    box-shadow: 0 0 14px var(--cyan-glow);
-}
-
-.system-card.corr h3 {
-    color: var(--cyan);
-}
-
-.system-card.corr h3 svg {
-    color: var(--cyan);
-    filter: drop-shadow(0 0 8px var(--cyan-glow));
-}
-
-.system-card.corr .spec span {
-    color: var(--cyan);
-}
-
-/* ================================================================
-   Arthagati-specific: Tab background ambients & chart container patterns
-   ================================================================ */
-.tab-bg.mood {
-    background: radial-gradient(ellipse 50% 50% at 30% 40%, rgba(212, 168, 83, 0.3) 0%, transparent 70%);
-}
-
-.tab-bg.similar {
-    background: radial-gradient(ellipse 50% 50% at 50% 50%, rgba(52, 211, 153, 0.3) 0%, transparent 70%);
-}
-
-.tab-bg.corr {
-    background: radial-gradient(ellipse 50% 50% at 70% 60%, rgba(34, 211, 238, 0.3) 0%, transparent 70%);
-}
-
-.chart-container.mood::before {
-    background-image:
-        repeating-linear-gradient(45deg, rgba(212, 168, 83, 0.4) 0px, rgba(212, 168, 83, 0.4) 1px, transparent 1px, transparent 10px),
-        repeating-linear-gradient(-45deg, rgba(212, 168, 83, 0.4) 0px, rgba(212, 168, 83, 0.4) 1px, transparent 1px, transparent 10px);
-    opacity: 0.03;
-}
-
-.chart-container.similar::before {
-    background-image:
-        linear-gradient(rgba(52, 211, 153, 0.5) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(52, 211, 153, 0.5) 1px, transparent 1px);
-    background-size: 24px 24px;
-    opacity: 0.04;
-}
-
-.chart-container.corr::before {
-    background-image: repeating-linear-gradient(45deg,
-            rgba(34, 211, 238, 0.4) 0px,
-            rgba(34, 211, 238, 0.4) 1px,
-            transparent 1px,
-            transparent 12px);
-    opacity: 0.035;
+/* Remove the brief white-flash on the top app chrome during rerun */
+[data-testid="stToolbar"] {
+    transition: opacity 120ms ease;
 }
