@@ -1,25 +1,28 @@
-# ──────────────────────────────────────────────────────────────────────────────
-# ARTHAGATI — Python Dependencies
-# @thebullishvalue · v2.6.0
-# ──────────────────────────────────────────────────────────────────────────────
-#
-# Install:  pip install -r requirements.txt
-# Python:   >= 3.10  (required for built-in type hints: dict[...], int | None)
-#
+# Sanket — Unified Market Signal Screener System
+# @thebullishvalue Product
 
-# Web application framework
-streamlit       >= 1.32.0
+# ── Core Framework ────────────────────────────────────────────
+streamlit>=1.30.0
+pandas>=2.1.0
+numpy>=1.24.0
+plotly>=5.18.0
 
-# Data manipulation
-pandas          >= 2.1.0
-numpy           >= 1.26.0
-scipy           >= 1.11.0
+# ── Self-Tuning Intelligence ──────────────────────────────────
+optuna>=3.5.0
+filelock>=3.12.0   # cross-process lock for shared profiles.json (multi-user safety)
+numba>=0.59.0      # optional JIT for recursive math loops (EMA, Ehlers filters); app falls back to pure Python if absent
 
-# Charting
-plotly          >= 5.20.0
+# ── Data Sources ──────────────────────────────────────────────
+yfinance>=0.2.31
+nsepython
+NseKit          # preferred F&O underlyings source (official underlying-information API)
+requests>=2.31.0
 
-# HTTP requests (Google Sheets via gviz API)
-requests        >= 2.31.0
+# ── HTML / Excel I/O (pandas.read_html + to_excel) ────────────
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+html5lib>=1.1
+openpyxl>=3.1.0
 
-# Timezone utilities
-pytz            >= 2024.1
+# ── Terminal Coloring ─────────────────────────────────────────
+colorama>=0.4.6

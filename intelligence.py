@@ -29,9 +29,8 @@ _TIER_IDX = {
     'A: Long': 0, 'A: Short': 0,
     'B: Long': 1, 'B: Short': 1,
     'C: Long': 2, 'C: Short': 2,
-    'D: Long': 3, 'D: Short': 3,
 }
-_TIER_DEFAULT_IDX = 4
+_TIER_DEFAULT_IDX = 3
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -136,7 +135,8 @@ class _PrecomputedDataset:
         f3   = conv / 20.0
         f4   = self._col_f(df, 'Pulse', 0.0)
         f5   = self._col_f(df, 'HMM_Bull', 0.33) - self._col_f(df, 'HMM_Bear', 0.33)
-        self.M = np.column_stack([f1, f2, f3, f4, f5])
+        f7   = self._col_f(df, 'LO', 0.0) / 100.0   # liquidity range-extension (reversion)
+        self.M = np.column_stack([f1, f2, f3, f4, f5, f7])
 
         # ── Penalty matrices (long_rev, long_div) and (short_rev, short_div) ──
         wt1 = self._col_f(df, 'Wave', 0.0)
@@ -224,6 +224,7 @@ def _evaluate_ic(precomp: _PrecomputedDataset, weights: dict, min_xsect: int = 5
         weights['beta_F3_wave_long'],
         weights['beta_F4_pulse_long'],
         weights['beta_F5_regime_long'],
+        weights.get('beta_F7_liq_long', 0.0),
     ], dtype=np.float64)
     w_beta_short = np.array([
         weights['beta_F1_pricemom_short'],
@@ -231,6 +232,7 @@ def _evaluate_ic(precomp: _PrecomputedDataset, weights: dict, min_xsect: int = 5
         weights['beta_F3_wave_short'],
         weights['beta_F4_pulse_short'],
         weights['beta_F5_regime_short'],
+        weights.get('beta_F7_liq_short', 0.0),
     ], dtype=np.float64)
     w_gamma_long = np.array([
         weights['gamma_reversion_long'],
@@ -246,7 +248,6 @@ def _evaluate_ic(precomp: _PrecomputedDataset, weights: dict, min_xsect: int = 5
         weights['tier_A_mult'],
         weights['tier_B_mult'],
         weights['tier_C_mult'],
-        weights['tier_D_mult'],
         weights['tier_default_mult'],
     ], dtype=np.float64)
 
@@ -294,14 +295,24 @@ def _evaluate_ic(precomp: _PrecomputedDataset, weights: dict, min_xsect: int = 5
 class PriorityTuner:
     def __init__(self,
                  historical_data: pd.DataFrame,
-                 hold_periods=(2, 3, 5, 8, 13),
+                 hold_periods=None,
                  train_frac: float = 0.70,
                  l2_alpha: float = 0.001,
-                 min_xsect: int = 5):
-        self.hold_periods = list(hold_periods)
+                 min_xsect: int = 5,
+                 enable_f7: bool = False):
+        # enable_f7: whether the LO range-extension factor (F7) participates in the
+        # ranking search. OFF by default — F7 is collinear with the existing
+        # WaveTrend reversion penalty + F3, so on thin data the optimizer can hand it
+        # large, unstable, partly-cancelling weights that move live rankings without
+        # adding real out-of-sample edge. Kept dormant (pinned to 0) until validated:
+        # the factor, its math, and the Set-B liquidity confidence features all remain;
+        # only its *ranking weight* is gated. Flip on to A/B-test F7's fANOVA
+        # importance + val IR against a no-F7 baseline before trusting it.
+        self.hold_periods = list(hold_periods) if hold_periods is not None else list(pe.HOLD_HORIZONS)
         self.train_frac   = train_frac
         self.l2_alpha     = l2_alpha
         self.min_xsect    = min_xsect
+        self.enable_f7    = enable_f7
         self.best_weights = pe.DEFAULT_W.copy()
         self.study        = None
         self.train_score  = None
@@ -346,6 +357,10 @@ class PriorityTuner:
                 'beta_F4_pulse_long':     trial.suggest_float('beta_F4_pulse_long',    0.0, 40.0),
                 'beta_F5_regime_long':    trial.suggest_float('beta_F5_regime_long',   0.0, 50.0),
                 'beta_F6_xsect_long':     trial.suggest_float('beta_F6_xsect_long',    0.0, 40.0),
+                # F7 searched only when explicitly enabled; pinned to 0 otherwise so it
+                # can't acquire spurious (collinear) weight on thin data — see __init__.
+                'beta_F7_liq_long':       (trial.suggest_float('beta_F7_liq_long',  -40.0, 40.0)
+                                           if self.enable_f7 else 0.0),
                 'gamma_reversion_long':   trial.suggest_float('gamma_reversion_long',  0.0, 40.0),
                 'gamma_divergence_long':  trial.suggest_float('gamma_divergence_long', 0.0, 40.0),
                 # Short-side factor weights
@@ -355,13 +370,14 @@ class PriorityTuner:
                 'beta_F4_pulse_short':    trial.suggest_float('beta_F4_pulse_short',    0.0, 40.0),
                 'beta_F5_regime_short':   trial.suggest_float('beta_F5_regime_short',   0.0, 50.0),
                 'beta_F6_xsect_short':    trial.suggest_float('beta_F6_xsect_short',    0.0, 40.0),
+                'beta_F7_liq_short':      (trial.suggest_float('beta_F7_liq_short', -40.0, 40.0)
+                                           if self.enable_f7 else 0.0),
                 'gamma_reversion_short':  trial.suggest_float('gamma_reversion_short',  0.0, 40.0),
                 'gamma_divergence_short': trial.suggest_float('gamma_divergence_short', 0.0, 40.0),
                 # Shared tier multipliers
                 'tier_A_mult':       trial.suggest_float('tier_A_mult',       0.5, 2.0),
                 'tier_B_mult':       trial.suggest_float('tier_B_mult',       0.5, 2.0),
                 'tier_C_mult':       trial.suggest_float('tier_C_mult',       0.5, 2.0),
-                'tier_D_mult':       trial.suggest_float('tier_D_mult',       0.5, 2.0),
                 'tier_default_mult': trial.suggest_float('tier_default_mult', 0.5, 2.0),
             }
 
@@ -378,7 +394,10 @@ class PriorityTuner:
                 progress_callback(trial.number, n_trials, score)
             return score
 
-        self.study = optuna.create_study(direction='maximize')
+        self.study = optuna.create_study(
+            direction='maximize',
+            sampler=optuna.samplers.TPESampler(seed=42),
+        )
         self.study.optimize(objective, n_trials=n_trials)
 
         self.best_weights = {**pe.DEFAULT_W, **self.study.best_params}
@@ -406,3 +425,369 @@ class PriorityTuner:
 
     def get_sensitivity(self):
         return self.get_param_importance()
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Signal-Confidence Calibration (Layer 2)
+#
+# The PriorityTuner above optimizes *ranking* (cross-sectional IC) over the
+# whole universe. It does NOT learn whether an individual fired A/B/C signal
+# is a true or false positive. This calibrator does exactly that: on the
+# harvested panel it labels each fired signal by whether its forward return
+# over `horizon` bars moved the signal's way, then fits a per-set logistic
+# P(true | regime/context features). Validated out-of-sample by date, same as
+# the IC objective. The result feeds priority_engine.compute_signal_confidence
+# so the screener's Intel_Confidence becomes a calibrated probability.
+# ────────────────────────────────────────────────────────────────────────
+def _fit_logistic(X, y, l2=1.0, iters=100, tol=1e-7):
+    """Ridge-regularized logistic regression via Newton-IRLS (numpy only).
+
+    X already standardized (no intercept column — intercept fit unpenalized).
+    Returns (coef[k], intercept). Robust to separation via the L2 term and a
+    capped step; falls back gracefully if the Hessian is singular.
+    """
+    n, k = X.shape
+    Xb = np.column_stack([np.ones(n), X])           # intercept in column 0
+    beta = np.zeros(k + 1)
+    reg = np.full(k + 1, l2)
+    reg[0] = 0.0                                     # do not penalize intercept
+    for _ in range(iters):
+        eta = np.clip(Xb @ beta, -35.0, 35.0)
+        p = 1.0 / (1.0 + np.exp(-eta))
+        W = np.clip(p * (1.0 - p), 1e-6, None)
+        grad = Xb.T @ (p - y) + reg * beta
+        H = (Xb * W[:, None]).T @ Xb + np.diag(reg)
+        try:
+            step = np.linalg.solve(H, grad)
+        except np.linalg.LinAlgError:
+            step = np.linalg.lstsq(H, grad, rcond=None)[0]
+        beta_new = beta - step
+        if np.max(np.abs(beta_new - beta)) < tol:
+            beta = beta_new
+            break
+        beta = beta_new
+    return beta[1:], float(beta[0])
+
+
+def _auc(y, scores):
+    """ROC AUC via the Mann–Whitney U statistic (ties handled by mid-ranks)."""
+    y = np.asarray(y)
+    n_pos = int(y.sum())
+    n_neg = len(y) - n_pos
+    if n_pos == 0 or n_neg == 0:
+        return float('nan')
+    order = np.argsort(scores, kind='mergesort')
+    ranks = np.empty(len(scores), dtype=float)
+    s = scores[order]
+    ranks[order] = np.arange(1, len(scores) + 1, dtype=float)
+    # average ranks for ties
+    i = 0
+    while i < len(s):
+        j = i
+        while j + 1 < len(s) and s[order[j + 1]] == s[order[i]]:
+            j += 1
+        if j > i:
+            ranks[order[i:j + 1]] = (i + 1 + j + 1) / 2.0
+        i = j + 1
+    sum_pos = ranks[y == 1].sum()
+    return float((sum_pos - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg))
+
+
+def calibrate_signal_confidence(ts_df: pd.DataFrame,
+                                horizon: int = 5,
+                                train_frac: float = 0.70,
+                                l2: float = 1.0,
+                                deadband_frac: float = 0.10,
+                                min_set_samples: int = 120,
+                                min_total_samples: int = 150) -> dict:
+    """Fit per-set P(true) logistic on harvested fired signals. None if too sparse.
+
+    Label (multi-horizon, magnitude-aware): a fired signal is "true" if its mean
+    directional forward return across all tracked horizons (Ret_2b…Ret_13b)
+    clearly beats a deadband — not just a sign flip on a single horizon. The
+    deadband is ``deadband_frac`` × the typical |mean directional return| over
+    fired rows, so a barely-positive drift (or going nowhere) counts as a false
+    positive, not a win. Asset-agnostic (self-scaling). Features come from
+    pe.signal_conf_features so train and inference are identical. Split
+    chronologically by date. Returns a model dict {feat_mean, feat_std,
+    sets:{A,B,C,_pooled:{coef,intercept,...}}, horizon, horizons, deadband,
+    val_auc, val_precision_lift, base_rate, n_train}.
+    """
+    if ts_df is None or ts_df.empty or not {'Date', 'SignalType'}.issubset(ts_df.columns):
+        return None
+
+    df = ts_df.copy()
+    df['Date'] = pd.to_datetime(df['Date'])
+
+    # Tracked forward-return horizons present in the harvest (Ret_<h>b).
+    ret_cols = [f'Ret_{h}b' for h in pe.HOLD_HORIZONS if f'Ret_{h}b' in df.columns]
+    if not ret_cols:
+        return None
+    horizons_used = [int(c[4:-1]) for c in ret_cols]
+
+    X_all, dir_sign, set_letter, fired = pe.signal_conf_features(df)
+    d = np.nan_to_num(dir_sign, nan=0.0)
+
+    # Mean directional forward return across horizons (NaN where no horizon resolves).
+    R = df[ret_cols].to_numpy(dtype=float) * d[:, None]
+    with np.errstate(invalid='ignore'):
+        dr = np.nanmean(R, axis=1)
+    fired = np.asarray(fired) & np.isfinite(dr)
+    if fired.sum() < min_total_samples:
+        return None
+
+    # Magnitude deadband, self-scaled to the universe's typical move.
+    typ = float(np.median(np.abs(dr[fired]))) if fired.any() else 0.0
+    deadband = deadband_frac * typ
+    y_all = (dr > deadband).astype(float)
+
+    # Chronological split by date over fired rows only.
+    dates = df['Date'].to_numpy()
+    fired_dates = np.unique(dates[fired])
+    if len(fired_dates) < 8:
+        return None
+    n_train = max(1, int(len(fired_dates) * train_frac))
+    is_train = np.isin(dates, fired_dates[:n_train])   # type-safe over datetime64
+
+    tr = fired & is_train
+    va = fired & ~is_train
+    if tr.sum() < min_total_samples:
+        return None
+
+    # Standardize features on the training subset.
+    Xtr_raw = X_all[tr]
+    mean = Xtr_raw.mean(axis=0)
+    std = Xtr_raw.std(axis=0)
+    std = np.where(std < 1e-9, 1.0, std)
+
+    def _standardize(mask):
+        return (X_all[mask] - mean) / std
+
+    sets_out = {}
+    set_arr = set_letter
+
+    def _fit_subset(mask):
+        if mask.sum() < min_set_samples:
+            return None
+        Xz = _standardize(mask)
+        y = y_all[mask]
+        if y.sum() < 5 or (len(y) - y.sum()) < 5:   # need both classes
+            return None
+        coef, b0 = _fit_logistic(Xz, y, l2=l2)
+        return {
+            'coef': [float(c) for c in coef],
+            'intercept': float(b0),
+            'n_train': int(mask.sum()),
+            'base_rate': float(y.mean()),
+        }
+
+    # Pooled model (all sets) — always the fallback.
+    pooled = _fit_subset(tr)
+    if pooled is None:
+        return None
+    sets_out['_pooled'] = pooled
+
+    for s in ('A', 'B', 'C'):
+        m = _fit_subset(tr & (set_arr == s))
+        if m is not None:
+            sets_out[s] = m
+
+    model = {
+        'version': 2,
+        'horizon': int(horizon),
+        'horizons': horizons_used,
+        'deadband': float(deadband),
+        'label': 'mean directional return over horizons > deadband',
+        'feature_names': list(pe.CONF_FEATURES),
+        'feat_mean': [float(v) for v in mean],
+        'feat_std': [float(v) for v in std],
+        'sets': sets_out,
+        'base_rate': float(y_all[tr].mean()),
+        'n_train': int(tr.sum()),
+    }
+
+    # Out-of-sample diagnostics: AUC and precision lift (top-half conf vs base).
+    if va.sum() >= 30:
+        val_df = df[va].copy()
+        proba = pe.predict_signal_confidence(val_df, model)
+        yv = y_all[va]
+        ok = ~np.isnan(proba)
+        if ok.sum() >= 30 and 0 < yv[ok].sum() < ok.sum():
+            model['val_auc'] = _auc(yv[ok], proba[ok])
+            base = float(yv[ok].mean())
+            hi = proba[ok] >= np.median(proba[ok])
+            top_prec = float(yv[ok][hi].mean()) if hi.sum() else float('nan')
+            model['base_rate_val'] = base
+            model['val_top_half_precision'] = top_prec
+            model['val_precision_lift'] = (top_prec - base) if base > 0 else float('nan')
+            model['n_val'] = int(ok.sum())
+
+    return model
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Layer 3 — Meta-Conviction calibration
+# ════════════════════════════════════════════════════════════════════════
+
+def _spearman_ir(dates, scores, ret_mat, min_n: int = 5) -> float:
+    """Cross-sectional rank-IR of ``scores`` against DIRECTIONAL forward returns.
+
+    Mirrors the Priority Engine's IC methodology: per horizon, per date, the
+    Spearman IC (rank-correlation) of scores vs directional return across that
+    date's signals; IR_h = mean / std of the per-date ICs; IR = mean over
+    horizons. ``ret_mat`` is (n, H) of direction-signed returns, so a good
+    long OR short reads as positive — making meta and priority directly
+    comparable. Dates with < ``min_n`` usable rows are skipped.
+    """
+    dates = np.asarray(dates)
+    scores = np.asarray(scores, dtype=float)
+    ret_mat = np.asarray(ret_mat, dtype=float)
+    if ret_mat.ndim == 1:
+        ret_mat = ret_mat[:, None]
+    uniq = np.unique(dates)
+    irs = []
+    for h in range(ret_mat.shape[1]):
+        rh = ret_mat[:, h]
+        ics = []
+        for d in uniq:
+            m = (dates == d) & np.isfinite(rh) & np.isfinite(scores)
+            if int(m.sum()) < min_n:
+                continue
+            s = scores[m]; r = rh[m]
+            if np.std(s) < 1e-9 or np.std(r) < 1e-9:
+                continue
+            sr = pd.Series(s).rank().to_numpy()
+            rr = pd.Series(r).rank().to_numpy()
+            ic = np.corrcoef(sr, rr)[0, 1]
+            if np.isfinite(ic):
+                ics.append(ic)
+        if len(ics) >= 3:
+            a = np.asarray(ics)
+            irs.append(a.mean() / max(a.std(), 1e-6))
+    return float(np.mean(irs)) if irs else float('nan')
+
+
+def calibrate_meta_conviction(ts_df: pd.DataFrame,
+                              weights: dict,
+                              train_frac: float = 0.70,
+                              l2: float = 1.0,
+                              deadband_frac: float = 0.10,
+                              min_total_samples: int = 150,
+                              min_xsect: int = 5) -> dict:
+    """Fit the Layer-3 meta-conviction model on harvested fired signals. None if sparse.
+
+    Fuses the two orthogonal inputs — cross-sectional Priority rank and per-signal
+    Intel confidence — into a single calibrated P(true). The harvested panel does
+    not carry Priority_*_pct (compute_priority is cross-sectional and only runs
+    live), so we materialize it here with a per-date pass using the just-tuned
+    ``weights``. Features come from pe.meta_conf_features so train and inference
+    are identical. Split chronologically by date.
+
+    Probation: the returned model is ``active`` only if its out-of-sample rank-IR
+    BEAT naked Priority's rank-IR (and is positive). An inactive model is kept
+    for annotation but must not drive Hide/filter actions. Returns a model dict
+    {coef, intercept, feat_mean, feat_std, feature_names, deadband, horizons,
+    val_auc, meta_val_ir, priority_val_ir, active, n_train, n_val, base_rate}.
+    """
+    if ts_df is None or ts_df.empty or not {'Date', 'SignalType'}.issubset(ts_df.columns):
+        return None
+    df = ts_df.copy()
+    df['Date'] = pd.to_datetime(df['Date'])
+
+    ret_cols = [f'Ret_{h}b' for h in pe.HOLD_HORIZONS if f'Ret_{h}b' in df.columns]
+    if not ret_cols:
+        return None
+    horizons_used = [int(c[4:-1]) for c in ret_cols]
+
+    # ── Materialize cross-sectional Priority rank per date (the orthogonal input) ──
+    # Explicit per-date loop (not groupby.apply) so the Date column survives and we
+    # avoid the grouping-column deprecation; compute_priority is cross-sectional.
+    try:
+        parts = [pe.compute_priority(g, weights=weights)
+                 for _, g in df.groupby('Date', sort=False)]
+        df = pd.concat(parts) if parts else df
+    except Exception:
+        return None
+    if 'Priority_Long_pct' not in df.columns:
+        return None
+
+    # Intel_Confidence should already be on the harvest panel; compute if not.
+    if 'Intel_Confidence' not in df.columns:
+        try:
+            df = pe.compute_signal_confidence(
+                df, weights=weights, conf_model=pe.get_active_conf_model(),
+                compute_flags=False)
+        except Exception:
+            return None
+
+    X_all, dir_sign, fired = pe.meta_conf_features(df)
+    d = np.nan_to_num(dir_sign, nan=0.0)
+
+    # Direction-signed forward returns (good long OR short → positive).
+    R = df[ret_cols].to_numpy(dtype=float) * d[:, None]
+    with np.errstate(invalid='ignore'):
+        dr = np.nanmean(R, axis=1)
+    fired = np.asarray(fired) & np.isfinite(dr)
+    if int(fired.sum()) < min_total_samples:
+        return None
+
+    typ = float(np.median(np.abs(dr[fired]))) if fired.any() else 0.0
+    deadband = deadband_frac * typ
+    y_all = (dr > deadband).astype(float)
+
+    dates = df['Date'].to_numpy()
+    fired_dates = np.unique(dates[fired])
+    if len(fired_dates) < 8:
+        return None
+    n_train = max(1, int(len(fired_dates) * train_frac))
+    is_train = np.isin(dates, fired_dates[:n_train])
+    tr = fired & is_train
+    va = fired & ~is_train
+    if (int(tr.sum()) < min_total_samples
+            or y_all[tr].sum() < 5 or (tr.sum() - y_all[tr].sum()) < 5):
+        return None
+
+    Xtr = X_all[tr]
+    mean = Xtr.mean(axis=0)
+    std = Xtr.std(axis=0)
+    std = np.where(std < 1e-9, 1.0, std)
+    Xz_tr = (Xtr - mean) / std
+    coef, b0 = _fit_logistic(Xz_tr, y_all[tr], l2=l2)
+
+    model = {
+        'version': 1,
+        'feature_names': list(pe.META_FEATURES),
+        'feat_mean': [float(v) for v in mean],
+        'feat_std': [float(v) for v in std],
+        'coef': [float(c) for c in coef],
+        'intercept': float(b0),
+        'deadband': float(deadband),
+        'horizons': horizons_used,
+        'label': 'mean directional return over horizons > deadband',
+        'base_rate': float(y_all[tr].mean()),
+        'n_train': int(tr.sum()),
+        'active': False,
+    }
+
+    # ── Probation: meta OOS rank-IR vs naked Priority OOS rank-IR ──
+    if int(va.sum()) >= max(30, min_xsect):
+        proba = pe.predict_meta_conviction(df, model)
+        meta_scores = proba[va]
+        prio_scores = X_all[va, pe.META_FEATURES.index('rank_pct')]
+        Rva = R[va]
+        dv = dates[va]
+        ok = np.isfinite(meta_scores)
+        if int(ok.sum()) >= max(30, min_xsect):
+            meta_ir = _spearman_ir(dv[ok], meta_scores[ok], Rva[ok], min_n=min_xsect)
+            prio_ir = _spearman_ir(dv[ok], prio_scores[ok], Rva[ok], min_n=min_xsect)
+            yv = y_all[va][ok]
+            model['val_auc'] = (_auc(yv, meta_scores[ok])
+                                if 0 < yv.sum() < len(yv) else float('nan'))
+            model['meta_val_ir'] = meta_ir
+            model['priority_val_ir'] = prio_ir
+            model['n_val'] = int(ok.sum())
+            # Filter/reorder ONLY if the meta layer beat naked priority OOS + adds edge.
+            model['active'] = bool(np.isfinite(meta_ir) and np.isfinite(prio_ir)
+                                   and meta_ir > prio_ir and meta_ir > 0.0)
+
+    return model

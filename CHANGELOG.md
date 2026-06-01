@@ -1,183 +1,206 @@
-# Changelog
+# CHANGELOG
+### Sanket — Wave-Regime Composite Index Terminal
 
-All notable changes to this project will be documented in this file.
+All notable changes to the **Sanket** platform are documented here. Sanket is part of the **Pragyam Product Family** by [@thebullishvalue](https://github.com/thebullishvalue).
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
----
-
-## [v2.6.0] — 2026-04-06
-
-### Google Sheets Infrastructure Simplification
-
-Migrated from Google service account OAuth to the Google Visualization API (`gviz/tq`) with environment variable configuration. No changes to the sentiment engine, math primitives, or UI behavior.
-
-#### Changed
-- **Data ingestion endpoint** — switched from `/export?format=csv` with OAuth service account to `/gviz/tq?tqx=out:csv` with no authentication required
-- **Configuration model** — replaced `st.secrets` TOML-based secrets with two environment variables: `ARTHAGATI_SHEET_ID` and `ARTHAGATI_SHEET_GID`
-- **Timeout resilience** — increased request timeout from 30s to 60s with 3-attempt exponential backoff (2s, 4s, 8s)
-- **Deployment simplicity** — no Google Cloud project, no service account JSON, no OAuth scopes needed
-
-#### Removed
-- `google-auth` dependency from `requirements.txt` — no longer needed for gviz endpoint
-- `_SHEET_SCOPES` constant and OAuth import chain (`google.auth.transport.requests`, `google.oauth2.service_account`)
-- Service account credential resolution logic from `_fetch_sheet_csv()`
-- `.streamlit/secrets.toml` deployment pattern (replaced by environment variables)
-
-#### Fixed
-- Stale progress bar text: "service account auth" → "gviz API"
-- VISION.md data ingestion diagram and Q&A section updated to reflect gviz architecture
+Format: `[version] · date — release title`
 
 ---
 
-## [v2.5.0] — 2026-04-05
+## [v3.3.0] · 2026-05-30
+### Liquidity Engine, Inline Self-Tuning & Data-Source Hardening
 
-### Production Readiness & Code Cleanup
+**"Flow & Folded Intelligence"**
 
-Production-focused release. Dead code elimination, API surface reduction, and cross-file version synchronization. No behavioral changes to the sentiment engine or UI.
+A feature release that adds a microstructure Liquidity engine and its per-set kinematic gates, folds the Self-Tuning calibration into the screener run (no separate mode), and hardens the F&O / index data sources. `wrci.pine` and `sanket.py` kept in 1:1 parity throughout.
 
-#### Removed
-- Dead function `ornstein_uhlenbeck_estimate()` (42 lines) — zero traceable callsites; OU estimation is performed inline via vectorized expanding AR(1) within `calculate_historical_mood()`
-- Unused `kalman_gains` return value from `kalman_filter_1d()` — only `filtered_state` and `estimate_variances` are consumed by the smoothing layer
-- Stale `ornstein_uhlenbeck_estimate` entry from mathematical primitives documentation table
+#### Features
+- **Liquidity Engine (microstructure flow)**: new ±100 oscillator (volume-weighted intrabar spread vs. multi-bar price impact → clipped z-score → sigmoid), with `liq_vel` (velocity) and `liq_accel` (acceleration). Added to both `wrci.pine` (§3B) and `sanket.py` (`run_full_analysis` → `Liquidity_Osc` / `Liq_Vel` / `Liq_Accel`), with a zero-volume divide guard on the Python side.
+- **Inline, one-pass Self-Tuning**: the standalone "Intelligence (Self-Tuning)" analysis mode is **removed**; harvest + Optuna calibration now run inline on the **Single Date / Pulse** screener via `_ensure_intel_weights()`. Reuses a profile already calibrated **today** for the `(universe, index, timeframe)`; otherwise harvests a lookback (~2y daily / ~3y weekly) and calibrates, then ranks the screen with the tuned weights. Sidebar **Self-Tuning Intelligence** expander (below the Model Passport) carries trials / split / **Force recalibrate this run**.
+- **Intelligence result tab**: Single-Date results gain an **Intelligence** tab (Train/Val IR, stability, factor-importance fANOVA chart, active-weights table) and a **Priority Rank** sub-tab listing the full universe by tuned priority (bull/bear aware).
+- **NseKit F&O source**: F&O constituents now fetch via NseKit's official `underlying-information` endpoint as the primary source (survives datacenter-IP blocking), ahead of the legacy `equity-stockIndices` paths.
 
-#### Changed
-- `kalman_filter_1d()` signature modernized with PEP 604 type hints: `np.ndarray | pd.Series`, `float | None`, returns `tuple[np.ndarray, np.ndarray]`
-- Mathematical primitives count updated: 12 → 11 functions across source code and documentation
-- `COMPANY` constant in `arthagati.py` updated to `@thebullishvalue` (branding alignment)
-- Version numbers synchronized across all files: `arthagati.py`, `README.md`, `requirements.txt`, `VISION.md` (VISION.md had lagged at v2.2.1 since v2.3.0)
+#### Behavior Changes
+- **Per-set kinematic liquidity gates** (parity across `wrci.pine` + `sanket.py`): Set A & B require liquidity **level** (`Liquidity_Osc` same-signed); Set C requires liquidity **velocity** (`Liq_Vel`); Set D requires liquidity **level + acceleration** (`Liquidity_Osc` & `Liq_Accel`). Net effect: fewer, flow-confirmed signals.
+- **Set C Δ-polarity gate**: Threshold now also requires `Conviction Δ` / `Pulse Δ` polarity (it previously omitted it), matching Sets A/B/D.
+- **WT2 signal line = configurable MA, ALMA(20) default** (was SMA-4), plumbed through the sidebar/screener (`wt2_len`, `wt2_type`).
+- **Profile key now includes timeframe**: profiles are keyed per `(universe, index, timeframe)` so daily and weekly weights no longer collide.
 
-#### Fixed
-- Cross-file version consistency: all version identifiers now point to a single source of truth (`VERSION` in `arthagati.py`)
+#### Fixes
+- **F&O list correctness**: legacy `SECURITIES IN F&O` paths now skip the leading index-aggregate row (off-by-one phantom ticker) and de-duplicate; the NIFTY-500 fallback is flagged as a superset rather than reported as a clean F&O fetch.
+- **Index-constituent resilience**: archive-CSV fallback tries both `archives.nseindia.com` and `nsearchives.nseindia.com`.
+- **Model Passport refresh**: after a fresh inline calibration the Passport updated only on the next interaction; a guarded post-results `st.rerun()` now refreshes it in the same run (results are already persisted, so no recompute and no re-tune).
+- **Streamlit deprecation**: all `use_container_width=True` replaced with `width='stretch'`.
 
----
-
-## [v2.4.0]
-
-### Adversarial Audit Resolution
-
-Major correctness release. Seven mathematical fixes and nine algorithmic improvements identified through adversarial audit. The sentiment engine now produces mathematically sound scores with no look-ahead bias, correct variance estimation, and stable regime detection.
-
-#### Fixed — Correctness
-- **OU Residual Sum of Squares** — Replaced incorrect algebraic expanding RSS formula with per-observation residuals `e²_i = (y_i − a_i − b_i·x_i)²` accumulated via expanding mean; sigma and half-life diagnostics are now correct under time-varying AR(1) coefficients
-- **Backward Information Leakage** — Removed `bfill()` from data imputation; only `ffill()` applied, early NaN values remain NaN and are handled by `np.isfinite()` guards in all math primitives
-- **DFA Segment Guard** — Increased minimum segment count from 1 to 4 per Peng et al. (1994), preventing degenerate single-segment Hurst estimates
-- **MSF Regime Trend Artifact** — Replaced unbounded `cumsum()` with windowed `rolling(MSF_WINDOW).sum()` preventing directional count drift that created false regime signals
-- **Rolling Entropy Off-by-One** — Fixed `sliding_window_view` scope and result index alignment
-- **Sigmoid Overflow** — Added input clipping (`±500`) before `np.exp()` for extreme z-scores
-- **rolling_mean_fast NaN Semantics** — Returns `NaN` instead of `0.0` for all-NaN windows
-
-#### Changed — Algorithm Improvements
-- **O(N log N) Adaptive Percentiles** — Replaced O(N²) inner loop with sorted-insert + `np.searchsorted` binary search (Greenwald & Khanna 2001 streaming quantile approach)
-- **Kalman Warm-Up Bootstrap** — First 50 observations bootstrapped from first stable window per Harvey (1990), preventing poorly calibrated Kalman gains
-- **Freedman-Diaconis Entropy Bins** — Adaptive bin selection via `2·IQR·n^{-1/3}` instead of capped `sqrt(N)`
-- **Ledoit-Wolf Covariance Shrinkage** — Mahalanobis distance uses analytical OAS shrinkage (Chen et al. 2010) instead of ad-hoc diagonal regularization
-- **Walk-Forward Weight Blending** — Checkpoint weights exponentially blended (α ≈ 0.29, HL = 2 checkpoints) eliminating discontinuous jumps at segment boundaries
-- **Confidence Band Soft-Clip** — `tanh(x/100)·100` replaces hard `np.clip(±100)` preserving band width at score extremes
-- **Least-Squares Trajectory Detrend** — Replaced endpoint anchoring with least-squares linear detrend (minimizes residual variance on V-shaped and reversal trajectories)
-- **Backtest Train/Test Split** — 70/30 chronological split with separate in-sample and out-of-sample Pearson/Spearman correlations
+#### Documentation
+- **README**: added the Liquidity Engine core component + Micro Phase; corrected WT2 to configurable ALMA; reframed Intelligence as inline (no separate mode) with the new first-run workflow; renumbered Analysis Modes (Intelligence mode removed); fixed the profile key to `(universe, index, timeframe)`; Sets A–D table now lists each set's liquidity gate.
+- **Docstrings/comments**: `compute_signal_sets` docstring documents the per-set liquidity gates; stale "Intelligence mode" references in the bulk-range comment and the legacy-profile import warning updated.
+- Line counts: `sanket.py` (6,117), `wrci.pine` (523), `intelligence.py` (411), `priority_engine.py` (381).
 
 ---
 
-## [v2.3.0]
+## [v3.2.1] · 2026-05-21
+### Set A Δ-Polarity Gate & Signal Engine Refactor
 
-### Walk-Forward Correlations & Bias Corrections
+**"Symmetric Conviction"**
 
-Eliminated look-ahead bias from the correlation engine and applied first-order bias corrections to statistical estimators.
+Behavior-changing tightening of the Momentum signal gate plus a focused refactor of `sanket.py` to extract long-lived inline blocks and surface the sidebar return as a typed dataclass. Pine indicator (`wrci.pine`) updated in lockstep to preserve 1:1 parity.
 
-#### Fixed
-- **Look-Ahead Bias** — Layers 1–2 restructured to use expanding-window walk-forward correlations at quarterly checkpoints instead of full-sample
-- **Percentile Semantics** — Symmetric [−1,+1] adjustments for PE and EY anchors, fixing asymmetric bearish/bullish capacity
-- **Hurst Estimator Bias** — Replaced R/S with DFA-1 (Peng et al. 1994, Weron 2002) for robustness on short series
-- **OU AR(1) Bias** — Kendall-Marriott-Pope first-order correction applied to expanding AR(1) coefficient
-- **Dynamic Y-Axis** — Mood chart now scales to actual data bounds with 8% padding instead of fixed ±100
+#### Behavior Change — Set A
+- **Δ-polarity gate added to Set A** (Momentum): WT1/WT2 crossings now require `Conviction Δ` and `Pulse Δ` to be the same sign as the trade direction (long: both > 0; short: both < 0). Brings Set A in line with the gate already used by Sets B and D. Net effect: fewer but better-confirmed Set A signals; historical Set A counts will drop. The opposite-side Set B veto (long A blocked when B-short fires, and vice versa) is retained on top of the new gate.
+- **`wrci.pine` synchronized**: Pine `momentum_long` / `momentum_short` now carry the same Δ gate, preserving 1:1 mathematical parity between the Python screener and the TradingView indicator.
 
----
+#### Refactor (No Behavior Change)
+- **`compute_signal_sets` helper extracted**: Sets A/B/C/D logic and the zone `Condition` column moved out of `run_full_analysis` into a dedicated function with a docstring explaining each set's predicate, gating, and the load-bearing `np.select` ordering for the zone label.
+- **`SidebarState` dataclass**: `render_sidebar()` now returns a typed dataclass instead of a 16-element positional tuple. The data flow from sidebar to `main()` is name-keyed; new inputs no longer require updating a tuple unpack.
+- **Shared HTML-builder palette helpers**: `_side_palette`, `_signed_color`, `_delta_arrow`, and `_GREEN` / `_RED` constants dedupe the green/red and arrow ternaries that were repeated across `_build_confluence_table_html`, `_build_signal_table_html`, `_build_narrative_table_html`, and `_build_signal_strength_table_html`.
+- **Redundant imports removed**: Four local `import html as html_module` lines deleted — the top-level `import html` covers all `html.escape` callsites. Dead `from io import BytesIO` removed (all callers go through `io.BytesIO()`).
 
-## [v2.2.1]
-
-### UI Rendering & Memory Optimizations
-
-#### Changed
-- **WebGL Chart Rendering** — Regime transition markers migrated from individual SVG shapes (`add_vline`) to interleaved WebGL traces (`go.Scattergl`), eliminating DOM bloat on MAX timeframe
-
-#### Fixed
-- **Cache Memory Bloat** — Applied `max_entries=5` to all heavy `@st.cache_data` decorators, capping server RAM when users rapidly toggle predictor configurations
-
----
-
-## [v2.2.0]
-
-### Performance & Vectorization Architecture Rewrite
-
-Execution time reduced by 99%+ through C-level NumPy vectorization of all mathematical primitives.
-
-#### Added
-- **C-Level Vectorization Engine** — All explicit Python loops replaced with NumPy `cumsum`, `sliding_window_view`, and array striding
-- **O(N) Moving Averages & Variances** — Replaced Pandas `.rolling()`/`.expanding()` with exact NumPy cumulative sums
-- **Pure-NumPy Ranking** — Custom vectorized tie-averaging rank algorithm replacing Pandas `.rank()` in weighted Spearman
-
-#### Changed
-- **Kalman Filter** — Exponential fading memory factor (Sorenson & Sacks) for non-stationary regime discounting
-- **OU Estimation** — O(N²) expanding-window loop converted to single-pass O(N) vectorized algorithm
-- **Trajectory Similarity** — 20-day cosine similarity migrated from explicit iteration to matrix striding multiplications
-- **Regime Detection** — Fully vectorized Hurst × Entropy quadrant classification
-
-#### Fixed
-- **Memory Blowout** — 2D NumPy broadcasting in adaptive percentiles created O(N²) memory (40GB+ allocations); rewritten with O(N) 1D slice lookback reducing engine time from ~120s to <2s
+#### Documentation
+- **README Signal Hierarchy table rewritten**: Sets B, C, D descriptions now accurately reflect the regime-filter crossover, signal-line-validated zone entry, and regime-zero-cross triggers respectively (previous text described unrelated logic).
+- **README search-space breakdown corrected**: Now correctly enumerates 12 betas + 4 gammas (reversion + divergence, each side) + 5 tier multipliers = 21 dimensions.
+- **README profile JSON example fixed**: Uses real field names (`val_score`/`train_score`/`sensitivity`/`tier_A_mult`) and the actual `" · "`-joined composite key format.
+- **README line counts refreshed**: `sanket.py` (5,928) and `wrci.pine` (412).
+- **`ui/components.py` Signal Types Reference rewritten**: Sets A and B descriptions match the actual triggers; Set D card added (CSS class `.signal-type.squeeze` already existed in `theme.css`, but the HTML card was missing).
+- **Mislabeled comments fixed**: Two `# Set C: Momentum` comments at `sanket.py:2402-2408` and `sanket.py:5147` corrected to `# Set A: Momentum` (these labelled the legacy `L_`/`S_` alias columns, which read `long_cond` / `short_cond` — Set A's columns, not Set C's).
 
 ---
 
-## [v2.1.0]
+## [v3.2.0] · 2026-05-09
+### System Hardening, Fidelity & UI Polish
 
-### Diagnostics & Forward Returns
+**"Precision Instrument"**
 
-Extended the sentiment engine with forward-looking projections and historical validation.
+Comprehensive institutional-grade hardening pass across the full stack — data correctness, multi-session isolation, calibration reliability, and terminal UI smoothness. No surface-level UX changes; all improvements are under-the-hood quality and fidelity improvements.
 
-#### Added
-- 90-day OU forward mean-reversion projection on mood chart
-- ±1.96σ Kalman confidence bands around smoothed mood score
-- Forward return outcomes (30/60/90-day) on similar historical period cards
-- Backtest scatter plot: mood score at T vs NIFTY return at T+30
-- Data staleness warnings when Google Sheet is more than 3 days old
+#### System Architecture
+- **Per-session weight isolation**: Active weights now stored in `st.session_state["active_weights"]` per session, eliminating cross-user bleed when the app is deployed for multiple users simultaneously
+- **Smart data registry**: TTL-aware fetch cache keyed by universe + date — avoids redundant OHLCV fetches across mode switches (15 min during market hours, 90 min outside)
+- **Registry DataFrame copies**: Registry stores `.copy()` of each DataFrame, preventing downstream mutations from silently corrupting cached data
+- **Reproducible calibration**: Optuna TPE sampler seeded with `seed=42` — calibration results are now reproducible across identical inputs
+- **`HOLD_HORIZONS` constant**: Fibonacci-spaced horizons `[2, 3, 5, 8, 13]` extracted to `priority_engine.py` as a single source of truth, imported by `sanket.py` and `intelligence.py` — previously hardcoded in five separate places
 
----
+#### Correctness Fixes
+- **L/S Ratio division guard**: Long/Short signal ratio now emits `NaN` instead of `Inf` when short signal count is zero
+- **Divergence order scaled to timeframe**: `argrelextrema` order parameter set to `2` for weekly and `3` for daily data — was fixed at `3` regardless of timeframe, causing missed weekly divergences
+- **Regime detector warmup**: HMM state estimator now runs a 20-bar warm-up period before recording signal history, preventing false regime transitions at the start of the analysis window
+- **ymax NaN/Inf guard**: Bar chart y-axis maximum now guarded against `NaN`/`Inf` values that caused silent chart rendering failures on short date ranges
+- **Confluence score clipped**: `Confluence_Score` clamped to `[0.0, 1.0]` on both calibrated-priority and fallback paths — previously could exceed 1.0 on wide-spread cross-sections
+- **% Change Since sentinel**: Percentage-change-since-analysis field now uses `None` sentinel instead of `0.0` when the analysis date equals the latest available date — eliminates spurious 0.00% displays
 
-## [v2.0.0]
+#### Calibration Improvements
+- **Overfit detection split**: Separated `low_ir` (Val IR ≤ 0) and `overfit` (Train IR >> Val IR) flags — both are now detected independently with distinct user messages
+- **Quality Check card**: Fourth metric card added to Calibration Diagnostics showing `No Edge` / `Overfit` / `Quality OK` status with semantic color coding
+- **Small universe warning**: Calibration warns when average symbols per date falls below 20 — IC-based ranking is statistically unreliable on sparse cross-sections
+- **Exception logging**: All `except: pass` patterns replaced with typed exception logging via `console.detail()` — silent failures are now surfaced in the terminal
 
-### Physics-Informed Mathematics
+#### Display & Data Quality
+- **Run stats header**: Results header now shows total universe size, symbols fetched, analyzed, and failed — provides context that was previously invisible
+- **Column display rename**: Result table columns use human-readable names (`Priority_Long_pct` → `Long Priority %ile`, `F1_PriceMom` → `Price Momentum`, etc.)
+- **Widget state persistence**: All sidebar widgets keyed with `sb_*` session-state keys — widget selections persist across reruns without unexpected resets
+- **Timeframe-aware passport**: Calibration profile keys now include timeframe — daily and weekly calibrations are stored and loaded independently under the same universe
 
-Complete overhaul of the sentiment engine from static correlations to stochastic process modeling.
-
-#### Added
-- **Ornstein-Uhlenbeck Normalization** — Mood modeled as mean-reverting diffusion `dx = θ(μ − x)dt + σdW` instead of global z-score
-- **Kalman Smoothing** — 1D adaptive state estimation replacing fixed-window EMA
-- **Mahalanobis Distance** — Covariance-aware historical period matching replacing Manhattan distance
-- **Inverse-Variance MSF Weighting** — Markowitz minimum-variance signal allocation replacing fixed 30/25/25/20 weights
-- **Adaptive Percentiles** — Decay-weighted empirical CDF replacing expanding rank percentiles
-- **Decay-Spearman Correlations** — Recency-weighted rank correlation replacing full-sample Pearson
-- **Shannon Entropy Weighting** — Noisy variable suppression via information-theoretic penalty
-- **Predictor Quality Assessment** — Ranked variable scoring by |correlation| × (1 − entropy)
-- **Staging → Commit Config** — Apply-button pattern preventing continuous recomputation
-- **EY Auto-Derivation** — `1/PE × 100` when Earnings Yield absent from sheet
-- **Yield Term Spreads** — `IN10Y − IN02Y` and `US10Y − US02Y` derived as orthogonal predictors
-
-#### Removed
-- Fixed Pearson correlations (replaced by decay-Spearman)
-- Expanding rank percentiles (replaced by adaptive ECDF)
-- Fixed MSF weights (replaced by inverse-variance)
-- Manhattan distance similar periods (replaced by Mahalanobis)
-- Global z-score normalization (replaced by OU)
-- Simple moving average smoothing (replaced by Kalman)
+#### UI Smoothness (No Visual Changes)
+- **Skeleton shimmer suppressed**: `[data-testid="stSkeleton"] { display: none !important }` eliminates the native Streamlit shimmer that briefly appears between a button click and the first progress bar render
+- **CSS loading cached**: `@st.cache_resource` on `_load_theme_css()` — the 4,300-line `theme.css` is read from disk once per process; subsequent reruns pay zero I/O cost
+- **Equal-height metric cards**: `:has(.metric-card)` CSS block extends the flex chain through `element-container` and `stMarkdownContainer` — metric card rows are now equal height on all pages (Single Date, Pulse Narrative, Calibration Diagnostics, Historical Range, Intelligence, Correlation) regardless of content length or screen size
 
 ---
 
-## [v1.2.0]
+## [v3.1.0] · 2026-05-07
+### Documentation & Version Unification
 
-### Initial Release
+**"Uniform Signal"**
 
-Baseline sentiment engine with Pearson correlations, expanding percentiles, and fixed-weight MSF oscillator.
+Version alignment pass bringing all system components — main application, UI theme, logger, and Pine Script indicator — to a single canonical version string. Accompanied by a full documentation rewrite.
+
+#### Changes
+- **Version unification**: `sanket.py`, `ui/theme.py`, and `logger.py` all bumped to `v3.1.0`, matching the existing `wrci.pine` indicator version
+- **README rewrite**: Complete documentation overhaul — architecture deep-dive, engine internals, factor math, signal hierarchy, intelligence calibration workflow, deployment guide, profile structure reference
+- **CHANGELOG rewrite**: Full version history reconstructed from v2.0.0 to present with accurate release notes
+- **LICENSE update**: Product version updated to `v3.1.0`
 
 ---
 
-*© 2026 Arthagati · @thebullishvalue*
+## [v3.0.0] · 2026-05-06
+### Production Calibration Release
+
+**"The Asymmetric Engine"**
+
+First production-grade release of the asymmetric Priority Engine with Bayesian self-tuning. Separated long and short factor betas, introduced per-universe profile persistence, and shipped the Intelligence Center UI.
+
+#### Features
+- **Asymmetric Priority Engine**: Separate `beta_*_long` and `beta_*_short` weights for all six factors — the system no longer assumes long/short symmetry
+- **Intelligence Center**: Full Optuna TPE calibration workflow surfaced in UI — trial count control, live progress, val IC display, parameter importance chart
+- **Model Passport**: Sidebar panel for viewing, exporting, importing, and deleting calibration profiles per universe
+- **fANOVA Sensitivity Analysis**: Post-calibration parameter importance ranking using Optuna's fANOVA implementation
+- **Per-Universe Profile Auto-Loading**: `load_profile_for()` auto-selects the matching profile when the user switches universe
+- **F&O Sample Profile**: Seed calibration (`profiles/fno.json`) with pre-optimized weights for NSE F&O universe (val IC: 0.1556)
+- **Legacy Profile Migration**: `_maybe_migrate_legacy_profile()` handles v1 → v2 key format upgrade
+
+#### Internals
+- **`_PrecomputedDataset`**: Pre-computes weight-invariant arrays before Optuna trials begin — ~50× speedup over per-trial recalculation
+- **L2 regularization**: Added to `_evaluate_ic()` to prevent weight inflation in low-signal regimes
+- **Change-point penalty**: Regime shift detection now applies a damping multiplier at structural breaks
+
+---
+
+## [v2.2.0] · 2026-05-05
+### Obsidian Quant Transformation & Mathematical Parity
+
+**"The Obsidian Quant Transformation"**
+
+Final synchronization pass between the Python screener and the TradingView indicator. Achieved 1:1 mathematical parity across all calculations. Applied the Obsidian Quant design system terminal-wide.
+
+#### Features
+- **1:1 Mathematical Parity**: Unified HMA, WMA, and Linear Regression endpoint calculations across `sanket.py` and `wrci.pine` — screener signals now match chart signals exactly
+- **Pulse Engine (v3)**: Implemented abnormal acceleration detection — 3-bar velocity modulated by 20-bar volatility Z-Score, with volume factor (`tanh(volZ/2)`) and price-action factor
+- **Obsidian Quant UI**: Applied the full Obsidian design language — `#1a1a1a` background, JetBrains Mono data font, Syne display font, glass-morphism metric cards, staggered entrance animations
+- **Pulse Narrative Matrix**: 4×4 state grid (SURGE/FIRM/SOFT/CRUSH × LEAD/DEEP/LIGHT/HOLLOW) for per-bar signal interpretation
+- **Global Macro ETFs**: Expanded asset coverage to include global bond ETFs and treasury instruments
+- **Fractal MTF Anchoring**: Integrated daily and weekly macro-regime context for tactical signal filtering
+
+#### Fixes & Optimizations
+- **VWAP Accuracy**: Refactored to ratio-of-sums instead of discrete averaging — eliminates accumulation drift
+- **Signal Gating**: Hardened mutual exclusivity rules for Sets A–D — no double-firing on same bar
+- **Anti-Clustering**: Enhanced pattern matching with anti-clustering logic to prevent redundant analog matches
+- **Colorama Compatibility**: Fixed ANSI color rendering on Windows 10+ terminals via explicit `colorama.init()`
+
+---
+
+## [v2.1.0] · 2026-04-30
+### WRCI Foundation
+
+**"Wave-Regime Composite Index Core"**
+
+Initial release of the WRCI engine and its companion Pine Script indicator. Established the WaveTrend core, Conviction engine, and signal hierarchy framework.
+
+#### Features
+- **WRCI Core Engine**: WaveTrend oscillator (WT1/WT2) with normalized HLC3 applied price
+- **Conviction Engine**: Three-component composite score — Trend Strength (HMA slope / ATR), Momentum Quality (WT separation), Participation (Volume Z-Score × price direction)
+- **Signal Sets A–D**: Defined non-redundant signal classification framework — Momentum, Contrarian, Threshold, Squeeze
+- **Squeeze Engine**: Bollinger Band / Keltner Channel compression detection for volatility breakout identification
+- **Pine Script v6 Indicator**: First release of `wrci.pine` companion TradingView indicator
+- **Analog Pattern Matcher**: Cosine similarity-based historical pattern matching engine (first iteration)
+- **Overbought/Oversold Logic**: Zone definitions at `±60` (Threshold) and `±80` (Extreme)
+
+---
+
+## [v2.0.0] · 2026-04-15
+### Pragyam Family Rebirth
+
+**"Modular Architecture & Web Terminal"**
+
+Architectural rebuild from standalone script to the Pragyam modular product framework. Launched the Streamlit web terminal.
+
+#### Changes
+- **Pragyam Architecture**: Decomposed monolithic script into `sanket.py`, `priority_engine.py`, `intelligence.py`, `logger.py`, and `ui/` module
+- **Streamlit Terminal**: Replaced CLI with interactive Streamlit web UI — session state management, sidebar routing, mode switching
+- **Multi-Universe Scraping**: Introduced constituent scraping for NSE F&O (nsepython), NASDAQ, and S&P 500 (Wikipedia)
+- **Obsidian Quant Design System**: Initial `theme.css` and `components.py` — dark terminal aesthetic with Plotly chart theming
+- **Structured Logging**: Replaced `print()` statements with `ConsoleOutput` class — ANSI-colored, phase-timed, run-ID-tagged terminal output
+
+---
+
+*Full technical specifications: [README.md](README.md)*
+*Author: [@thebullishvalue](https://github.com/thebullishvalue) · Pragyam Family*

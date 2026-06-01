@@ -1,36 +1,47 @@
-// ╔═════════════════════════════════════════════════════════════════════════╗
-// ║  WRCI · Wave-Regime Composite Index                                     ║
-// ║  INTELLIGENCE: Abnormal Acceleration (Pulse) Engine                     ║
-// ║  LOGIC: 5D Velocity * 20D Volatility Z-Score                            ║
-// ║  VERSION: v3.1.0                                                        ║
-// ╚═════════════════════════════════════════════════════════════════════════╝
+// ═══════════════════════════════════════════════════════════════════════════
+//  WRCI · Wave-Regime Composite Index   —   [Sanket Core]
+//  Conviction · Pulse · Liquidity Engine · AT Filter (Ehlers AutoTune)
+//  Version 3.2.1
+// ═══════════════════════════════════════════════════════════════════════════
 
 //@version=5
-indicator("WRCI [Sanket Core]", "WRCI (v3.1.0)", overlay=false, precision=2, max_bars_back=500)
+indicator("WRCI [Sanket Core]", "WRCI", overlay=false, precision=2, max_bars_back=500)
 
-// ╔═════════════════════════════════════════════════════════════════════════╗
-// ║  SECTION 1 · INPUTS & CONFIGURATION                                     ║
-// ╚═════════════════════════════════════════════════════════════════════════╝
+// ═══════════════════════════════════════════════════════════════════════════
+//  SECTION 1 · INPUTS & CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════
 
 // ── 1A · TACTICAL (FAST) ──
 grp_fast   = "WRCI: Tactical (Fast)"
 n1         = input.int(10, "Channel Length",         group=grp_fast, display=display.none)
 n2         = input.int(21, "Average Length",         group=grp_fast, display=display.none)
+wt2_len    = input.int(20,  "Signal Line Length",     group=grp_fast, display=display.none, minval=2, tooltip="WT2 signal line smoothing period (default 4)")
+wt2_type   = input.string("ALMA", "Signal Line Type", group=grp_fast, display=display.none, options=["SMA", "EMA", "HMA", "WMA", "VWMA", "ALMA", "RMA"], tooltip="Smoothing function for WT2 signal line (ALMA = Arnaud Legoux MA, RMA = Wilder's MA)")
 
 // ── 1B · STRUCTURAL (MEDIUM) ──
 grp_med    = "WRCI: Structural (Medium)"
-hma_len    = input.int(15, "HMA Smoothing Length",     group=grp_med, display=display.none)
-sqz_len    = input.int(20, "Squeeze Momentum Length",  group=grp_med, display=display.none)
+at_window  = input.int(20, "AutoTune Window",          group=grp_med, display=display.none, minval=3, tooltip="Window for Ehlers' rolling-autocorrelation AutoTune band-pass filter (TASC 2026.05).")
 
-// ── 1C · MACRO (SLOW / REGIME) ──
-grp_slow   = "WRCI: Macro (Regime Filter)"
-reg_len    = input.int(20, "Regime Logic Window",      group=grp_slow, display=display.none)
+// ── 1C · MACRO (SLOW) ──
+grp_slow   = "WRCI: Macro (Trend Window)"
+reg_len    = input.int(20, "Trend / Conviction Window", group=grp_slow, display=display.none, tooltip="Slow window for the Conviction trend-strength component (HMA slope, ATR, linreg).")
 
 grp_levels = "WRCI: OB / OS Levels"
-obLevel1   = input.int(80,  "Over Bought Level 1",  group=grp_med,  display=display.none)
-obLevel2   = input.int(40,  "Over Bought Level 2",  group=grp_med,  display=display.none)
-osLevel1   = input.int(-80, "Over Sold Level 1",    group=grp_med,  display=display.none)
-osLevel2   = input.int(-40, "Over Sold Level 2",    group=grp_med,  display=display.none)
+obLevel1   = input.int(80,  "Over Bought Level 1",  group=grp_levels, display=display.none)
+obLevel2   = input.int(40,  "Over Bought Level 2",  group=grp_levels, display=display.none)
+osLevel1   = input.int(-80, "Over Sold Level 1",    group=grp_levels, display=display.none)
+osLevel2   = input.int(-40, "Over Sold Level 2",    group=grp_levels, display=display.none)
+
+// ── 1D · LIQUIDITY ENGINE ──
+grp_liq       = "WRCI: Liquidity Engine"
+liq_length    = input.int(20, "Liquidity Smoothing Length", group=grp_liq, display=display.none)
+impact_window = input.int(3, "Price Impact Window",         group=grp_liq, display=display.none)
+zscore_clip   = input.float(3.0, "Z-Score Clip Threshold",  group=grp_liq, display=display.none)
+
+// ── 1E · LO CROSSOVER BANDS (ported from liq_osc.pine · © BullishValue) ──
+grp_lo     = "WRCI: LO Crossover"
+lt_level   = input.int(-75, "LO Lower Band (LT)", group=grp_lo, display=display.none, tooltip="Set B Crossover BUY when the LO (liquidity-adjusted stochastic) crosses UP through this band.")
+ut_level   = input.int(75,  "LO Upper Band (UT)", group=grp_lo, display=display.none, tooltip="Set B Crossover SELL when the LO crosses DOWN through this band.")
 
 // ── Color Palette: Obsidian Quant ──
 var color C_BG_DARK   = #1a1a1a // UMA Background
@@ -43,40 +54,146 @@ var color C_POS       = #22c55e // UMA Positive
 var color C_NEG       = #ef4444 // UMA Negative
 var color C_ACCENT    = #4a9eff // UMA Accent
 var color C_WARN      = #fbbf24 // UMA Warning
-var color C_STEALTH   = #818cf8 // Indigo
-var color C_LOAD      = #38bdf8 // Cyan
-var color C_BURST     = #34d399 // Emerald
-var color C_IGNITION  = #22c55e // Green
+var color C_STEALTH   = #818cf8 // Indigo (LO line & bands)
+var color C_LOAD      = #38bdf8 // Cyan   (AT Filter negative)
+// AT Filter VALUE uses the amber/cyan duo (C_WARN / C_LOAD); Conviction & Pulse use green/red.
 
 
-// ╔═════════════════════════════════════════════════════════════════════════╗
-// ║  SECTION 2 · HELPER FUNCTIONS                                           ║
-// ╚═════════════════════════════════════════════════════════════════════════╝
+// ═══════════════════════════════════════════════════════════════════════════
+//  SECTION 2 · HELPER FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════
 
 // Hyperbolic tangent — Pine v6 has no math.tanh built-in.
-// Identity: tanh(x) = (e^(2x) − 1) / (e^(2x) + 1).
-// Clamp |x| to 10 to avoid math.exp overflow; tanh is already saturated past ±5.
 f_tanh(_x) =>
     _xc  = math.max(-10.0, math.min(10.0, _x))
     _e2x = math.exp(2.0 * _xc)
     (_e2x - 1.0) / (_e2x + 1.0)
 
+// Configurable smoothing — dispatches to the selected MA type.
+f_smooth(_src, _len, _type) =>
+    switch _type
+        "EMA"  => ta.ema(_src, _len)
+        "HMA"  => ta.hma(_src, _len)
+        "WMA"  => ta.wma(_src, _len)
+        "VWMA" => ta.vwma(_src, _len)
+        "ALMA" => ta.alma(_src, _len, 0.85, 6)
+        "RMA"  => ta.rma(_src, _len)
+        =>        ta.sma(_src, _len)
 
-// ╔═════════════════════════════════════════════════════════════════════════╗
-// ║  SECTION 3 · CORE CALCULATIONS                                          ║
-// ╚═════════════════════════════════════════════════════════════════════════╝
+// Clipped Z-Score (for Liquidity Engine)
+f_zscore_clipped(series float src, int len, float clip_threshold) =>
+    mean_val = ta.sma(src, len)
+    std_val = ta.stdev(src, len)
+    raw_z = std_val > 0 ? (src - mean_val) / std_val : 0.0
+    math.max(math.min(raw_z, clip_threshold), -clip_threshold)
+
+// Sigmoid Normalization (for Liquidity Engine)
+f_sigmoid(series float z, float scale) =>
+    2.0 / (1.0 + math.exp(-z / scale)) - 1.0
+
+// ── AutoTune Filter (John F. Ehlers · TASC 2026.05) ─────────────────────────
+// Ported to Pine v5: the article's v6-only enum/input.enum display selector is dropped
+// (we only need the tuned band-pass output), and the matrix dot-product is replaced by a
+// v5-safe inner loop. A band-pass filter whose center period auto-tracks the dominant
+// cycle — the lag with the lowest rolling autocorrelation of a high-pass-filtered series.
+
+// Ehlers' 2-pole high-pass filter (cutoff = period).
+f_hpf(float src, int period) =>
+    float w   = 1.414 * math.pi / period
+    float q   = math.exp(-w)
+    float c1  = 2.0 * q * math.cos(w)
+    float c2  = q * q
+    float a0  = 0.25 * (1.0 + c1 + c2)
+    float res = 0.0
+    if bar_index >= 4
+        res := a0 * (src - 2.0 * src[1] + src[2]) + c1 * nz(res[1]) - c2 * nz(res[2])
+    res
+
+// Ehlers' band-pass filter (center = period, bandwidth = bw).
+f_bpf(float src, int period, float bw) =>
+    float w0  = 2.0 * math.pi / period
+    float l1  = math.cos(w0)
+    float g1  = math.cos(w0 * bw)
+    float s1  = 1.0 / g1 - math.sqrt(1.0 / (g1 * g1) - 1.0)
+    float res = 0.0
+    if bar_index >= 3
+        res := 0.5 * (1.0 - s1) * (src - src[2]) + l1 * (1.0 + s1) * nz(res[1]) - s1 * nz(res[2])
+    res
+
+// AutoTune: returns [high-pass, min autocorrelation, dominant cycle, tuned band-pass].
+f_autotune(float src, simple int window, float bw) =>
+    var array<float> data = array.new<float>(window, 0.0)
+    var array<float> acf  = array.new<float>(window, 0.0)
+    float hp  = f_hpf(src, window)
+    float sx  = math.sum(hp, window)
+    float sxx = math.sum(hp * hp, window)
+    data.unshift(hp)
+    data.pop()
+    for i = 0 to window - 1
+        int lag = i + 1
+        array<float> lData = data[lag]
+        float sy  = nz(sx[lag])
+        float syy = nz(sxx[lag])
+        float sxy = 0.0
+        if not na(lData)
+            for k = 0 to window - 1
+                sxy += data.get(k) * nz(lData.get(k))      // dot product (matrix-free)
+        float cov  = window * sxy - sx * sy
+        float vx   = window * sxx - sx * sx
+        float vy   = window * syy - sy * sy
+        float corr = (vx * vy) > 0 ? cov / math.sqrt(vx * vy) : 1.0
+        acf.set(i, nz(corr, 1))
+    float minCorr = acf.min()
+    int dc = (acf.indexof(minCorr) + 1) * 2
+    dc := nz(math.min(math.max(dc, dc[1] - 2), dc[1] + 2), dc)
+    float bp = f_bpf(src, dc, bw)
+    [hp, minCorr, dc, bp]
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SECTION 3 · CORE CALCULATIONS
+// ═══════════════════════════════════════════════════════════════════════════
 
 // ── 3A · WaveTrend (Core Specification) ──
 ap         = hlc3
 esa        = ta.ema(ap, n1)
 d          = ta.ema(math.abs(ap - esa), n1)
-ci         = (ap - esa) / (0.015 * d)
+ci         = (ap - esa) / (0.015 * math.max(d, 1e-9))   // guard: flat-bar zero deviation
 tci        = ta.ema(ci, n2)
 
 wt1        = tci
-wt2        = ta.sma(wt1, 4)
+wt2        = f_smooth(wt1, wt2_len, wt2_type)
 
-// ── 3B · CONVICTION ENGINE ──────────────────────────────────────────────────
+// ── 3B · LIQUIDITY SCORE ENGINE ────────────────────────────────────────────
+// Calculates microstructure normalization required for the Pure Liquidity Score.
+liq_spread = (high + low) / 2 - open
+liq_vol_ma = math.max(ta.sma(volume, liq_length), 1e-9)   // guard: zero-volume bars / indices
+vwap_spread = ta.sma(liq_spread * volume / liq_vol_ma, liq_length)
+
+price_impact = ta.sma((close - close[impact_window]) * volume / liq_vol_ma, liq_length)
+microstructure_raw = vwap_spread - price_impact
+
+microstructure_z = f_zscore_clipped(microstructure_raw, liq_length, zscore_clip)
+microstructure_norm = f_sigmoid(microstructure_z, 1.5)
+
+// Pure Liquidity Score Normalized Over Zero
+liquidity_oscillator = microstructure_norm * 100
+
+// Velocity of the Pure Liquidity Score (Set C kinematic gate)
+liq_vel = liquidity_oscillator - nz(liquidity_oscillator[1])
+
+// LO — liquidity-adjusted stochastic oscillator (EXACT port of liq_osc.pine · © BullishValue):
+// (close + liquidity_score) range-normalized to ±100. liquidity_score == microstructure_raw.
+lo_src  = close + microstructure_raw
+lo_lo   = ta.lowest(lo_src, liq_length)
+lo_hi   = ta.highest(lo_src, liq_length)
+lo      = 200.0 * (lo_src - lo_lo) / math.max(lo_hi - lo_lo, 1e-9) - 100.0
+
+// ── AutoTune Filter value (Ehlers) — tuned band-pass, the article's displaySeries. ──
+// > 0 = cycle-positive, < 0 = cycle-negative.
+[at_hp, at_minCorr, at_dc, at_filter] = f_autotune(close, at_window, 0.25)
+
+// ── 3C · CONVICTION ENGINE ──────────────────────────────────────────────────
 // Component 1: Trend Strength (structural, slow, magnitude-aware)
 hma_close = ta.hma(close, reg_len)
 slope = ta.linreg(hma_close, reg_len, 0) - ta.linreg(hma_close, reg_len, 1)
@@ -110,7 +227,7 @@ flow = 0.7 * participation + 0.3 * rsi_norm
 // Composite Conviction [−100, +100]
 conviction = 100 * (0.50 * trend_str + 0.30 * wt_sep_n + 0.20 * flow)
 
-// ── 3C · PULSE ENGINE ───────────────────────────────────────────────────
+// ── 3D · PULSE ENGINE ───────────────────────────────────────────────────
 // Use 3-bar velocity and 30-bar baseline (no overlap)
 conv_vel_3 = conviction - nz(conviction[3], conviction)
 baseline_30 = ta.sma(nz(conviction[3], conviction), 27)
@@ -147,131 +264,37 @@ pulse = math.max(-6, math.min(6, math.sign(conv_vel_3) * math.sqrt(math.abs(vel_
 pulse_delta = ta.change(pulse)
 conv_delta  = ta.change(conviction)
 
-// Statistical Narrative Thresholds (Rolling Sigma)
-pd_std = ta.stdev(pulse_delta, 30)
-cd_std = ta.stdev(conv_delta, 30)
 
-pd_norm = pulse_delta / math.max(pd_std, 1e-6)
-cd_norm = conv_delta  / math.max(cd_std, 1e-6)
+// ═══════════════════════════════════════════════════════════════════════════
+//  SECTION 4 · SANKET ENGINE (SIGNAL LOGIC)
+// ═══════════════════════════════════════════════════════════════════════════
 
-p_state = pd_norm > 1.0 ? ">>" : pd_norm > 0.0 ? ">" : pd_norm > -1.0 ? "<" : "<<"
-c_state = cd_norm > 1.0 ? ">>" : cd_norm > 0.0 ? ">" : cd_norm > -1.0 ? "<" : "<<"
-
-// Axis Labels for 4x4 Matrix
-p_label = p_state == ">>" ? "SURGE" : p_state == ">" ? "FIRM" : p_state == "<" ? "SOFT" : "CRUSH"
-c_label = c_state == ">>" ? "LEAD"  : c_state == ">" ? "DEEP" : c_state == "<" ? "LIGHT" : "HOLLOW"
-
-// ── Orthogonal Factors (Sanket v4 Cohesion) ──
-f1_log_ret  = math.log(close / nz(close[5], close))
-f1_atr_pct  = (ta.sma(ta.tr, 14) / close)
-f1_pricemom = math.max(-5, math.min(5, f1_log_ret / math.max(f1_atr_pct, 1e-6)))
-
-f2_vol_mean  = ta.sma(volume, 20)
-f2_vol_std   = ta.stdev(volume, 20)
-f2_vol_z     = (volume - f2_vol_mean) / math.max(f2_vol_std, 1e-6)
-f2_price_dir = math.sign(close - nz(close[5], close))
-f2_volqual   = ta.sma(f2_vol_z * f2_price_dir, 5)
-
-var string narrative = "NEUTRAL"
-var color  narr_col  = C_TXT_NORM
-var string narr_icon = "⚙️"
-var float  p_mult    = 1.0
-
-if p_state == ">>" and c_state == ">>"
-    narrative := "SQUEEZE",  narr_col := C_IGNITION, narr_icon := "💎", p_mult := 2.0
-else if p_state == ">>" and c_state == ">"
-    narrative := "HYPER",    narr_col := C_BURST,    narr_icon := "⚡", p_mult := 1.6
-else if p_state == ">>" and c_state == "<"
-    narrative := "EXHAUST",  narr_col := C_WARN,     narr_icon := "🎈", p_mult := 0.6
-else if p_state == ">>" and c_state == "<<"
-    narrative := "CHAOS",    narr_col := C_NEG,      narr_icon := "🌋", p_mult := 0.4
-else if p_state == ">" and c_state == ">>"
-    narrative := "IGNITE",   narr_col := C_LOAD,     narr_icon := "🔥", p_mult := 1.4
-else if p_state == ">" and c_state == ">"
-    narrative := "ORGANIC",  narr_col := C_ACCENT,   narr_icon := "🌱", p_mult := 1.2
-else if p_state == ">" and c_state == "<"
-    narrative := "EXPAND",   narr_col := C_TXT_NORM, narr_icon := "📈", p_mult := 0.9
-else if p_state == ">" and c_state == "<<"
-    narrative := "POP",      narr_col := C_WARN,     narr_icon := "🫧", p_mult := 0.7
-else if p_state == "<" and c_state == ">>"
-    narrative := "HARDEN",   narr_col := C_IGNITION, narr_icon := "🧱", p_mult := 1.5
-else if p_state == "<" and c_state == ">"
-    narrative := "STEALTH",  narr_col := C_STEALTH,  narr_icon := "🕵️", p_mult := 1.3
-else if p_state == "<" and c_state == "<"
-    narrative := "RETRACE",  narr_col := C_TXT_DIM,  narr_icon := "🔄", p_mult := 0.8
-else if p_state == "<" and c_state == "<<"
-    narrative := "LIQUID",   narr_col := C_NEG,      narr_icon := "💧", p_mult := 0.3
-else if p_state == "<<" and c_state == ">>"
-    narrative := "LOAD",     narr_col := C_LOAD,     narr_icon := "🐋", p_mult := 1.7
-else if p_state == "<<" and c_state == ">"
-    narrative := "TRAP",     narr_col := C_WARN,     narr_icon := "🪤", p_mult := 0.5
-else if p_state == "<<" and c_state == "<"
-    narrative := "CAPITUL",  narr_col := C_NEG,      narr_icon := "📉", p_mult := 0.2
-else if p_state == "<<" and c_state == "<<"
-    narrative := "CRASH",    narr_col := #b91c1c,    narr_icon := "💀", p_mult := 0.1
-
-// ── Step 4: Zone Depth ──
-bull_zone_depth = math.max(0, math.min(1, (-wt1 - obLevel2) / (obLevel1 - obLevel2)))
-bear_zone_depth = math.max(0, math.min(1, (wt1 - obLevel2) / (obLevel1 - obLevel2)))
-
-// ── Step 5: Directional Priority Multipliers ──
-is_bullish = conviction > 0
-final_p_mult = is_bullish ? p_mult : (2.1 - p_mult)
-zone_bonus   = is_bullish ? bull_zone_depth : bear_zone_depth
-
-// v4 Additive Composition (BP Equivalent pseudo-priority)
-p4_f1 = f1_pricemom * 15.0
-p4_f2 = f2_volqual * 8.0
-p4_f3 = (conviction / 20.0) * 10.0
-p4_f4 = pulse * 12.0
-// Regime (F5) and Cross-Sectional (F6) estimated as constants for Pine
-priority_val = p4_f1 + p4_f2 + p4_f3 + p4_f4 + 25.0
-
-
-// ╔═════════════════════════════════════════════════════════════════════════╗
-// ║  SECTION 4 · SANKET ENGINE (SIGNAL LOGIC)                               ║
-// ╚═════════════════════════════════════════════════════════════════════════╝
-
-// ── 4A · Squeeze Analysis (Structural Parity with SMI Reference) ──
-basis_sqz   = ta.sma(close, sqz_len)
-dev_sqz     = 1.5 * ta.stdev(close, sqz_len)
-upperBB_sqz = basis_sqz + dev_sqz
-lowerBB_sqz = basis_sqz - dev_sqz
-
-ma_sqz      = ta.sma(close, sqz_len)
-rangema_sqz = ta.sma(tr_val, sqz_len)
-upperKC_sqz = ma_sqz + rangema_sqz * 1.5
-lowerKC_sqz = ma_sqz - rangema_sqz * 1.5
-
-sqz_on      = (lowerBB_sqz > lowerKC_sqz) and (upperBB_sqz < upperKC_sqz)
-sqz_off     = (lowerBB_sqz < lowerKC_sqz) and (upperBB_sqz > upperKC_sqz)
-sqz_release = sqz_off and sqz_on[1]
-sqz_val     = ta.linreg(close - math.avg(math.avg(ta.highest(high, sqz_len), ta.lowest(low, sqz_len)), ta.sma(close, sqz_len)), sqz_len, 0)
-
-// ── 4B · Signal Gates ──
+// ── 4A · Signal Gates ──
 sig_bull_cross = ta.crossover(wt1,  wt2)
 sig_bear_cross = ta.crossunder(wt1, wt2)
 
-// Set B: Contrarian Zone Signals
-crossover_long  = sig_bear_cross and wt1 < osLevel2
-crossover_short = sig_bull_cross and wt1 > obLevel2
+// Set B: Crossover — liq_osc band-cross on the liquidity-adjusted stochastic (LO), gated by
+// Conviction Δ + Pulse Δ. Long: LO crosses UP through the lower band (LT, −75) with ΔConv > 0
+// and ΔPulse > 0 — a recovery from a liquidity low confirmed by improving structure + energy.
+// Short: LO crosses DOWN through the upper band (UT, +75) with both Δ < 0.
+crossover_long  = ta.crossover(lo,  lt_level) and conv_delta > 0 and pulse_delta > 0
+crossover_short = ta.crossunder(lo, ut_level) and conv_delta < 0 and pulse_delta < 0
 
-// Set A: Momentum Signals (Mutually Exclusive with Set B)
-momentum_long   = sig_bull_cross and not crossover_short
-momentum_short  = sig_bear_cross and not crossover_long
+// Set A: Momentum — base WRCI crossings, vetoed by the opposite-side Set B,
+// and gated by Δ-polarity + Liquidity: long requires ΔConv > 0 and ΔPulse > 0; short
+// requires both < 0. Same Δ + liquidity-level gate as the other sets.
+momentum_long   = sig_bull_cross and not crossover_short and conv_delta > 0 and pulse_delta > 0 and liquidity_oscillator > 0
+momentum_short  = sig_bear_cross and not crossover_long  and conv_delta < 0 and pulse_delta < 0 and liquidity_oscillator < 0
 
 // Set C: Threshold Zone Entry
-threshold_long  = wt1 < osLevel2 and wt1[1] >= osLevel2 and wt2 > osLevel2
-threshold_short = wt1 > obLevel2 and wt1[1] <= obLevel2 and wt2 < obLevel2
-
-// Set D: Squeeze Release
-squeeze_long    = sqz_release and sqz_val > sqz_val[1]
-squeeze_short   = sqz_release and sqz_val < sqz_val[1]
+// KINEMATIC GATE: Reversions need VELOCITY (Early Stealth Accumulation) rather than static baseline level.
+threshold_long  = wt1 < osLevel2 and wt1[1] >= osLevel2 and wt2 > osLevel2 and conv_delta > 0 and pulse_delta > 0 and liq_vel > 0
+threshold_short = wt1 > obLevel2 and wt1[1] <= obLevel2 and wt2 < obLevel2 and conv_delta < 0 and pulse_delta < 0 and liq_vel < 0
 
 
-// ╔═════════════════════════════════════════════════════════════════════════╗
-// ║  SECTION 5 · VISUALIZATION                                              ║
-// ╚═════════════════════════════════════════════════════════════════════════╝
+// ═══════════════════════════════════════════════════════════════════════════
+//  SECTION 5 · VISUALIZATION
+// ═══════════════════════════════════════════════════════════════════════════
 
 // ── 5A · Static Levels ──
 hline(0,        "Zero Line",  color=color.new(C_TXT_DIM, 50))
@@ -279,14 +302,17 @@ hline(obLevel1, "OB Level 1", color=color.new(C_NEG,     30))
 hline(obLevel2, "OB Level 2", color=color.new(C_NEG,     60), linestyle=hline.style_dashed)
 hline(osLevel1, "OS Level 1", color=color.new(C_POS,     30))
 hline(osLevel2, "OS Level 2", color=color.new(C_POS,     60), linestyle=hline.style_dashed)
+hline(ut_level, "LO UT",      color=color.new(C_STEALTH, 75), linestyle=hline.style_dotted)
+hline(lt_level, "LO LT",      color=color.new(C_STEALTH, 75), linestyle=hline.style_dotted)
 
 // ── 5B · WRCI Components ──
 // Histogram: Intensity based on conviction polarity and WaveTrend separation
 _hist_v = wt1 - wt2
 _hist_c = conviction > 0 ? (_hist_v > _hist_v[1] ? C_POS : color.new(C_POS, 60)) : (_hist_v < _hist_v[1] ? C_NEG : color.new(C_NEG, 60))
-plot(_hist_v,   "WRCI Histogram",    style=plot.style_columns, color=color.new(_hist_c, 50), display=display.all - display.status_line)
-plot(wt1,   "Composite Index",   color=color.new(color.aqua, 20), linewidth=2)
-plot(wt2, "Composite Signal",  color=color.new(color.orange, 30), linewidth=1)
+plot(_hist_v,   "WRCI Histogram",    style=plot.style_columns, color=color.new(_hist_c, 85), display=display.all - display.status_line)
+plot(wt1,   "Composite Index",   color=color.new(color.aqua, 15), linewidth=2)
+plot(wt2, "Composite Signal",  color=color.new(color.orange, 25), linewidth=1)
+plot(lo,  "LO (Liquidity Osc)", color=color.new(C_STEALTH, 55), linewidth=1, display=display.all - display.status_line)
 
 // ── 5C · Signal Markers ──
 plotshape(momentum_long,   "Momentum Long",   style=shape.arrowup,      location=location.bottom, color=C_POS,    size=size.small, display=display.all - display.status_line)
@@ -295,53 +321,73 @@ plotshape(crossover_long,  "Crossover Long",  style=shape.triangleup,   location
 plotshape(crossover_short, "Crossover Short", style=shape.triangledown, location=location.top,    color=C_NEG,   size=size.tiny,  display=display.all - display.status_line)
 plotshape(threshold_long,  "Threshold Long",  style=shape.circle,       location=location.bottom, color=C_POS, size=size.tiny,  display=display.all - display.status_line)
 plotshape(threshold_short, "Threshold Short", style=shape.circle,       location=location.top,    color=C_NEG, size=size.tiny,  display=display.all - display.status_line)
-plotshape(squeeze_long,    "Squeeze Long",    style=shape.diamond,      location=location.bottom, color=C_ACCENT,   size=size.tiny,  display=display.all - display.status_line)
-plotshape(squeeze_short,   "Squeeze Short",   style=shape.diamond,      location=location.top,    color=C_WARN,     size=size.tiny,  display=display.all - display.status_line)
 
-// ── 5E · Intelligence Traces ──
-// Horizontal traces representing the delta (acceleration/deceleration) of conviction and pulse.
-plot(-100,  "Conviction Delta Trace", color=conv_delta  > 0 ? C_POS    : C_NEG,  linewidth=3)
-plot(100, "Pulse Delta Trace",      color=pulse_delta > 0 ? C_ACCENT : C_WARN, linewidth=3)
+// ── 5E · AT Filter Kinematic Traces ──
+// Two baseline traces encoding the AutoTune filter's kinematics. Both share ONE schema &
+// gradient — GREEN growing (positive) / RED degrowing (negative), brightness scales with
+// magnitude (faint when quiet, vivid on strong moves):
+//   −100 = VELOCITY (Δ of at_filter):    GREEN rising / RED falling.
+//   +100 = ACCELERATION (Δ of velocity): GREEN accelerating / RED decelerating.
+at_vel          = at_filter - nz(at_filter[1])
+at_vel_mag      = ta.stdev(at_vel, 30)
+at_vel_int      = math.min(math.abs(at_vel) / math.max(at_vel_mag * 2.0, 1e-6), 1.0)
+at_vel_eased    = math.pow(at_vel_int, 0.6)          // gamma ease — lift the faint mid-range
+at_vel_transp   = int(70 - 65 * at_vel_eased)        // 70 always-visible → 5 vivid
+at_vel_col      = at_vel >= 0 ? color.new(C_POS, at_vel_transp) : color.new(C_NEG, at_vel_transp)
+plot(-100, "AT Filter Velocity", color=at_vel_col, linewidth=3)
+
+at_accel        = at_vel - nz(at_vel[1])
+at_accel_mag    = ta.stdev(at_accel, 30)
+at_accel_int    = math.min(math.abs(at_accel) / math.max(at_accel_mag * 2.0, 1e-6), 1.0)
+at_accel_eased  = math.pow(at_accel_int, 0.6)        // gamma ease — lift the faint mid-range
+at_accel_transp = int(70 - 65 * at_accel_eased)      // 70 always-visible → 5 vivid (matches velocity)
+at_accel_col    = at_accel >= 0 ? color.new(C_POS, at_accel_transp) : color.new(C_NEG, at_accel_transp)
+plot(100, "AT Filter Acceleration", color=at_accel_col, linewidth=3)
  
 // ── 5D · Intelligence Table ──
-var table intel_tbl = table.new(position.top_right, 2, 8, bgcolor=C_BG_DARK, border_width=0, frame_width=1, frame_color=#333333)
+// Decision-critical metrics, split into a sign-colored VALUE and a separate direction-colored
+// TREND arrow (↑ green = rising, ↓ red = falling). Two independent reads in one row:
+//   • VALUE color = the metric's SIGN:
+//       Conviction & Pulse → green (+) / red (−);  AT Filter → amber (+) / cyan (−).
+//   • ARROW color = DIRECTION (green ↑ / red ↓) — "where it's headed", independent of sign.
+// So a Δ value can be red (below zero) yet carry a green ↑ (improving), or green yet a red ↓.
+// (A Pine cell takes a single text color, so the arrow lives in its own column.)
+var table intel_tbl = table.new(position.middle_right, 3, 6, bgcolor=C_BG_DARK, border_width=0, frame_width=1, frame_color=#333333)
 if barstate.islast
     // Header
-    table.cell(intel_tbl, 0, 0, "METRIC",     text_halign=text.align_left,  text_color=C_TXT_DIM, bgcolor=C_BG_HEADER, text_size=size.tiny)
-    table.cell(intel_tbl, 1, 0, "VALUE",      text_halign=text.align_right, text_color=C_TXT_DIM, bgcolor=C_BG_HEADER, text_size=size.tiny)
-    
-    // Row 1: Conviction
-    table.cell(intel_tbl, 0, 1, "Conviction", text_halign=text.align_left,  text_color=C_TXT_NORM, bgcolor=C_BG_DARK, text_size=size.small)
-    table.cell(intel_tbl, 1, 1, str.tostring(conviction, "#.##"), text_halign=text.align_right, text_color=conviction > 0 ? C_POS : C_NEG, bgcolor=C_BG_DARK, text_size=size.small)
-    
-    // Row 2: Conviction Δ
-    table.cell(intel_tbl, 0, 2, "Conviction Δ", text_halign=text.align_left,  text_color=C_TXT_NORM, bgcolor=C_BG_EVEN, text_size=size.small)
-    table.cell(intel_tbl, 1, 2, (conv_delta > 0 ? "↑ " : "↓ ") + str.tostring(conv_delta, "#.##"), text_halign=text.align_right, text_color=conv_delta > 0 ? C_POS : C_NEG, bgcolor=C_BG_EVEN, text_size=size.small)
+    table.cell(intel_tbl, 0, 0, "METRIC", text_halign=text.align_left,   text_color=C_TXT_DIM, bgcolor=C_BG_HEADER, text_size=size.tiny)
+    table.cell(intel_tbl, 1, 0, "",       text_halign=text.align_center, text_color=C_TXT_DIM, bgcolor=C_BG_HEADER, text_size=size.tiny)
+    table.cell(intel_tbl, 2, 0, "VALUE",  text_halign=text.align_right,  text_color=C_TXT_DIM, bgcolor=C_BG_HEADER, text_size=size.tiny)
 
-    // Row 3: Pulse
-    table.cell(intel_tbl, 0, 3, "Pulse",      text_halign=text.align_left,  text_color=C_TXT_NORM, bgcolor=C_BG_DARK, text_size=size.small)
-    table.cell(intel_tbl, 1, 3, str.tostring(pulse, "#.##"),      text_halign=text.align_right, text_color=pulse > 0 ? C_ACCENT : C_WARN, bgcolor=C_BG_DARK, text_size=size.small)
+    // Row 1: Conviction (no trend arrow)
+    table.cell(intel_tbl, 0, 1, "Conviction", text_halign=text.align_left, text_color=C_TXT_NORM, bgcolor=C_BG_DARK, text_size=size.small)
+    table.cell(intel_tbl, 1, 1, "", bgcolor=C_BG_DARK)
+    table.cell(intel_tbl, 2, 1, str.tostring(conviction, "#.##"), text_halign=text.align_right, text_color=conviction > 0 ? C_POS : C_NEG, bgcolor=C_BG_DARK, text_size=size.small)
 
-    // Row 4: Pulse Δ
-    table.cell(intel_tbl, 0, 4, "Pulse Δ",    text_halign=text.align_left,  text_color=C_TXT_NORM, bgcolor=C_BG_EVEN, text_size=size.small)
-    table.cell(intel_tbl, 1, 4, (pulse_delta > 0 ? "↑ " : "↓ ") + str.tostring(pulse_delta, "#.##"), text_halign=text.align_right, text_color=pulse_delta > 0 ? C_ACCENT : C_WARN, bgcolor=C_BG_EVEN, text_size=size.small)
+    // Row 2: Conviction Δ — value green/red; arrow green if rising / red if falling
+    table.cell(intel_tbl, 0, 2, "Conviction Δ", text_halign=text.align_left, text_color=C_TXT_NORM, bgcolor=C_BG_EVEN, text_size=size.small)
+    table.cell(intel_tbl, 1, 2, conv_delta > nz(conv_delta[1]) ? "↑" : "↓", text_halign=text.align_center, text_color=conv_delta > nz(conv_delta[1]) ? C_POS : C_NEG, bgcolor=C_BG_EVEN, text_size=size.small)
+    table.cell(intel_tbl, 2, 2, str.tostring(conv_delta, "#.##"), text_halign=text.align_right, text_color=conv_delta > 0 ? C_POS : C_NEG, bgcolor=C_BG_EVEN, text_size=size.small)
 
-    // Row 5: Matrix States
-    table.cell(intel_tbl, 0, 5, "Matrix (C|P)", text_halign=text.align_left,  text_color=C_TXT_NORM, bgcolor=C_BG_EVEN, text_size=size.small)
-    table.cell(intel_tbl, 1, 5, c_label + " | " + p_label, text_halign=text.align_right, text_color=C_TXT_BRIGHT, bgcolor=C_BG_EVEN, text_size=size.small)
+    // Row 3: AT Filter (no trend arrow) — value amber (+) / cyan (−)
+    table.cell(intel_tbl, 0, 3, "AT Filter", text_halign=text.align_left, text_color=C_TXT_NORM, bgcolor=C_BG_DARK, text_size=size.small)
+    table.cell(intel_tbl, 1, 3, "", bgcolor=C_BG_DARK)
+    table.cell(intel_tbl, 2, 3, str.tostring(at_filter, "#.##"), text_halign=text.align_right, text_color=at_filter > 0 ? C_WARN : C_LOAD, bgcolor=C_BG_DARK, text_size=size.small)
 
-    // Row 6: Narrative
-    table.cell(intel_tbl, 0, 6, "Narrative",  text_halign=text.align_left,  text_color=C_TXT_NORM, bgcolor=C_BG_DARK, text_size=size.small)
-    table.cell(intel_tbl, 1, 6, narr_icon + " " + narrative, text_halign=text.align_right, text_color=narr_col, bgcolor=C_BG_DARK, text_size=size.small)
+    // Row 4: Pulse (no trend arrow)
+    table.cell(intel_tbl, 0, 4, "Pulse", text_halign=text.align_left, text_color=C_TXT_NORM, bgcolor=C_BG_EVEN, text_size=size.small)
+    table.cell(intel_tbl, 1, 4, "", bgcolor=C_BG_EVEN)
+    table.cell(intel_tbl, 2, 4, str.tostring(pulse, "#.##"), text_halign=text.align_right, text_color=pulse > 0 ? C_POS : C_NEG, bgcolor=C_BG_EVEN, text_size=size.small)
 
-    // Row 7: Priority (BP Equivalent)
-    table.cell(intel_tbl, 0, 7, "Priority L (bp)", text_halign=text.align_left,  text_color=C_TXT_NORM, bgcolor=C_BG_EVEN, text_size=size.small)
-    table.cell(intel_tbl, 1, 7, str.tostring(priority_val, "#.##"), text_halign=text.align_right, text_color=priority_val > 0 ? C_POS : C_NEG, bgcolor=C_BG_EVEN, text_size=size.small)
+    // Row 5: Pulse Δ — value green/red; arrow green if rising / red if falling
+    table.cell(intel_tbl, 0, 5, "Pulse Δ", text_halign=text.align_left, text_color=C_TXT_NORM, bgcolor=C_BG_DARK, text_size=size.small)
+    table.cell(intel_tbl, 1, 5, pulse_delta > nz(pulse_delta[1]) ? "↑" : "↓", text_halign=text.align_center, text_color=pulse_delta > nz(pulse_delta[1]) ? C_POS : C_NEG, bgcolor=C_BG_DARK, text_size=size.small)
+    table.cell(intel_tbl, 2, 5, str.tostring(pulse_delta, "#.##"), text_halign=text.align_right, text_color=pulse_delta > 0 ? C_POS : C_NEG, bgcolor=C_BG_DARK, text_size=size.small)
 
 
-// ╔═════════════════════════════════════════════════════════════════════════╗
-// ║  SECTION 6 · INTELLIGENCE INTERPRETATION GUIDE                          ║
-// ╚═════════════════════════════════════════════════════════════════════════╝
+// ═══════════════════════════════════════════════════════════════════════════
+//  SECTION 6 · INTERPRETATION GUIDE
+// ═══════════════════════════════════════════════════════════════════════════
 //    ── WRCI (Wave-Regime Composite Index) ──
 //    CONCEPT: A unified oscillator that synchronizes Price Waves with Volume-Flow Regimes. 
 //    It acts as the primary "Pulse Reader" for market energy.
@@ -367,12 +413,50 @@ if barstate.islast
 //      ignites with abnormal speed.
 //
 //    ── INTELLIGENCE DELTAS (The Lead Indicators) ──
-//    CONVICTION Δ (Trend Energy):
-//    • ↑ Increasing (Green): The core trend is attracting more capital and strengthening.
-//    • ↓ Decreasing (Red): The trend is losing structural support. This is a leading indicator 
-//      that the move may be reaching exhaustion.
+//    Each metric's VALUE is colored by its SIGN (Conviction & Pulse: green +/red −); the
+//    TREND arrow beside it is colored by DIRECTION only (green ↑ rising / red ↓ falling).
+//    CONVICTION Δ (Trend Energy) — value green (+) / red (−):
+//    • ↑ (green): The core trend is attracting more capital and strengthening.
+//    • ↓ (red): The trend is losing structural support — a leading sign the move may be
+//      reaching exhaustion (the arrow can fall even while ΔConv is still positive/green).
 //
-//    PULSE Δ (Velocity Energy):
-//    • ↑ Increasing (Blue): The "Blow-off" or "Ignition" is accelerating. The move is gaining speed.
-//    • ↓ Decreasing (Orange/Yellow): The "Cooling Phase." Acceleration is slowing down. Even if price 
-//      is still rising, the internal 'engine' is decelerating.
+//    PULSE Δ (Velocity Energy) — value green (+) / red (−):
+//    • ↑ (green): The "Blow-off" or "Ignition" is accelerating. The move is gaining speed.
+//    • ↓ (red): The "Cooling Phase." Acceleration is slowing down. Even if price is still
+//      rising, the internal 'engine' is decelerating.
+//
+//    ── AT FILTER (Ehlers AutoTune · TASC 2026.05) ──
+//    CONCEPT: A band-pass filter whose center period auto-tunes to the dominant cycle (the
+//    lag with the lowest rolling autocorrelation of a high-pass-filtered series). Output is
+//    the tuned band-pass value — a smoothed, cycle-isolated oscillation around zero.
+//    INTERPRETATION:
+//    • Above 0: cycle in its positive (up) phase.
+//    • Below 0: cycle in its negative (down) phase.
+//    • Zero crossings mark the rhythmic cycle turns; combine with Conviction/Pulse to
+//      separate cyclic swings from structural trend.
+//    • Baseline traces share one schema (green growing / red degrowing, brightness =
+//      strength): −100 = VELOCITY (green rising / red falling); +100 = ACCELERATION
+//      (green accelerating / red decelerating).
+//
+//    ── LIQUIDITY ENGINE (Microstructure Flow) ──
+//    CONCEPT: A ±100 microstructure oscillator blending volume-weighted intrabar spread against
+//    multi-bar price impact (z-scored, sigmoid-normalized). It reads the supply/demand balance
+//    behind price, and is differentiated by ORDER to gate each signal archetype:
+//    • LEVEL (liquidity_oscillator) — net flow pressure right now (gates Sets A & B).
+//    • VELOCITY (Liq Δ) — is flow building or draining? The lead for early accumulation (gates Set C).
+//    NOTE: this measure tends to lead/diverge from raw price — read it as a flow state, not a
+//    price proxy.
+//
+//    ── SIGNAL SETS (3 entry archetypes) ──
+//    All three sets confirm with Conviction Δ AND Pulse Δ in the trade's direction (long: both
+//    > 0; short: both < 0). Sets A & C add a kinematic LIQUIDITY gate (LEVEL for A, VELOCITY for
+//    C); Set B's trigger is the liq_osc LO band cross itself:
+//    • A · MOMENTUM  (↑ / ↓ arrow)   — WaveTrend wt1/wt2 cross, vetoed by the opposite-side
+//                                       Set B. Gate: liquidity LEVEL. "Ride confirmed momentum."
+//    • B · CROSSOVER (△ / ▽)         — liq_osc LO (= close + liquidity_score, range-normalized
+//                                       to ±100) crosses its bands — UP through LT (−75) = long,
+//                                       DOWN through UT (+75) = short — confirmed by ΔConv & ΔPulse.
+//                                       "Liquidity recovering from / rolling off an extreme."
+//    • C · THRESHOLD (○)             — fresh entry into the OS/OB band (wt1 crosses ±OS2/OB2
+//                                       while wt2 still sits outside). Gate: liquidity VELOCITY —
+//                                       early stealth accumulation into a stretched dip/pop.
