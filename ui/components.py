@@ -1,5 +1,5 @@
 """
-Pragyam v3.2.1 — Reusable UI components: metric cards, signal badges, headers, section headers.
+Pragyam v3.4.0 — Reusable UI components: metric cards, signal badges, headers, section headers.
 
 UI — Obsidian Quant Terminal design language.
 """
