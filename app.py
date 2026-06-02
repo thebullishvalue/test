@@ -2083,19 +2083,19 @@ def compute_signal_sets(df: pd.DataFrame,
 
     # Set B: Crossover — LO band cross (ported liq_osc.pine), gated by ΔConv + ΔPulse + HCI.
     # Long: LO crosses UP through lt_level (−75). Short: LO crosses DOWN through ut_level (+75).
-    crossover_long  = (lo > lt_level) & (lo.shift(1) <= lt_level) & hci_gate_long
-    crossover_short = (lo < ut_level) & (lo.shift(1) >= ut_level) & hci_gate_short
+    crossover_long  = (lo > lt_level) & (lo.shift(1) <= lt_level) & (conv_d > 0) & (pulse_d > 0) & hci_gate_long
+    crossover_short = (lo < ut_level) & (lo.shift(1) >= ut_level) & (conv_d < 0) & (pulse_d < 0) & hci_gate_short
 
     # Set A: Momentum — base WRCI crossings, vetoed by the opposite-side Set B,
     # gated by Δ-polarity + liquidity LEVEL + HCI trend.
-    momentum_long   = sig_bull_cross & (~crossover_short) & hci_gate_long
-    momentum_short  = sig_bear_cross & (~crossover_long)  & hci_gate_short
+    momentum_long   = sig_bull_cross & (~crossover_short) & (conv_d > 0) & (pulse_d > 0) & (liq_osc > 0) & hci_gate_long
+    momentum_short  = sig_bear_cross & (~crossover_long)  & (conv_d < 0) & (pulse_d < 0) & (liq_osc < 0) & hci_gate_short
 
     # Set C: Threshold — wt1 freshly entering the OS/OB band while wt2 still sits outside
     # (wt2 lags wt1, so "wt2 hasn't crossed yet" = fresh). Δ-polarity gated AND a kinematic
     # liquidity VELOCITY gate (liq_vel) + HCI trend — early stealth accumulation into the dip/pop.
-    threshold_long  = (wt1 < osLevel2) & (wt1.shift(1) >= osLevel2) & (wt2 > osLevel2) & hci_gate_long
-    threshold_short = (wt1 > obLevel2) & (wt1.shift(1) <= obLevel2) & (wt2 < obLevel2) & hci_gate_short
+    threshold_long  = (wt1 < osLevel2) & (wt1.shift(1) >= osLevel2) & (wt2 > osLevel2) & (conv_d > 0) & (pulse_d > 0) & (liq_vel > 0) & hci_gate_long
+    threshold_short = (wt1 > obLevel2) & (wt1.shift(1) <= obLevel2) & (wt2 < obLevel2) & (conv_d < 0) & (pulse_d < 0) & (liq_vel < 0) & hci_gate_short
 
     df['long_cond']       = momentum_long
     df['short_cond']      = momentum_short
@@ -4885,31 +4885,34 @@ def _bucket_signals_by_age(results_df: pd.DataFrame, side: str = 'long', conditi
         for _, r in subset.iterrows():
             sym = r['Symbol']
             m = _fire_bar_metrics(_windows.get(sym), side, condition_set, _offset, r)
-            # Layer 3: today's fired signals carry a cross-sectional Meta score —
-            # the fused rank × confidence — which takes precedence over the per-bar
-            # Intel score. Aged signals (no snapshot conviction) fall back to the
-            # fire-bar Intel score. Probation: an ADVISORY meta intelligence (model
-            # did not beat naked priority OOS) may dim but never HIDE — only an
-            # active meta intelligence or the legacy fire-bar Intel may hide.
-            _conv = r.get('Meta_Score')
-            _has_conv = _conv is not None and not pd.isna(_conv)
-            if _has_conv:
-                fc = float(_conv)
-                _fc_src = 'calibrated' if bool(r.get('Meta_Active')) else 'heuristic'
-                _may_hide = bool(r.get('Meta_Active'))
+            # Intel DISPLAY value — the real per-signal Intel confidence (fire-bar for
+            # aged signals, snapshot for today). This is what the Intel column shows; it
+            # is kept distinct from the Meta filter value below so the two columns never
+            # mirror each other.
+            fc = m['conf']
+            _fc_src = m['src']
+            # FILTER decision value (drives Hide here + Dim styling in the table) — the
+            # Layer-3 Meta score on today's fired signals (fused rank × confidence), else
+            # the fire-bar Intel for aged signals. Probation: an ADVISORY meta (didn't
+            # beat naked priority OOS) may dim but never HIDE — only an active meta or the
+            # legacy fire-bar Intel may hide.
+            _mv = r.get('Meta_Score')
+            if _mv is not None and not pd.isna(_mv):
+                _filter_val = float(_mv)
+                _filter_may_hide = bool(r.get('Meta_Active'))
             else:
-                fc = m['conf']
-                _fc_src = m['src']
-                _may_hide = True
-            # Hide mode — drop low-confidence signals (and don't let an older
-            # fire of the same symbol resurface in a later bucket).
-            if (_filter_mode == "Hide" and _may_hide and fc is not None
-                    and not pd.isna(fc) and fc < _filter_thr):
+                _filter_val = fc
+                _filter_may_hide = True
+            # Hide mode — drop low-score signals (and don't let an older fire of the same
+            # symbol resurface in a later bucket).
+            if (_filter_mode == "Hide" and _filter_may_hide and _filter_val is not None
+                    and not pd.isna(_filter_val) and _filter_val < _filter_thr):
                 seen.add(sym)
                 continue
             r = r.copy()
-            r['_fire_conf'] = fc
+            r['_fire_conf'] = fc            # Intel column — REAL Intel confidence
             r['_fire_src'] = _fc_src
+            r['_filter_val'] = _filter_val  # Meta (today) / Intel (aged) — drives Dim styling
             r['_ctx'] = m['ctx']      # (label, color, title) — context decay
             r['_entry'] = m['entry']  # (label, color, title) — move exhaustion
             buckets[age].append(r)
@@ -5014,9 +5017,13 @@ def _build_signal_table_html(stats: dict, side: str = 'long', timeframe: str = '
             # _bucket_signals_by_age), falling back to the snapshot value.
             _conf_val = row.get('_fire_conf', row.get('Intel_Confidence'))
             _conf_src = row.get('_fire_src', row.get('Intel_Source', ''))
-            intel_cell, _row_style = _intel_cell_and_style(
-                _conf_val, _conf_src, _filter_mode, _filter_thr,
-            )
+            # Intel cell shows the REAL Intel confidence (no dim from it). The row Dim
+            # styling keys off the Meta filter value (Meta today / Intel aged), so the
+            # Intel and Meta columns stay independent.
+            intel_cell, _ = _intel_cell_and_style(_conf_val, _conf_src, 'Off', 0.0)
+            _fv = row.get('_filter_val', _conf_val)
+            _row_style = ('opacity:0.4;' if (_filter_mode == 'Dim' and _fv is not None
+                          and not pd.isna(_fv) and _fv < _filter_thr) else '')
             # Context (thesis decay) + Entry (move exhaustion) status cells.
             ctx_cell   = _status_cell(row.get('_ctx',   ('—', '#4B5563', '')))
             entry_cell = _status_cell(row.get('_entry', ('—', '#4B5563', '')))
