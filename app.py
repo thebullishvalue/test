@@ -2083,19 +2083,19 @@ def compute_signal_sets(df: pd.DataFrame,
 
     # Set B: Crossover — LO band cross (ported liq_osc.pine), gated by ΔConv + ΔPulse + HCI.
     # Long: LO crosses UP through lt_level (−75). Short: LO crosses DOWN through ut_level (+75).
-    crossover_long  = (lo > lt_level) & (lo.shift(1) <= lt_level) & (conv_d > 0) & (pulse_d > 0) & hci_gate_long
-    crossover_short = (lo < ut_level) & (lo.shift(1) >= ut_level) & (conv_d < 0) & (pulse_d < 0) & hci_gate_short
+    crossover_long  = (lo > lt_level) & (lo.shift(1) <= lt_level) & hci_gate_long
+    crossover_short = (lo < ut_level) & (lo.shift(1) >= ut_level) & hci_gate_short
 
     # Set A: Momentum — base WRCI crossings, vetoed by the opposite-side Set B,
     # gated by Δ-polarity + liquidity LEVEL + HCI trend.
-    momentum_long   = sig_bull_cross & (~crossover_short) & (conv_d > 0) & (pulse_d > 0) & (liq_osc > 0) & hci_gate_long
-    momentum_short  = sig_bear_cross & (~crossover_long)  & (conv_d < 0) & (pulse_d < 0) & (liq_osc < 0) & hci_gate_short
+    momentum_long   = sig_bull_cross & (~crossover_short) & hci_gate_long
+    momentum_short  = sig_bear_cross & (~crossover_long)  & hci_gate_short
 
     # Set C: Threshold — wt1 freshly entering the OS/OB band while wt2 still sits outside
     # (wt2 lags wt1, so "wt2 hasn't crossed yet" = fresh). Δ-polarity gated AND a kinematic
     # liquidity VELOCITY gate (liq_vel) + HCI trend — early stealth accumulation into the dip/pop.
-    threshold_long  = (wt1 < osLevel2) & (wt1.shift(1) >= osLevel2) & (wt2 > osLevel2) & (conv_d > 0) & (pulse_d > 0) & (liq_vel > 0) & hci_gate_long
-    threshold_short = (wt1 > obLevel2) & (wt1.shift(1) <= obLevel2) & (wt2 < obLevel2) & (conv_d < 0) & (pulse_d < 0) & (liq_vel < 0) & hci_gate_short
+    threshold_long  = (wt1 < osLevel2) & (wt1.shift(1) >= osLevel2) & (wt2 > osLevel2) & hci_gate_long
+    threshold_short = (wt1 > obLevel2) & (wt1.shift(1) <= obLevel2) & (wt2 < obLevel2) & hci_gate_short
 
     df['long_cond']       = momentum_long
     df['short_cond']      = momentum_short
