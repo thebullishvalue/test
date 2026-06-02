@@ -1,5 +1,5 @@
 """
-Pragyam v3.4.0 — Shared CSS, chart theming, and color constants for the UI layer.
+Pragyam v3.5.0 — Shared CSS, chart theming, and color constants for the UI layer.
 
 UI — "Obsidian Quant" Institutional Research Terminal design language.
 
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import streamlit as st
 
-VERSION = "v3.4.0"
+VERSION = "v3.5.0"
 PRODUCT_NAME = "Sanket"
 COMPANY = "@thebullishvalue"
 
