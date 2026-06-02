@@ -541,7 +541,7 @@ def _render_intelligence_tab(universe, selected_index, timeframe):
             "Active Weights", "factor coefficients · long vs short",
             icon="grid", accent="amber",
         )
-        st.components.v1.html(_build_active_weights_table_html(active), height=620, scrolling=False)
+        st.components.v1.html(_build_active_weights_table_html(active), height=820, scrolling=False)
     with col_s:
         ui.render_section_header(
             "Factor Importance", "Optuna fANOVA · share of objective variance",
@@ -5715,6 +5715,9 @@ def _build_active_weights_table_html(active_weights: dict) -> str:
         # F7 dormant by default (0/0) — gated out of the ranking search pending
         # real-data validation; the "exp" tag signals experimental/probation, not a bug.
         ("F7 · Liq (LO) ᵉˣᵖ", "beta_F7_liq_long",      "beta_F7_liq_short"),
+        # F8 (sector-relative breadth) IS searched by default — a live calibrated
+        # factor (no exp tag), unlike the dormant F7.
+        ("F8 · Breadth",    "beta_F8_breadth_long",    "beta_F8_breadth_short"),
         ("γ · Reversion",   "gamma_reversion_long",    "gamma_reversion_short"),
         ("γ · Divergence",  "gamma_divergence_long",   "gamma_divergence_short"),
     ]
@@ -5749,6 +5752,25 @@ def _build_active_weights_table_html(active_weights: dict) -> str:
             <tr>
                 <td class="aw-label">{label}</td>
                 <td class="aw-num" style="color:{v_color};">{v:.2f}×</td>
+            </tr>
+        """)
+
+    # Fixed structural parameters — applied by compute_priority but NOT searched by
+    # the optimizer (Path-A breadth tilt has zero within-date variance, so it can't
+    # earn cross-sectional IC). Shown separately so they aren't mistaken for tuned weights.
+    bt_long  = float(active_weights.get('breadth_tilt_long', 0.0))
+    bt_short = float(active_weights.get('breadth_tilt_short', 0.0))
+    fixed_pairs = [
+        (f"Breadth Tilt α · Long",  bt_long,  f"×[{1-bt_long:.2f}, {1+bt_long:.2f}]"),
+        (f"Breadth Tilt α · Short", bt_short, f"×[{1-bt_short:.2f}, {1+bt_short:.2f}]"),
+    ]
+    fixed_rows = []
+    for label, v, rng in fixed_pairs:
+        fixed_rows.append(f"""
+            <tr>
+                <td class="aw-label">{label}</td>
+                <td class="aw-num" style="color:#94A3B8;">{v:.2f}</td>
+                <td class="aw-num" style="color:#64748B; font-size:0.62rem;">{rng}</td>
             </tr>
         """)
 
@@ -5850,10 +5872,27 @@ def _build_active_weights_table_html(active_weights: dict) -> str:
         <tbody>{''.join(tier_rows)}</tbody>
     </table>
 
+    <div class="aw-section-title">FIXED · STRUCTURAL (not calibrated)</div>
+    <table class="aw-table">
+        <thead>
+            <tr>
+                <th>Parameter</th>
+                <th>α</th>
+                <th>Exposure ×</th>
+            </tr>
+        </thead>
+        <tbody>{''.join(fixed_rows)}</tbody>
+    </table>
+
     <div class="aw-footnote">
         Long / Short are independent weight vectors — Δ &gt; 0 means the factor
         contributes more to the bullish ranking than the bearish, and vice versa.
         Tier multipliers scale signal-class quality and are direction-agnostic.
+        The <b>Breadth Tilt α</b> (Path A) is a <i>fixed</i> market-regime exposure
+        multiplier — <code>long ×(1+α·b)</code>, <code>short ×(1−α·b)</code>, breadth
+        state <code>b∈[−1,1]</code> — applied after ranking and <b>not</b> optimized
+        (it has no within-date variance to calibrate against), so it rescales
+        long-vs-short exposure without reordering either side.
     </div>
 
     </body></html>
