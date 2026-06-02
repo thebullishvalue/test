@@ -4891,7 +4891,7 @@ def _bucket_signals_by_age(results_df: pd.DataFrame, side: str = 'long', conditi
             # fire-bar Intel score. Probation: an ADVISORY meta conviction (model
             # did not beat naked priority OOS) may dim but never HIDE — only an
             # active meta conviction or the legacy fire-bar Intel may hide.
-            _conv = r.get('Conviction')
+            _conv = r.get('Meta_Conviction')
             _has_conv = _conv is not None and not pd.isna(_conv)
             if _has_conv:
                 fc = float(_conv)
@@ -5021,7 +5021,7 @@ def _build_signal_table_html(stats: dict, side: str = 'long', timeframe: str = '
             ctx_cell   = _status_cell(row.get('_ctx',   ('—', '#4B5563', '')))
             entry_cell = _status_cell(row.get('_entry', ('—', '#4B5563', '')))
             # Layer-3 Meta-Conviction (today's snapshot fusion; '—' for aged rows).
-            meta_cell  = _conviction_cell(row.get('Conviction'), row.get('Conviction_Tier'),
+            meta_cell  = _conviction_cell(row.get('Meta_Conviction'), row.get('Conviction_Tier'),
                                           row.get('Conviction_Source', ''))
 
             table_rows.append(f"""
@@ -5191,7 +5191,7 @@ def _build_narrative_table_html(df: pd.DataFrame, side: str = 'long') -> str:
             # (calibrated % or muted ~heuristic; "—" when this symbol has no fired signal).
             intel_cell, _ = _intel_cell_and_style(
                 row.get('Intel_Confidence'), row.get('Intel_Source', ''), 'Off', 0.0)
-            meta_cell = _conviction_cell(row.get('Conviction'), row.get('Conviction_Tier'),
+            meta_cell = _conviction_cell(row.get('Meta_Conviction'), row.get('Conviction_Tier'),
                                          row.get('Conviction_Source', ''))
 
             table_rows.append(f"""
@@ -5366,7 +5366,7 @@ def _build_signal_strength_table_html(df: pd.DataFrame, side: str = 'long') -> s
             # (no Context/Entry, no Dim). '—' where the symbol has no fired signal.
             _intel_cell, _ = _intel_cell_and_style(
                 row.get('Intel_Confidence'), row.get('Intel_Source', ''), 'Off', 0.0)
-            _meta_cell = _conviction_cell(row.get('Conviction'), row.get('Conviction_Tier'),
+            _meta_cell = _conviction_cell(row.get('Meta_Conviction'), row.get('Conviction_Tier'),
                                           row.get('Conviction_Source', ''))
 
             table_rows.append(f"""

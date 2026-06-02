@@ -894,8 +894,11 @@ _CONV_BANDS = np.array([0.35, 0.55, 0.70])   # tiers 0 / 1 / 2 / 3
 
 def compute_conviction(df: pd.DataFrame, meta_model='__active__',
                        spread_eps: float = 0.03) -> pd.DataFrame:
-    """Add Conviction (0–1), Conviction_Tier (0–3), Conviction_Source,
+    """Add Meta_Conviction (0–1), Conviction_Tier (0–3), Conviction_Source,
     Conviction_Reason, Conviction_Active, Conviction_Spread per row.
+
+    The scalar is Meta_Conviction, NOT 'Conviction' — the engine's structural
+    Conviction (±100) already owns the 'Conviction' column and must not be touched.
 
     Requires Priority_*_pct (from compute_priority) and Intel_Confidence (from
     compute_signal_confidence) already on the frame. Fired rows the meta layer
@@ -935,7 +938,10 @@ def compute_conviction(df: pd.DataFrame, meta_model='__active__',
         score = np.clip(rank_pct * conf, 0.0, 1.0)
         source = np.where(fired_arr, 'fallback', '')
 
-    df['Conviction']        = np.where(fired_arr, np.clip(score, 0.0, 1.0), np.nan)
+    # NOTE: the scalar is Meta_Conviction (NOT 'Conviction') — the engine's structural
+    # Conviction (±100) already owns the 'Conviction' column upstream; reusing it here
+    # clobbered it with NaN on non-fired rows.
+    df['Meta_Conviction']   = np.where(fired_arr, np.clip(score, 0.0, 1.0), np.nan)
     df['Conviction_Source'] = source
     df['Conviction_Active'] = bool(active)
 
