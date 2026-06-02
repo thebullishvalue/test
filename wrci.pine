@@ -416,7 +416,7 @@ plot(100, "AT Filter Acceleration", color=at_accel_col, linewidth=3)
 // Decision-critical metrics, split into a sign-colored VALUE and a separate direction-colored
 // TREND arrow (↑ green = rising, ↓ red = falling). Two independent reads in one row:
 //   • VALUE color = the metric's SIGN:
-//       Conviction & Pulse → green (+) / red (−);  AT Filter → amber (+) / cyan (−).
+//       Conviction & Pulse → green (+) / red (−);  RSI → green (≥50) / red (<50).
 //   • ARROW color = DIRECTION (green ↑ / red ↓) — "where it's headed", independent of sign.
 // So a Δ value can be red (below zero) yet carry a green ↑ (improving), or green yet a red ↓.
 // (A Pine cell takes a single text color, so the arrow lives in its own column.)
@@ -437,10 +437,10 @@ if barstate.islast
     table.cell(intel_tbl, 1, 2, conv_delta > nz(conv_delta[1]) ? "↑" : "↓", text_halign=text.align_center, text_color=conv_delta > nz(conv_delta[1]) ? C_POS : C_NEG, bgcolor=C_BG_EVEN, text_size=size.small)
     table.cell(intel_tbl, 2, 2, str.tostring(conv_delta, "#.##"), text_halign=text.align_right, text_color=conv_delta > 0 ? C_POS : C_NEG, bgcolor=C_BG_EVEN, text_size=size.small)
 
-    // Row 3: AT Filter (no trend arrow) — value amber (+) / cyan (−)
-    table.cell(intel_tbl, 0, 3, "AT Filter", text_halign=text.align_left, text_color=C_TXT_NORM, bgcolor=C_BG_DARK, text_size=size.small)
+    // Row 3: RSI (no trend arrow) — value green (≥50 bullish) / red (<50 bearish)
+    table.cell(intel_tbl, 0, 3, "RSI", text_halign=text.align_left, text_color=C_TXT_NORM, bgcolor=C_BG_DARK, text_size=size.small)
     table.cell(intel_tbl, 1, 3, "", bgcolor=C_BG_DARK)
-    table.cell(intel_tbl, 2, 3, str.tostring(at_filter, "#.##"), text_halign=text.align_right, text_color=at_filter > 0 ? C_WARN : C_LOAD, bgcolor=C_BG_DARK, text_size=size.small)
+    table.cell(intel_tbl, 2, 3, str.tostring(rsi_14, "#.##"), text_halign=text.align_right, text_color=rsi_14 >= 50 ? C_POS : C_NEG, bgcolor=C_BG_DARK, text_size=size.small)
 
     // Row 4: Pulse (no trend arrow)
     table.cell(intel_tbl, 0, 4, "Pulse", text_halign=text.align_left, text_color=C_TXT_NORM, bgcolor=C_BG_EVEN, text_size=size.small)
