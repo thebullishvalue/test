@@ -53,7 +53,7 @@ Key capabilities:
 
 ```
 sanket.py                  ← Main Streamlit entry point (UI, routing, analysis dispatch)
-priority_engine.py         ← Asymmetric factor scoring + Layer-1/3 confidence + meta-conviction + profile persistence
+priority_engine.py         ← Asymmetric factor scoring + Layer-1/3 confidence + meta intelligence + profile persistence
 intelligence.py            ← Bayesian calibration (Optuna TPE, 21-dim) + Layer-2/3 calibrators
 logger.py                  ← Structured terminal logging (ANSI color, phase timing, run IDs)
 wrci.pine                  ← TradingView Pine Script v6 (mathematical mirror of Python engine)
@@ -264,7 +264,7 @@ Tier_C:        14.7%   ← threshold signal quality matters significantly
 
 ### Profile Persistence
 
-Calibrated weights are saved per `(universe, selected_index, timeframe)` key in `~/.sanket/profiles.json`. When the user switches universe/timeframe, the engine auto-loads the matching profile. The `_maybe_migrate_legacy_profile()` function handles v1 → v2 key migration for backwards compatibility. Each profile carries three artifacts: the tuned `weights`, the `signal_conf` model (Layer 2), and the `meta_conviction` model (Layer 3).
+Calibrated weights are saved per `(universe, selected_index, timeframe)` key in `~/.sanket/profiles.json`. When the user switches universe/timeframe, the engine auto-loads the matching profile. The `_maybe_migrate_legacy_profile()` function handles v1 → v2 key migration for backwards compatibility. Each profile carries three artifacts: the tuned `weights`, the `signal_conf` model (Layer 2), and the `meta_intel` model (Layer 3).
 
 ---
 
@@ -288,16 +288,16 @@ Non-fired rows score `NaN`. It is direction-aware — a bull-cross fired into a 
 
 When the harvested panel is rich enough, a per-set (A/B/C, pooled fallback) **logistic** learns `P(true)` from `CONF_FEATURES` against a multi-horizon, magnitude-aware label (mean directional forward return past a self-scaled deadband — so going nowhere counts as a false positive). Where the model covers a signal's set, its calibrated probability replaces the Layer-1 heuristic. Diagnostics: out-of-sample **Confirm AUC** and **precision lift**. Both layers are purely per-symbol — no cross-sectional comparison.
 
-### Layer 3 — Meta-Conviction (`calibrate_meta_conviction` / `compute_conviction`)
+### Layer 3 — Meta Intelligence (`calibrate_meta` / `compute_meta`)
 
-The final layer **fuses the two orthogonal views** the earlier layers keep separate: the **cross-sectional Priority rank** (where a name stands in today's universe) and the **per-signal Intel confidence** (Layers 1/2, per-symbol). It produces a single `Conviction ∈ [0, 1]`, a **0–3 tier**, and a human reason.
+The final layer **fuses the two orthogonal views** the earlier layers keep separate: the **cross-sectional Priority rank** (where a name stands in today's universe) and the **per-signal Intel confidence** (Layers 1/2, per-symbol). It produces a single `Meta_Score ∈ [0, 1]`, a **0–3 tier**, and a human reason.
 
 - **Features** (identical in train and inference, via `meta_conf_features`): rank percentile, confidence, their interaction, and whether the confidence is calibrated.
 - **Training**: a logistic fit on harvested fired signals, after a per-date `compute_priority` pass materializes cross-sectional rank on the panel. Same directional-return-past-deadband label as Layer 2. Gross of transaction costs.
 - **Probation**: the model is marked `active` **only if its out-of-sample rank-IR beat naked Priority's** rank-IR (and is positive). An active model may reorder and Hide; an **advisory** model only dims, never hides; with no model, Layer 3 falls back to `rank × confidence` (advisory).
-- **Abstention**: if today's cross-section shows no spread in Conviction (no differentiating information), the screen falls back to the raw Priority order and says so.
+- **Abstention**: if today's cross-section shows no spread in the Meta score (no differentiating information), the screen falls back to the raw Priority order and says so.
 
-The **Conviction Filter** (sidebar ▸ Self-Tuning Intelligence: Off / Dim / Hide + threshold) acts on this fused score; a `Meta` column surfaces it in the signal tables, and the **Intelligence** tab reports Meta-IR vs naked-Priority-IR and the active/advisory status.
+The **Meta Filter** (sidebar ▸ Self-Tuning Intelligence: Off / Dim / Hide + threshold) acts on this fused score; a `Meta` column surfaces it in the signal tables, and the **Intelligence** tab reports Meta-IR vs naked-Priority-IR and the active/advisory status.
 
 ---
 
@@ -307,11 +307,11 @@ The **Conviction Filter** (sidebar ▸ Self-Tuning Intelligence: Off / Dim / Hid
 
 Fetches OHLCV data for all constituents of the selected universe on a specific date, runs the full WRCI + Conviction + Pulse + Liquidity pipeline, **self-calibrates the priority weights inline** (see *Intelligence — Self-Tuning Calibration*), computes Priority scores, detects squeezes and divergences, and returns a ranked table sorted by `Priority_Long`.
 
-**Result tabs**: Action Dashboard (signal sets A–D bucketed by side, plus a **Priority Rank** sub-tab listing the full universe by tuned priority) · Signal Strength · **Intelligence** (Train/Val IR, factor importance, active weights, **Layer-2 Confirm AUC**, and **Layer-3 Meta-IR vs Priority-IR**) · System Data. Signal tables carry both an **Intel** column (Layer 1/2 confidence) and a **Meta** column (Layer-3 fused conviction tier); the **Conviction Filter** dims/hides by the fused score.
+**Result tabs**: Action Dashboard (signal sets A–D bucketed by side, plus a **Priority Rank** sub-tab listing the full universe by tuned priority) · Signal Strength · **Intelligence** (Train/Val IR, factor importance, active weights, **Layer-2 Confirm AUC**, and **Layer-3 Meta-IR vs Priority-IR**) · System Data. Signal tables carry both an **Intel** column (Layer 1/2 confidence) and a **Meta** column (Layer-3 fused Meta tier); the **Meta Filter** dims/hides by the fused score.
 
 **Per-row output includes**:
 - Priority_Long / Priority_Short scores
-- Intel Confidence (Layers 1/2) and Meta-Conviction + tier (Layer 3)
+- Intel Confidence (Layers 1/2) and Meta score + tier (Layer 3)
 - Conviction, Pulse, WT1, WT2, RSI, Histogram, Liquidity oscillator
 - Squeeze state (True/False)
 - Signal tier classification (A/B/C/D)
@@ -439,7 +439,7 @@ console.line()                          # Separator
 ```
 Sanket/
 ├── sanket.py               # Main entry — Streamlit UI + analysis dispatch (6,835 lines)
-├── priority_engine.py      # Asymmetric priority + Layer-1/3 confidence + meta-conviction (970 lines)
+├── priority_engine.py      # Asymmetric priority + Layer-1/3 confidence + meta intelligence (970 lines)
 ├── intelligence.py         # Self-tuning Bayesian calibration + Layer-2/3 calibrators (793 lines)
 ├── logger.py               # Structured terminal logging system (226 lines)
 ├── wrci.pine               # TradingView Pine Script — mathematical mirror (461 lines)

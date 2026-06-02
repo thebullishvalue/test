@@ -224,7 +224,7 @@ def save_profile(opt_results: dict) -> bool:
             "val_score":      opt_results.get("val_score"),
             "sensitivity":    opt_results.get("sensitivity", {}),
             "signal_conf":    opt_results.get("signal_conf"),   # Layer 2 calibrated confidence model
-            "meta_conviction": opt_results.get("meta_conviction"),  # Layer 3 meta-conviction model
+            "meta_intel": opt_results.get("meta_intel"),  # Layer 3 meta intelligence model
             "timestamp":      opt_results.get("timestamp"),
             "universe":       universe,
             "selected_index": selected_index,
@@ -779,7 +779,7 @@ def signal_confidence_at(window_df: pd.DataFrame, side: str, set_letter: str,
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Layer 3 — Meta-Conviction
+# Layer 3 — Meta Intelligence
 #
 # The final intelligence layer. Layers 1/2 (compute_signal_confidence) score a
 # fired signal *per symbol* — its own regime / momentum fit, blind to peers.
@@ -801,9 +801,9 @@ def signal_confidence_at(window_df: pd.DataFrame, side: str, set_letter: str,
 #     only (annotate, never hide).
 #   • Abstention: if the cross-section shows no spread in Conviction (no
 #     differentiating information today), callers fall back to raw Priority
-#     order. compute_conviction flags this via Conviction_Spread.
+#     order. compute_meta flags this via Meta_Spread.
 #
-# Non-fired rows get NaN Conviction / tier 0 — they are not signals.
+# Non-fired rows get NaN Meta_Score / tier 0 — they are not signals.
 # ══════════════════════════════════════════════════════════════════════════
 
 # Meta features, in fixed order. All available on BOTH the harvested panel
@@ -813,11 +813,11 @@ META_FEATURES = ['rank_pct', 'conf', 'rank_x_conf', 'is_calibrated']
 
 
 def meta_conf_features(df: pd.DataFrame):
-    """Build the meta-conviction feature matrix for fired signals.
+    """Build the meta intelligence feature matrix for fired signals.
 
-    Shared by ``calibrate_meta_conviction`` (intelligence.py, on harvested bars
+    Shared by ``calibrate_meta`` (intelligence.py, on harvested bars
     that already carry Priority_*_pct + Intel_Confidence) and the apply path
-    (compute_conviction, on the live cross-section). Returns
+    (compute_meta, on the live cross-section). Returns
     (X, dir_sign, fired_mask) where X is (n, len(META_FEATURES)).
 
     A row is ``fired`` only if it carries a fired A/B/C signal AND both a
@@ -845,8 +845,8 @@ def meta_conf_features(df: pd.DataFrame):
     return X, dir_sign, fired
 
 
-def predict_meta_conviction(df: pd.DataFrame, model: dict) -> np.ndarray:
-    """Calibrated meta P(true) per row from a fitted meta-conviction model.
+def predict_meta_intel(df: pd.DataFrame, model: dict) -> np.ndarray:
+    """Calibrated meta P(true) per row from a fitted meta intelligence model.
 
     Returns an array aligned to df.index; NaN where no fired signal or no usable
     model. Standardization + coefficients are read from ``model`` and aligned to
@@ -874,12 +874,12 @@ def predict_meta_conviction(df: pd.DataFrame, model: dict) -> np.ndarray:
     return out
 
 
-# Active calibrated meta-conviction model (Layer 3), parallel to active_conf_model.
+# Active calibrated meta intelligence model (Layer 3), parallel to active_conf_model.
 active_meta_model = None
 
 
 def set_active_meta_model(model):
-    """Install the calibrated meta-conviction model (or None to clear)."""
+    """Install the calibrated meta intelligence model (or None to clear)."""
     global active_meta_model
     active_meta_model = model if (model and isinstance(model, dict)) else None
 
@@ -889,30 +889,30 @@ def get_active_meta_model():
 
 
 # Fixed Conviction → Tier bands, so a tier means the same thing across runs.
-_CONV_BANDS = np.array([0.35, 0.55, 0.70])   # tiers 0 / 1 / 2 / 3
+_META_BANDS = np.array([0.35, 0.55, 0.70])   # tiers 0 / 1 / 2 / 3
 
 
-def compute_conviction(df: pd.DataFrame, meta_model='__active__',
+def compute_meta(df: pd.DataFrame, meta_model='__active__',
                        spread_eps: float = 0.03) -> pd.DataFrame:
-    """Add Meta_Conviction (0–1), Conviction_Tier (0–3), Conviction_Source,
-    Conviction_Reason, Conviction_Active, Conviction_Spread per row.
+    """Add Meta_Score (0–1), Meta_Tier (0–3), Meta_Source,
+    Meta_Reason, Meta_Active, Meta_Spread per row.
 
-    The scalar is Meta_Conviction, NOT 'Conviction' — the engine's structural
+    The scalar is Meta_Score, NOT 'Conviction' — the engine's structural
     Conviction (±100) already owns the 'Conviction' column and must not be touched.
 
     Requires Priority_*_pct (from compute_priority) and Intel_Confidence (from
     compute_signal_confidence) already on the frame. Fired rows the meta layer
-    cannot fuse, and all non-fired rows, get NaN Conviction / tier 0.
+    cannot fuse, and all non-fired rows, get NaN Meta_Score / tier 0.
 
       • Calibrated: when an ``active`` model is present, Conviction is its learned
         P(true). ``meta_model='__active__'`` uses the module-global model; pass
         None to force the fallback.
       • Fallback: rank_pct × confidence — advisory only.
 
-    Conviction_Active mirrors the model's probation flag: True only when a model
+    Meta_Active mirrors the model's probation flag: True only when a model
     that beat naked Priority OOS is driving the score. Callers must restrict
-    Hide/filter actions to Conviction_Active rows (advisory scores annotate only).
-    Conviction_Spread is the cross-sectional std of Conviction over fired rows;
+    Hide/filter actions to Meta_Active rows (advisory scores annotate only).
+    Meta_Spread is the cross-sectional std of Meta_Score over fired rows;
     near-zero means abstain (no differentiating information today).
     """
     if df.empty:
@@ -928,7 +928,7 @@ def compute_conviction(df: pd.DataFrame, meta_model='__active__',
     active = bool(model and model.get('active'))
 
     if model and 'coef' in model:
-        cal = predict_meta_conviction(df, model)
+        cal = predict_meta_intel(df, model)
         have = ~np.isnan(cal)
         # Fall back to the rank×conf product wherever the model didn't score a fired row.
         fb = np.clip(rank_pct * conf, 0.0, 1.0)
@@ -938,20 +938,20 @@ def compute_conviction(df: pd.DataFrame, meta_model='__active__',
         score = np.clip(rank_pct * conf, 0.0, 1.0)
         source = np.where(fired_arr, 'fallback', '')
 
-    # NOTE: the scalar is Meta_Conviction (NOT 'Conviction') — the engine's structural
+    # NOTE: the scalar is Meta_Score (NOT 'Conviction') — the engine's structural
     # Conviction (±100) already owns the 'Conviction' column upstream; reusing it here
     # clobbered it with NaN on non-fired rows.
-    df['Meta_Conviction']   = np.where(fired_arr, np.clip(score, 0.0, 1.0), np.nan)
-    df['Conviction_Source'] = source
-    df['Conviction_Active'] = bool(active)
+    df['Meta_Score']   = np.where(fired_arr, np.clip(score, 0.0, 1.0), np.nan)
+    df['Meta_Source'] = source
+    df['Meta_Active'] = bool(active)
 
-    tier = 1 + np.digitize(np.where(fired_arr, score, -1.0), _CONV_BANDS)
-    df['Conviction_Tier'] = np.where(fired_arr, tier, 0).astype(int)
+    tier = 1 + np.digitize(np.where(fired_arr, score, -1.0), _META_BANDS)
+    df['Meta_Tier'] = np.where(fired_arr, tier, 0).astype(int)
 
     # Abstention signal: spread of conviction across today's fired cross-section.
     fired_scores = score[fired_arr]
     spread = float(np.std(fired_scores)) if fired_scores.size >= 2 else 0.0
-    df['Conviction_Spread'] = spread
+    df['Meta_Spread'] = spread
     abstain = spread < spread_eps
 
     # Human reason — rank + confidence, plus any contradiction flags already on
@@ -971,6 +971,6 @@ def compute_conviction(df: pd.DataFrame, meta_model='__active__',
         if flags[i]:
             parts.append(flags[i])
         reasons.append(' · '.join(parts))
-    df['Conviction_Reason'] = reasons
+    df['Meta_Reason'] = reasons
 
     return df

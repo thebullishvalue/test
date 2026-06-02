@@ -626,7 +626,7 @@ def calibrate_signal_confidence(ts_df: pd.DataFrame,
 
 
 # ════════════════════════════════════════════════════════════════════════
-# Layer 3 — Meta-Conviction calibration
+# Layer 3 — Meta Intelligence calibration
 # ════════════════════════════════════════════════════════════════════════
 
 def _spearman_ir(dates, scores, ret_mat, min_n: int = 5) -> float:
@@ -667,14 +667,14 @@ def _spearman_ir(dates, scores, ret_mat, min_n: int = 5) -> float:
     return float(np.mean(irs)) if irs else float('nan')
 
 
-def calibrate_meta_conviction(ts_df: pd.DataFrame,
+def calibrate_meta(ts_df: pd.DataFrame,
                               weights: dict,
                               train_frac: float = 0.70,
                               l2: float = 1.0,
                               deadband_frac: float = 0.10,
                               min_total_samples: int = 150,
                               min_xsect: int = 5) -> dict:
-    """Fit the Layer-3 meta-conviction model on harvested fired signals. None if sparse.
+    """Fit the Layer-3 meta intelligence model on harvested fired signals. None if sparse.
 
     Fuses the two orthogonal inputs — cross-sectional Priority rank and per-signal
     Intel confidence — into a single calibrated P(true). The harvested panel does
@@ -771,7 +771,7 @@ def calibrate_meta_conviction(ts_df: pd.DataFrame,
 
     # ── Probation: meta OOS rank-IR vs naked Priority OOS rank-IR ──
     if int(va.sum()) >= max(30, min_xsect):
-        proba = pe.predict_meta_conviction(df, model)
+        proba = pe.predict_meta_intel(df, model)
         meta_scores = proba[va]
         prio_scores = X_all[va, pe.META_FEATURES.index('rank_pct')]
         Rva = R[va]

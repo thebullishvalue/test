@@ -8,30 +8,30 @@ Format: `[version] · date — release title`
 ---
 
 ## [v3.4.0] · 2026-06-02
-### Meta-Conviction — The Final Intelligence Layer
+### Meta Intelligence — The Final Intelligence Layer
 
 **"The Final Layer"**
 
-A feature release that upgrades **Layer 3** from a user-set threshold on a single confidence scalar into a calibrated, walk-forward-validated **meta-conviction** model. Layer 3 now *fuses* the two informationally-orthogonal views the earlier layers keep separate — the **cross-sectional Priority rank** (`compute_priority`) and the **per-signal Intel confidence** (Layers 1/2, per-symbol) — into a single `Conviction`, a 0–3 tier, and a human reason. Like the rest of the stack it is **probation-gated**: it may reorder/filter only when it has demonstrated out-of-sample edge, otherwise it stays advisory. `wrci.pine` carries the version stamp only — Layer 3 is a Python-only post-ranking layer with no Pine equivalent, so 1:1 indicator parity is unaffected.
+A feature release that upgrades **Layer 3** from a user-set threshold on a single confidence scalar into a calibrated, walk-forward-validated **meta intelligence** model. Layer 3 now *fuses* the two informationally-orthogonal views the earlier layers keep separate — the **cross-sectional Priority rank** (`compute_priority`) and the **per-signal Intel confidence** (Layers 1/2, per-symbol) — into a single `Meta_Score`, a 0–3 tier, and a human reason. Like the rest of the stack it is **probation-gated**: it may reorder/filter only when it has demonstrated out-of-sample edge, otherwise it stays advisory. `wrci.pine` carries the version stamp only — Layer 3 is a Python-only post-ranking layer with no Pine equivalent, so 1:1 indicator parity is unaffected.
 
 #### Features
-- **Layer 3 · Meta-Conviction** (`priority_engine.py`): `META_FEATURES` (rank percentile, confidence, their interaction, is-calibrated), `meta_conf_features`, `predict_meta_conviction`, `set/get_active_meta_model`, and `compute_conviction` → adds `Conviction` (0–1), `Conviction_Tier` (0–3, fixed bands), `Conviction_Source` (`meta`/`fallback`), `Conviction_Active`, `Conviction_Reason`, `Conviction_Spread`. With no active model it falls back to `rank × confidence` (advisory).
-- **Meta-conviction calibrator** (`intelligence.py :: calibrate_meta_conviction`): materializes cross-sectional Priority on the harvested panel via a per-date `compute_priority` pass (the panel carries Intel confidence but not rank), fits a logistic on the same magnitude-aware directional-return-past-deadband label used by Layer 2, and reports out-of-sample diagnostics. New `_spearman_ir` helper computes the cross-sectional rank-IR (direction-signed, matching the Priority Engine's IC methodology).
+- **Layer 3 · Meta Intelligence** (`priority_engine.py`): `META_FEATURES` (rank percentile, confidence, their interaction, is-calibrated), `meta_conf_features`, `predict_meta_intel`, `set/get_active_meta_model`, and `compute_meta` → adds `Meta_Score` (0–1), `Meta_Tier` (0–3, fixed bands), `Meta_Source` (`meta`/`fallback`), `Meta_Active`, `Meta_Reason`, `Meta_Spread`. With no active model it falls back to `rank × confidence` (advisory).
+- **Meta Intelligence calibrator** (`intelligence.py :: calibrate_meta`): materializes cross-sectional Priority on the harvested panel via a per-date `compute_priority` pass (the panel carries Intel confidence but not rank), fits a logistic on the same magnitude-aware directional-return-past-deadband label used by Layer 2, and reports out-of-sample diagnostics. New `_spearman_ir` helper computes the cross-sectional rank-IR (direction-signed, matching the Priority Engine's IC methodology).
 - **Probation gate**: the model is `active` (allowed to reorder + Hide) **only if its OOS rank-IR beat naked Priority's** rank-IR and is positive; otherwise advisory (annotates, never hides). Same discipline that gates F7 and the Layer-2 filter.
-- **Abstention**: when today's cross-section shows no spread in Conviction, the screen falls back to the raw Priority order and labels it as such.
+- **Abstention**: when today's cross-section shows no spread in the Meta score, the screen falls back to the raw Priority order and labels it as such.
 - **UI surfaces**: a new **`Meta`** column in the Action Dashboard, Priority Ranking, and Signal Strength tables (tier-banded fused score, ◆ calibrated / ◇ fallback); an **Intelligence-tab Layer-3 panel** reporting Meta-IR vs naked-Priority-IR, edge delta, AUC, and active/advisory status.
 
 #### Behavior Changes
-- **Layer-3 filter is now the Conviction Filter**: the sidebar Off / Dim / Hide control and threshold act on the fused `Conviction` instead of `Intel_Confidence`. Today's fired signals filter by Conviction; aged signals fall back to fire-bar Intel. An **advisory** meta model dims but **never hides** (probation guard); the threshold auto-seed prefers the meta AUC, then the Layer-2 AUC, then 0.45.
-- **Profile artifacts**: each profile now persists a third model, `meta_conviction`, alongside `weights` and `signal_conf`. Threaded through `save_profile` and every activation/import site via `set_active_meta_model`.
-- **Calibration runner**: `run_priority_optimization` learns and logs the meta model (meta-IR vs priority-IR + active flag) right after Layer 2; `run_screener_analysis` applies `compute_conviction` after `compute_signal_confidence`.
+- **Layer-3 filter is now the Meta Filter**: the sidebar Off / Dim / Hide control and threshold act on the fused `Meta_Score` instead of `Intel_Confidence`. Today's fired signals filter by the Meta score; aged signals fall back to fire-bar Intel. An **advisory** meta model dims but **never hides** (probation guard); the threshold auto-seed prefers the meta AUC, then the Layer-2 AUC, then 0.45.
+- **Profile artifacts**: each profile now persists a third model, `meta_intel`, alongside `weights` and `signal_conf`. Threaded through `save_profile` and every activation/import site via `set_active_meta_model`.
+- **Calibration runner**: `run_priority_optimization` learns and logs the meta model (meta-IR vs priority-IR + active flag) right after Layer 2; `run_screener_analysis` applies `compute_meta` after `compute_signal_confidence`.
 
 #### Versioning
 - **Unification to `v3.4.0`** across `sanket.py`, `ui/theme.py`, `logger.py`, `wrci.pine` (stamp only), `README.md`, and `LICENSE`. (The prior `v3.3.0` changelog entry had shipped without the code version strings being bumped; this pass brings every component even.)
 
 #### Documentation
-- **README**: new **"The Intelligence Stack (Layers 1–3)"** section documenting all three layers, the probation/abstention discipline, and the Conviction Filter; result-tabs and per-row output updated for the Intel + Meta columns; architecture blurbs and project-structure line counts refreshed.
-- **LICENSE**: restriction §5 IP enumeration extended to the multi-layer intelligence stack (signal-confidence + meta-conviction calibration).
+- **README**: new **"The Intelligence Stack (Layers 1–3)"** section documenting all three layers, the probation/abstention discipline, and the Meta Filter; result-tabs and per-row output updated for the Intel + Meta columns; architecture blurbs and project-structure line counts refreshed.
+- **LICENSE**: restriction §5 IP enumeration extended to the multi-layer intelligence stack (signal-confidence + meta intelligence calibration).
 - Line counts: `sanket.py` (6,835), `priority_engine.py` (970), `intelligence.py` (793), `wrci.pine` (461), `logger.py` (226).
 
 ---
