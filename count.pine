@@ -1,0 +1,88 @@
+// ═══════════════════════════════════════════════════════════════════════════
+//  HCI · Hemrek Count Index   —   @thebullishvalue
+//  Momentum-Streak Counter · Count Index · Count Signal
+//  Version 3.4.0
+// ═══════════════════════════════════════════════════════════════════════════
+
+//@version=5
+indicator("Hemrek Count Index", "HCI", overlay=false, precision=2, max_bars_back=500)
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SECTION 1 · INPUTS & CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── 1A · COUNT ENGINE ──
+grp_count = "HCI: Count Engine"
+src       = input.source(close, "Source",               group=grp_count, display=display.none, tooltip="Series the per-bar return is measured on.")
+thres     = input.float(1.0, "Step Threshold (%)",      group=grp_count, display=display.none, minval=0.0, step=0.1, tooltip="Per-bar % return magnitude that counts as one up/down step in the streak. Moves smaller than ±threshold hold the count.")
+look      = input.int(50,  "Count Baseline Window",     group=grp_count, display=display.none, minval=2, tooltip="Lookback for the SMA baseline subtracted from the raw streak (Tom DeMark-style detrend → the Count Index oscillates around zero).")
+sig_len   = input.int(20,  "Signal Line Length",        group=grp_count, display=display.none, minval=2, tooltip="Smoothing period for the Count Signal line.")
+sig_type  = input.string("SMA", "Signal Line Type",     group=grp_count, display=display.none, options=["SMA", "EMA", "HMA", "WMA", "VWMA", "ALMA", "RMA"], tooltip="Smoothing function for the Count Signal line (ALMA = Arnaud Legoux MA, RMA = Wilder's MA). Default SMA preserves the original Hemrek Count signal.")
+
+// ── 1B · VISUALIZATION ──
+grp_viz   = "HCI: Visualization"
+show_hist = input.bool(true, "Show Index − Signal Histogram", group=grp_viz, display=display.none)
+show_sig  = input.bool(true, "Show Cross Markers",            group=grp_viz, display=display.none, tooltip="Mark Count Index / Count Signal crossovers.")
+
+// ── Color Palette: Obsidian Quant ──
+var color C_BG_DARK    = #1a1a1a // UMA Background
+var color C_TXT_DIM    = #4B5563 // Muted Slate
+var color C_POS        = #22c55e // UMA Positive
+var color C_NEG        = #ef4444 // UMA Negative
+var color C_ACCENT     = #2dd4bf // Teal  (Count Index)
+var color C_SIGNAL     = #fbbf24 // Amber (Count Signal)
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SECTION 2 · HELPER FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Configurable smoothing — dispatches to the selected MA type (mirrors wrci.pine).
+f_smooth(_src, _len, _type) =>
+    switch _type
+        "EMA"  => ta.ema(_src, _len)
+        "HMA"  => ta.hma(_src, _len)
+        "WMA"  => ta.wma(_src, _len)
+        "VWMA" => ta.vwma(_src, _len)
+        "ALMA" => ta.alma(_src, _len, 0.85, 6)
+        "RMA"  => ta.rma(_src, _len)
+        =>        ta.sma(_src, _len)
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SECTION 3 · CORE CALCULATIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Per-bar return (%). The streak steps up when the return clears +threshold,
+// down when it clears −threshold, and holds otherwise — a signed run-length
+// of directional momentum.
+ret_pct = (src - src[1]) / src[1] * 100.0
+
+var float count = 0.0
+count := ret_pct >  thres ? nz(count[1]) + 1.0 : ret_pct < -thres ? nz(count[1]) - 1.0 : nz(count[1])
+
+// Detrend the raw streak against its own SMA baseline → a zero-centred index,
+// then a smoothed signal line and their spread (histogram).
+count_index  = count - ta.sma(count, look)
+count_signal = f_smooth(count_index, sig_len, sig_type)
+hist         = count_index - count_signal
+
+cross_up   = ta.crossover(count_index,  count_signal)
+cross_down = ta.crossunder(count_index, count_signal)
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SECTION 4 · VISUALIZATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+hline(0, "Zero Line", color=color.new(C_TXT_DIM, 50))
+
+// Index − Signal spread as a faint column histogram (green above / red below).
+hist_col = hist >= 0 ? C_POS : C_NEG
+plot(show_hist ? hist : na, "Index − Signal", style=plot.style_columns, color=color.new(hist_col, 80), display=display.all - display.status_line)
+
+plot(count_index,  "Count Index",  color=color.new(C_ACCENT, 0),  linewidth=2)
+plot(count_signal, "Count Signal", color=color.new(C_SIGNAL, 15), linewidth=1)
+
+plotshape(show_sig and cross_up,   "Count Cross Up",   style=shape.triangleup,   location=location.bottom, color=C_POS, size=size.tiny, display=display.all - display.status_line)
+plotshape(show_sig and cross_down, "Count Cross Down", style=shape.triangledown, location=location.top,    color=C_NEG, size=size.tiny, display=display.all - display.status_line)

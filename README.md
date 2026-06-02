@@ -1,5 +1,5 @@
 # SANKET — Institutional Market Signal Terminal
-### Wave-Regime Composite Index · Obsidian Quant · Pragyam Family · `v3.2.1`
+### Wave-Regime Composite Index · Obsidian Quant · Pragyam Family · `v3.4.0`
 
 > **संकेत** *(Sanketa)* — Sanskrit for *Signal* · *Indicator* · *Forewarning*
 
@@ -17,6 +17,7 @@ Part of the **Pragyam Product Family** by [@thebullishvalue](https://github.com/
 - [Signal Hierarchy (Sets A–D)](#signal-hierarchy-sets-ad)
 - [Priority Engine](#priority-engine)
 - [Intelligence — Self-Tuning Calibration](#intelligence--self-tuning-calibration)
+- [The Intelligence Stack (Layers 1–3)](#the-intelligence-stack-layers-13)
 - [Analysis Modes](#analysis-modes)
 - [Asset Universe Coverage](#asset-universe-coverage)
 - [UI System — Obsidian Quant](#ui-system--obsidian-quant)
@@ -52,8 +53,8 @@ Key capabilities:
 
 ```
 sanket.py                  ← Main Streamlit entry point (UI, routing, analysis dispatch)
-priority_engine.py         ← Asymmetric factor scoring + per-universe profile persistence
-intelligence.py            ← Bayesian calibration engine (Optuna TPE, 21-dim search space)
+priority_engine.py         ← Asymmetric factor scoring + Layer-1/3 confidence + meta-conviction + profile persistence
+intelligence.py            ← Bayesian calibration (Optuna TPE, 21-dim) + Layer-2/3 calibrators
 logger.py                  ← Structured terminal logging (ANSI color, phase timing, run IDs)
 wrci.pine                  ← TradingView Pine Script v6 (mathematical mirror of Python engine)
 ui/
@@ -263,7 +264,40 @@ Tier_C:        14.7%   ← threshold signal quality matters significantly
 
 ### Profile Persistence
 
-Calibrated weights are saved per `(universe, selected_index, timeframe)` key in `~/.sanket/profiles.json`. When the user switches universe/timeframe, the engine auto-loads the matching profile. The `_maybe_migrate_legacy_profile()` function handles v1 → v2 key migration for backwards compatibility.
+Calibrated weights are saved per `(universe, selected_index, timeframe)` key in `~/.sanket/profiles.json`. When the user switches universe/timeframe, the engine auto-loads the matching profile. The `_maybe_migrate_legacy_profile()` function handles v1 → v2 key migration for backwards compatibility. Each profile carries three artifacts: the tuned `weights`, the `signal_conf` model (Layer 2), and the `meta_conviction` model (Layer 3).
+
+---
+
+## The Intelligence Stack (Layers 1–3)
+
+Beyond ranking, Sanket scores the *quality* of each fired signal through three stacked, informationally-orthogonal layers. Every layer is **probation-gated**: it is only allowed to filter or reorder when it has demonstrated out-of-sample edge — otherwise it stays advisory (annotates, never hides). The system refuses to act on unproven edge.
+
+### Layer 1 — Signal-Confidence Heuristic (`compute_signal_confidence`)
+
+A per-signal confidence in `[0, 1]` available with no training, computed entirely from the symbol's **own** regime/momentum state:
+
+```
+Confidence = evidence × trust
+  evidence = 0.40·regime-alignment + 0.35·own-factor-lean + 0.25·liquidity-support
+  trust    = vol-quality × regime-confidence × change-point × reversion × divergence × liq-exhaustion
+```
+
+Non-fired rows score `NaN`. It is direction-aware — a bull-cross fired into a BEAR / EXTREME-vol / change-point context scores low.
+
+### Layer 2 — Calibrated Signal-Confidence (`calibrate_signal_confidence`)
+
+When the harvested panel is rich enough, a per-set (A/B/C, pooled fallback) **logistic** learns `P(true)` from `CONF_FEATURES` against a multi-horizon, magnitude-aware label (mean directional forward return past a self-scaled deadband — so going nowhere counts as a false positive). Where the model covers a signal's set, its calibrated probability replaces the Layer-1 heuristic. Diagnostics: out-of-sample **Confirm AUC** and **precision lift**. Both layers are purely per-symbol — no cross-sectional comparison.
+
+### Layer 3 — Meta-Conviction (`calibrate_meta_conviction` / `compute_conviction`)
+
+The final layer **fuses the two orthogonal views** the earlier layers keep separate: the **cross-sectional Priority rank** (where a name stands in today's universe) and the **per-signal Intel confidence** (Layers 1/2, per-symbol). It produces a single `Conviction ∈ [0, 1]`, a **0–3 tier**, and a human reason.
+
+- **Features** (identical in train and inference, via `meta_conf_features`): rank percentile, confidence, their interaction, and whether the confidence is calibrated.
+- **Training**: a logistic fit on harvested fired signals, after a per-date `compute_priority` pass materializes cross-sectional rank on the panel. Same directional-return-past-deadband label as Layer 2. Gross of transaction costs.
+- **Probation**: the model is marked `active` **only if its out-of-sample rank-IR beat naked Priority's** rank-IR (and is positive). An active model may reorder and Hide; an **advisory** model only dims, never hides; with no model, Layer 3 falls back to `rank × confidence` (advisory).
+- **Abstention**: if today's cross-section shows no spread in Conviction (no differentiating information), the screen falls back to the raw Priority order and says so.
+
+The **Conviction Filter** (sidebar ▸ Self-Tuning Intelligence: Off / Dim / Hide + threshold) acts on this fused score; a `Meta` column surfaces it in the signal tables, and the **Intelligence** tab reports Meta-IR vs naked-Priority-IR and the active/advisory status.
 
 ---
 
@@ -273,10 +307,11 @@ Calibrated weights are saved per `(universe, selected_index, timeframe)` key in 
 
 Fetches OHLCV data for all constituents of the selected universe on a specific date, runs the full WRCI + Conviction + Pulse + Liquidity pipeline, **self-calibrates the priority weights inline** (see *Intelligence — Self-Tuning Calibration*), computes Priority scores, detects squeezes and divergences, and returns a ranked table sorted by `Priority_Long`.
 
-**Result tabs**: Action Dashboard (signal sets A–D bucketed by side, plus a **Priority Rank** sub-tab listing the full universe by tuned priority) · Signal Strength · **Intelligence** (Train/Val IR, factor importance, active weights) · System Data.
+**Result tabs**: Action Dashboard (signal sets A–D bucketed by side, plus a **Priority Rank** sub-tab listing the full universe by tuned priority) · Signal Strength · **Intelligence** (Train/Val IR, factor importance, active weights, **Layer-2 Confirm AUC**, and **Layer-3 Meta-IR vs Priority-IR**) · System Data. Signal tables carry both an **Intel** column (Layer 1/2 confidence) and a **Meta** column (Layer-3 fused conviction tier); the **Conviction Filter** dims/hides by the fused score.
 
 **Per-row output includes**:
 - Priority_Long / Priority_Short scores
+- Intel Confidence (Layers 1/2) and Meta-Conviction + tier (Layer 3)
 - Conviction, Pulse, WT1, WT2, RSI, Histogram, Liquidity oscillator
 - Squeeze state (True/False)
 - Signal tier classification (A/B/C/D)
@@ -372,7 +407,7 @@ Sanket uses a custom structured logging system (`logger.py`) that writes directl
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  SANKET TERMINAL — Session Start  v3.2.1
+  SANKET TERMINAL — Session Start  v3.4.0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Run ID     │  20260507_142301_a3f8
   Universe   │  NSE F&O
@@ -403,11 +438,11 @@ console.line()                          # Separator
 
 ```
 Sanket/
-├── sanket.py               # Main entry — Streamlit UI + analysis dispatch (5,928 lines)
-├── priority_engine.py      # Asymmetric priority engine + profile persistence (381 lines)
-├── intelligence.py         # Self-tuning Bayesian calibration via Optuna (411 lines)
+├── sanket.py               # Main entry — Streamlit UI + analysis dispatch (6,835 lines)
+├── priority_engine.py      # Asymmetric priority + Layer-1/3 confidence + meta-conviction (970 lines)
+├── intelligence.py         # Self-tuning Bayesian calibration + Layer-2/3 calibrators (793 lines)
 ├── logger.py               # Structured terminal logging system (226 lines)
-├── wrci.pine               # TradingView Pine Script v6 — mathematical mirror (412 lines)
+├── wrci.pine               # TradingView Pine Script — mathematical mirror (461 lines)
 ├── requirements.txt        # Pinned runtime dependencies
 ├── LICENSE                 # Proprietary institutional license
 ├── README.md               # This file
@@ -541,7 +576,7 @@ The **Model Passport** panel (sidebar) provides:
 
 ## TradingView Pine Script Indicator
 
-`wrci.pine` is the companion TradingView indicator — **WRCI [Sanket Core]** (`v3.2.1`). It implements the same mathematical pipeline as the Python engine:
+`wrci.pine` is the companion TradingView indicator — **WRCI [Sanket Core]** (`v3.4.0`). It implements the same mathematical pipeline as the Python engine:
 
 | Calculation | Python | Pine Script |
 |:---|:---|:---|
@@ -595,4 +630,4 @@ See [`LICENSE`](LICENSE) for full terms.
 
 ---
 
-*Sanket v3.2.1 · Pragyam Family · Built by [@thebullishvalue](https://github.com/thebullishvalue)*
+*Sanket v3.4.0 · Pragyam Family · Built by [@thebullishvalue](https://github.com/thebullishvalue)*

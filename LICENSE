@@ -30,8 +30,10 @@ Without the prior written consent of @thebullishvalue, you may not:
      contained within the software.
 
   5. Use the WRCI engine, Pulse computation logic, signal detection
-     methodology, priority scoring system, or UI design system in any
-     other product or service without a separate written licence.
+     methodology, priority scoring system, the multi-layer intelligence
+     stack (signal-confidence and meta-conviction calibration), or UI
+     design system in any other product or service without a separate
+     written licence.
 
 DISCLAIMER
 
@@ -62,7 +64,7 @@ scope of this licence, contact @thebullishvalue.
 
 ---
 
-Product: SANKET v3.2.1
+Product: SANKET v3.4.0
 Family:  Pragyam
 Author:  @thebullishvalue
 Year:    2026

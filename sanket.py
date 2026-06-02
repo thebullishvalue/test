@@ -82,7 +82,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-VERSION = "v3.2.1"
+VERSION = "v3.4.0"
 
 # IST timezone offset — used wherever "today" matters for data or display
 _IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
@@ -1817,7 +1817,8 @@ def compute_autotune(close: pd.Series, window: int = 20, bw: float = 0.25) -> pd
 
 
 def run_full_analysis(df, reg_len=20, n1=10, n2=21, obLevel1=80, obLevel2=40, osLevel1=-80, osLevel2=-40,
-                      wt2_len=20, wt2_type="ALMA", lt_level=-75, ut_level=75):
+                      wt2_len=20, wt2_type="ALMA", lt_level=-75, ut_level=75,
+                      hci_thres=1.0, hci_look=50, hci_sig_len=20, hci_sig_type="SMA", hci_gate_on=True):
     reg_len = max(reg_len, 2)
     # Auto-correct inverted OB levels (obLevel1 must be the stronger/higher bound)
     if obLevel1 < obLevel2:
@@ -2011,7 +2012,25 @@ def run_full_analysis(df, reg_len=20, n1=10, n2=21, obLevel1=80, obLevel2=40, os
     df['Bull_Zone_Depth'] = bull_zone_depth
     df['Bear_Zone_Depth'] = bear_zone_depth
 
-    df = compute_signal_sets(df, wt1, wt2, obLevel1, obLevel2, osLevel1, osLevel2, lt_level, ut_level)
+    # ── HEMREK COUNT ENGINE (HCI) — parity with wrci.pine §3E ──────────────────
+    # Signed run-length of directional momentum on Close: +1 step when the bar's %
+    # return clears +threshold, −1 when it clears −threshold, else hold. The streak is
+    # the cumulative sum of those ±1/0 steps (Pine's recursive count), detrended by its
+    # own SMA baseline into a zero-centred Count Index, then a configurable signal line.
+    # The screener uses the Close/% path — the Pine source selector's WRCI-internal
+    # options are chart-only sugar (the SMA-detrend cancels any history-length offset,
+    # so HCI_Index/Signal match Pine regardless of bar count). Drives the HCI trend gate.
+    close_prev = df['Close'].shift(1)
+    hci_step   = (df['Close'] - close_prev) / close_prev * 100.0
+    step_dir   = np.where(hci_step > hci_thres, 1.0, np.where(hci_step < -hci_thres, -1.0, 0.0))
+    hci_count  = pd.Series(np.cumsum(np.nan_to_num(step_dir, nan=0.0)), index=df.index)
+    hci_index  = hci_count - hci_count.rolling(hci_look).mean()
+    hci_signal = f_smooth(hci_index, hci_sig_len, hci_sig_type, volume=vol)
+    df['HCI_Index']  = hci_index.fillna(0)
+    df['HCI_Signal'] = hci_signal.fillna(0)
+
+    df = compute_signal_sets(df, wt1, wt2, obLevel1, obLevel2, osLevel1, osLevel2,
+                             lt_level, ut_level, hci_gate_on=hci_gate_on)
 
     return df
 
@@ -2020,12 +2039,16 @@ def compute_signal_sets(df: pd.DataFrame,
                         wt1: pd.Series, wt2: pd.Series,
                         obLevel1: float, obLevel2: float,
                         osLevel1: float, osLevel2: float,
-                        lt_level: float = -75, ut_level: float = 75) -> pd.DataFrame:
+                        lt_level: float = -75, ut_level: float = 75,
+                        hci_gate_on: bool = True) -> pd.DataFrame:
     """Compute the three signal sets and the zone Condition (parity with wrci.pine §4).
 
     All three sets confirm with the Δ-polarity gate (long needs Conviction Δ > 0 and
     Pulse Δ > 0; short needs both < 0). Sets A & C add a kinematic liquidity gate
-    (LEVEL for A, VELOCITY for C); Set B's trigger is the LO band cross itself.
+    (LEVEL for A, VELOCITY for C); Set B's trigger is the LO band cross itself. All
+    three additionally pass the HCI trend gate (Hemrek Count Index vs its signal line):
+    longs require HCI_Index > HCI_Signal, shorts require HCI_Index < HCI_Signal. When
+    hci_gate_on is False the gate passes neutrally (parity with wrci.pine §4A).
 
     Set A (Momentum):  base wt1/wt2 crossings, vetoed by the opposite-side Set B,
                        gated by Δ + liquidity LEVEL (Liquidity_Osc same-signed).
@@ -2047,21 +2070,32 @@ def compute_signal_sets(df: pd.DataFrame,
     conv_d  = df['Conviction_Delta']
     pulse_d = df['Pulse_Delta']
 
-    # Set B: Crossover — LO band cross (ported liq_osc.pine), gated by ΔConv + ΔPulse.
+    # HCI trend gate (parity with wrci.pine §4A): the Hemrek Count Index leading its own
+    # signal line confirms the streak is accelerating in the trade's direction — Index
+    # ABOVE Signal for longs, BELOW for shorts. Off → passes neutrally (all-True), so the
+    # other gates are unaffected. Applied to all three signal sets below.
+    if hci_gate_on and 'HCI_Index' in df.columns and 'HCI_Signal' in df.columns:
+        hci_gate_long  = df['HCI_Index'] > df['HCI_Signal']
+        hci_gate_short = df['HCI_Index'] < df['HCI_Signal']
+    else:
+        hci_gate_long  = pd.Series(True, index=df.index)
+        hci_gate_short = pd.Series(True, index=df.index)
+
+    # Set B: Crossover — LO band cross (ported liq_osc.pine), gated by ΔConv + ΔPulse + HCI.
     # Long: LO crosses UP through lt_level (−75). Short: LO crosses DOWN through ut_level (+75).
-    crossover_long  = (lo > lt_level) & (lo.shift(1) <= lt_level) & (conv_d > 0) & (pulse_d > 0)
-    crossover_short = (lo < ut_level) & (lo.shift(1) >= ut_level) & (conv_d < 0) & (pulse_d < 0)
+    crossover_long  = (lo > lt_level) & (lo.shift(1) <= lt_level) & (conv_d > 0) & (pulse_d > 0) & hci_gate_long
+    crossover_short = (lo < ut_level) & (lo.shift(1) >= ut_level) & (conv_d < 0) & (pulse_d < 0) & hci_gate_short
 
     # Set A: Momentum — base WRCI crossings, vetoed by the opposite-side Set B,
-    # gated by Δ-polarity + liquidity LEVEL.
-    momentum_long   = sig_bull_cross & (~crossover_short) & (conv_d > 0) & (pulse_d > 0) & (liq_osc > 0)
-    momentum_short  = sig_bear_cross & (~crossover_long)  & (conv_d < 0) & (pulse_d < 0) & (liq_osc < 0)
+    # gated by Δ-polarity + liquidity LEVEL + HCI trend.
+    momentum_long   = sig_bull_cross & (~crossover_short) & (conv_d > 0) & (pulse_d > 0) & (liq_osc > 0) & hci_gate_long
+    momentum_short  = sig_bear_cross & (~crossover_long)  & (conv_d < 0) & (pulse_d < 0) & (liq_osc < 0) & hci_gate_short
 
     # Set C: Threshold — wt1 freshly entering the OS/OB band while wt2 still sits outside
     # (wt2 lags wt1, so "wt2 hasn't crossed yet" = fresh). Δ-polarity gated AND a kinematic
-    # liquidity VELOCITY gate (liq_vel) — early stealth accumulation into the dip/pop.
-    threshold_long  = (wt1 < osLevel2) & (wt1.shift(1) >= osLevel2) & (wt2 > osLevel2) & (conv_d > 0) & (pulse_d > 0) & (liq_vel > 0)
-    threshold_short = (wt1 > obLevel2) & (wt1.shift(1) <= obLevel2) & (wt2 < obLevel2) & (conv_d < 0) & (pulse_d < 0) & (liq_vel < 0)
+    # liquidity VELOCITY gate (liq_vel) + HCI trend — early stealth accumulation into the dip/pop.
+    threshold_long  = (wt1 < osLevel2) & (wt1.shift(1) >= osLevel2) & (wt2 > osLevel2) & (conv_d > 0) & (pulse_d > 0) & (liq_vel > 0) & hci_gate_long
+    threshold_short = (wt1 > obLevel2) & (wt1.shift(1) <= obLevel2) & (wt2 < obLevel2) & (conv_d < 0) & (pulse_d < 0) & (liq_vel < 0) & hci_gate_short
 
     df['long_cond']       = momentum_long
     df['short_cond']      = momentum_short
