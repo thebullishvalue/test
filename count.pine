@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 //  HCI · Hemrek Count Index   —   @thebullishvalue
 //  Momentum-Streak Counter · Count Index · Count Signal
-//  Version 3.4.0
+//  Version 3.5.0
 // ═══════════════════════════════════════════════════════════════════════════
 
 //@version=5
@@ -84,5 +84,5 @@ plot(show_hist ? hist : na, "Index − Signal", style=plot.style_columns, color=
 plot(count_index,  "Count Index",  color=color.new(C_ACCENT, 0),  linewidth=2)
 plot(count_signal, "Count Signal", color=color.new(C_SIGNAL, 15), linewidth=1)
 
-plotshape(show_sig and cross_up,   "Count Cross Up",   style=shape.triangleup,   location=location.bottom, color=C_POS, size=size.tiny, display=display.all - display.status_line)
-plotshape(show_sig and cross_down, "Count Cross Down", style=shape.triangledown, location=location.top,    color=C_NEG, size=size.tiny, display=display.all - display.status_line)
+//plotshape(show_sig and cross_up,   "Count Cross Up",   style=shape.triangleup,   location=location.bottom, color=C_POS, size=size.tiny, display=display.all - display.status_line)
+//plotshape(show_sig and cross_down, "Count Cross Down", style=shape.triangledown, location=location.top,    color=C_NEG, size=size.tiny, display=display.all - display.status_line)

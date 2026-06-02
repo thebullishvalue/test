@@ -53,6 +53,11 @@ DEFAULT_W = {
     # F7 = LO range-extension (reversion/liquidity). Default 0 → uncalibrated
     # profiles ignore it; the optimizer (range allows negative) learns its sign.
     'beta_F7_liq_long':         0.0,   'beta_F7_liq_short':         0.0,
+    # F8 = sector-relative breadth (Path C) — a stock's GROUP participation minus
+    # the market's (Sector_Rel_Breadth, de-meaned so it's orthogonal to the Path-A
+    # tilt). A genuine cross-sectional factor: stocks in out-participating sectors
+    # rank up. Default 8 so it's live out of the box; the optimizer refines it.
+    'beta_F8_breadth_long':     8.0,   'beta_F8_breadth_short':     8.0,
     # Penalty weights, per side
     'gamma_reversion_long':    20.0,   'gamma_reversion_short':    20.0,
     'gamma_divergence_long':   18.0,   'gamma_divergence_short':   18.0,
@@ -61,6 +66,13 @@ DEFAULT_W = {
     'tier_B_mult':              1.30,
     'tier_C_mult':              0.85,
     'tier_default_mult':        0.90,
+    # Path A · market-breadth regime tilt. A bounded per-side multiplier on the
+    # final priority (NOT a cross-sectional factor — breadth is uniform within a
+    # date, so it rescales long-vs-short exposure without touching within-side
+    # rank). long ×(1 + α·b), short ×(1 − α·b), b∈[-1,1] = breadth state. α≈0.20
+    # keeps the tilt in [0.80, 1.20] so it can never dominate the calibrated
+    # factors. Not IC-calibratable (zero within-date variance) → fixed, not searched.
+    'breadth_tilt_long':        0.20,  'breadth_tilt_short':        0.20,
 }
 
 # v1 → v2 key migration. Old profiles used a single symmetric value per factor;
@@ -301,6 +313,37 @@ def list_profiles() -> list:
 # ──────────────────────────────────────────────────────────────────────
 # Internal helpers
 # ──────────────────────────────────────────────────────────────────────
+# ── Breadth integration constants (Paths A & C) ──
+# Path C: scale Sector_Rel_Breadth (~±0.2) up to ~±1 so beta_F8 is comparable to
+# the other factor weights.
+F8_BREADTH_SCALE = 5.0
+# Path A: how the market-wide breadth level + momentum map to a tilt state b∈[-1,1].
+_BREADTH_NEUTRAL = 0.45    # midpoint of the 0.40/0.50 oversold/overbought bands
+_BREADTH_LVL_SCALE = 0.08  # breadth this far above/below neutral → full level term
+_BREADTH_MOM_SCALE = 0.02  # breadth momentum this large → full momentum term
+
+
+def _breadth_tilt(df: pd.DataFrame, weights: dict):
+    """Path A — bounded per-side regime tilt from market-wide breadth.
+
+    Returns (long_tilt, short_tilt) Series. Breadth is uniform across the
+    cross-section on a date, so this rescales long-vs-short EXPOSURE without
+    reordering either side. b∈[-1,1] blends breadth level (vs the 0.45 neutral)
+    and 3-bar momentum; long ×(1+α·b), short ×(1−α·b). Neutral (1.0) when breadth
+    is absent/NaN. Bounded to [1−α, 1+α] so it can't swamp the calibrated factors.
+    """
+    ub = _col(df, 'Universe_Breadth', _BREADTH_NEUTRAL).astype(float).fillna(_BREADTH_NEUTRAL)
+    bm = _col(df, 'Breadth_Momentum', 0.0).astype(float).fillna(0.0)
+    level_term = (ub - _BREADTH_NEUTRAL) / _BREADTH_LVL_SCALE
+    mom_term   = bm / _BREADTH_MOM_SCALE
+    b = (0.7 * level_term + 0.3 * mom_term).clip(-1.0, 1.0)
+    a_long  = float(weights.get('breadth_tilt_long', 0.0))
+    a_short = float(weights.get('breadth_tilt_short', 0.0))
+    long_tilt  = 1.0 + a_long * b
+    short_tilt = 1.0 - a_short * b
+    return long_tilt, short_tilt
+
+
 def _z_robust(s: pd.Series) -> pd.Series:
     med = s.median()
     mad = (s - med).abs().median() * 1.4826
@@ -354,6 +397,10 @@ def compute_priority(df: pd.DataFrame, weights=None) -> pd.DataFrame:
     F4   = _col(df, 'Pulse', 0.0).astype(float)
     F5   = _col(df, 'HMM_Bull', 0.33).astype(float) - _col(df, 'HMM_Bear', 0.33).astype(float)
     F7   = _col(df, 'LO', 0.0).astype(float) / 100.0   # liquidity range-extension (reversion)
+    # F8 = sector-relative breadth (Path C). Sector_Rel_Breadth ≈ [-0.2, +0.2];
+    # scaled ×F8_BREADTH_SCALE to ~[-1, +1] so its weight is comparable to the
+    # other factors. 0 when no sector map (non-India / thin group) → inert.
+    F8   = _col(df, 'Sector_Rel_Breadth', 0.0).astype(float) * F8_BREADTH_SCALE
 
     wt1    = _col(df, 'Wave', 0.0).astype(float)
     travel = wt1 - _col(df, 'WT1_5ago', wt1).astype(float)
@@ -390,6 +437,7 @@ def compute_priority(df: pd.DataFrame, weights=None) -> pd.DataFrame:
                 + weights['beta_F4_pulse_long']    * F4
                 + weights['beta_F5_regime_long']   * F5
                 + weights['beta_F7_liq_long']      * F7
+                + weights['beta_F8_breadth_long']  * F8
                 - weights['gamma_reversion_long']  * long_rev
                 - weights['gamma_divergence_long'] * long_div)
     inner_short = (weights['beta_F1_pricemom_short'] * (-F1)
@@ -398,6 +446,7 @@ def compute_priority(df: pd.DataFrame, weights=None) -> pd.DataFrame:
                  + weights['beta_F4_pulse_short']    * (-F4)
                  + weights['beta_F5_regime_short']   * (-F5)
                  + weights['beta_F7_liq_short']      * (-F7)
+                 + weights['beta_F8_breadth_short']  * (-F8)
                  - weights['gamma_reversion_short']  * short_rev
                  - weights['gamma_divergence_short'] * short_div)
 
@@ -418,6 +467,13 @@ def compute_priority(df: pd.DataFrame, weights=None) -> pd.DataFrame:
     # ── Final priority: F6 added inside the damping path (uniform treatment) ──
     df['Priority_Long']  = (inner_long  + weights['beta_F6_xsect_long']  * F6_long)  * damp
     df['Priority_Short'] = (inner_short + weights['beta_F6_xsect_short'] * F6_short) * damp
+
+    # ── Path A · market-breadth regime tilt — bounded per-side exposure scaling.
+    # Applied after ranking so within-side order is untouched (uniform per date);
+    # it tilts long-vs-short magnitude by the tape's breadth state.
+    long_tilt, short_tilt = _breadth_tilt(df, weights)
+    df['Priority_Long']  = df['Priority_Long']  * long_tilt
+    df['Priority_Short'] = df['Priority_Short'] * short_tilt
 
     for col in ('Priority_Long', 'Priority_Short'):
         df[col + '_z']   = _z_robust(df[col])
@@ -492,6 +548,7 @@ CONF_FEATURES = [
     'pulse_align',  # dir·Pulse
     'liq_support',  # dir·Liquidity_Osc/100 — microstructure liquidity backing the move
     'liq_exhaust',  # LO range-extension against the signal [0,1] — liquidity exhaustion risk
+    'breadth_align',# dir·(Universe_Breadth − 0.45) — market breadth backing the signal (Path B)
 ]
 
 
@@ -552,10 +609,18 @@ def signal_conf_features(df: pd.DataFrame):
     lo = _col(df, 'LO', 0.0).astype(float).fillna(0.0).to_numpy()
     liq_exhaust = np.clip(d * lo / 100.0, 0.0, 1.0)
 
+    # ── Breadth (Path B) — market-wide tape support, signed by direction ──
+    # dir·(Universe_Breadth − 0.45): a long fired while the broad market is
+    # advancing (breadth > neutral) scores positive; a short into a strong tape
+    # scores negative. Market-wide value (same for every name on a date) — a
+    # legitimate *temporal* confidence feature, unlike the cross-sectional factors.
+    breadth = _col(df, 'Universe_Breadth', 0.45).astype(float).fillna(0.45).to_numpy()
+    breadth_align = d * (breadth - 0.45)
+
     X = np.column_stack([
         hmm_align, vr_w, regime_conf, change_point,
         reversion, div_contra, mom_align, conv_align, pulse_align,
-        liq_support, liq_exhaust,
+        liq_support, liq_exhaust, breadth_align,
     ])
     return X, dir_sign, set_letter, fired
 

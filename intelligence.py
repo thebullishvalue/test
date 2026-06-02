@@ -128,7 +128,7 @@ class _PrecomputedDataset:
         self.n_groups = len(self.starts)
         self.dates_unique = dates[self.starts]
 
-        # ── Factor matrix M (N, 5): F1, F2, F3=conv/20, F4, F5 ──
+        # ── Factor matrix M (N, 7): F1, F2, F3=conv/20, F4, F5, F7, F8 ──
         f1   = self._col_f(df, 'F1_PriceMom', 0.0)
         f2   = self._col_f(df, 'F2_VolQual',  0.0)
         conv = self._col_f(df, 'Conviction',  0.0)
@@ -136,7 +136,10 @@ class _PrecomputedDataset:
         f4   = self._col_f(df, 'Pulse', 0.0)
         f5   = self._col_f(df, 'HMM_Bull', 0.33) - self._col_f(df, 'HMM_Bear', 0.33)
         f7   = self._col_f(df, 'LO', 0.0) / 100.0   # liquidity range-extension (reversion)
-        self.M = np.column_stack([f1, f2, f3, f4, f5, f7])
+        # F8 = sector-relative breadth (Path C) — same ×scale as compute_priority
+        # so a calibrated weight transfers 1:1 from train to the live ranker.
+        f8   = self._col_f(df, 'Sector_Rel_Breadth', 0.0) * pe.F8_BREADTH_SCALE
+        self.M = np.column_stack([f1, f2, f3, f4, f5, f7, f8])
 
         # ── Penalty matrices (long_rev, long_div) and (short_rev, short_div) ──
         wt1 = self._col_f(df, 'Wave', 0.0)
@@ -225,6 +228,7 @@ def _evaluate_ic(precomp: _PrecomputedDataset, weights: dict, min_xsect: int = 5
         weights['beta_F4_pulse_long'],
         weights['beta_F5_regime_long'],
         weights.get('beta_F7_liq_long', 0.0),
+        weights.get('beta_F8_breadth_long', 0.0),
     ], dtype=np.float64)
     w_beta_short = np.array([
         weights['beta_F1_pricemom_short'],
@@ -233,6 +237,7 @@ def _evaluate_ic(precomp: _PrecomputedDataset, weights: dict, min_xsect: int = 5
         weights['beta_F4_pulse_short'],
         weights['beta_F5_regime_short'],
         weights.get('beta_F7_liq_short', 0.0),
+        weights.get('beta_F8_breadth_short', 0.0),
     ], dtype=np.float64)
     w_gamma_long = np.array([
         weights['gamma_reversion_long'],
@@ -299,7 +304,8 @@ class PriorityTuner:
                  train_frac: float = 0.70,
                  l2_alpha: float = 0.001,
                  min_xsect: int = 5,
-                 enable_f7: bool = False):
+                 enable_f7: bool = False,
+                 enable_f8: bool = True):
         # enable_f7: whether the LO range-extension factor (F7) participates in the
         # ranking search. OFF by default — F7 is collinear with the existing
         # WaveTrend reversion penalty + F3, so on thin data the optimizer can hand it
@@ -313,6 +319,7 @@ class PriorityTuner:
         self.l2_alpha     = l2_alpha
         self.min_xsect    = min_xsect
         self.enable_f7    = enable_f7
+        self.enable_f8    = enable_f8
         self.best_weights = pe.DEFAULT_W.copy()
         self.study        = None
         self.train_score  = None
@@ -361,6 +368,11 @@ class PriorityTuner:
                 # can't acquire spurious (collinear) weight on thin data — see __init__.
                 'beta_F7_liq_long':       (trial.suggest_float('beta_F7_liq_long',  -40.0, 40.0)
                                            if self.enable_f7 else 0.0),
+                # F8 (sector-relative breadth) — searched by default (enable_f8=True).
+                # Genuinely cross-sectional, so unlike F7 it CAN earn IC; the gate
+                # stays so it can be pinned to 0 if validation shows no edge.
+                'beta_F8_breadth_long':   (trial.suggest_float('beta_F8_breadth_long', 0.0, 30.0)
+                                           if self.enable_f8 else 0.0),
                 'gamma_reversion_long':   trial.suggest_float('gamma_reversion_long',  0.0, 40.0),
                 'gamma_divergence_long':  trial.suggest_float('gamma_divergence_long', 0.0, 40.0),
                 # Short-side factor weights
@@ -372,6 +384,8 @@ class PriorityTuner:
                 'beta_F6_xsect_short':    trial.suggest_float('beta_F6_xsect_short',    0.0, 40.0),
                 'beta_F7_liq_short':      (trial.suggest_float('beta_F7_liq_short', -40.0, 40.0)
                                            if self.enable_f7 else 0.0),
+                'beta_F8_breadth_short':  (trial.suggest_float('beta_F8_breadth_short', 0.0, 30.0)
+                                           if self.enable_f8 else 0.0),
                 'gamma_reversion_short':  trial.suggest_float('gamma_reversion_short',  0.0, 40.0),
                 'gamma_divergence_short': trial.suggest_float('gamma_divergence_short', 0.0, 40.0),
                 # Shared tier multipliers

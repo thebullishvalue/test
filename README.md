@@ -1,5 +1,5 @@
 # SANKET — Institutional Market Signal Terminal
-### Wave-Regime Composite Index · Obsidian Quant · Pragyam Family · `v3.4.0`
+### Wave-Regime Composite Index · Obsidian Quant · Pragyam Family · `v3.5.0`
 
 > **संकेत** *(Sanketa)* — Sanskrit for *Signal* · *Indicator* · *Forewarning*
 
@@ -43,7 +43,7 @@ Key capabilities:
 - **Pulse detection** — identifies abnormal acceleration by modulating short-term velocity with long-term statistical intensity (Z-Score normalization)
 - **Asymmetric prioritization** — long and short factor weights are learned independently; the system does not assume symmetry
 - **Cross-asset breadth scanning** — runs simultaneously across NSE F&O, Indian indices, US equities, crypto, commodities, FX, and global macro ETFs
-- **Self-tuning calibration** — Bayesian hyperparameter optimization (Optuna TPE) over a 21-dimensional asymmetric weight space
+- **Self-tuning calibration** — Bayesian hyperparameter optimization (Optuna TPE) over a 23-dimensional asymmetric weight space
 - **1:1 Pine Script parity** — every calculation in Python exactly mirrors the TradingView indicator, eliminating signal divergence between screener and chart
 - **Historical regime intelligence** — bulk time-series analysis with rolling IC computation for signal quality validation
 
@@ -53,8 +53,9 @@ Key capabilities:
 
 ```
 sanket.py                  ← Main Streamlit entry point (UI, routing, analysis dispatch)
-priority_engine.py         ← Asymmetric factor scoring + Layer-1/3 confidence + meta intelligence + profile persistence
-intelligence.py            ← Bayesian calibration (Optuna TPE, 21-dim) + Layer-2/3 calibrators
+priority_engine.py         ← Asymmetric factor scoring (F1–F8) + Layer-1/3 confidence + meta intelligence + profile persistence
+intelligence.py            ← Bayesian calibration (Optuna TPE, 23-dim) + Layer-2/3 calibrators
+breadth_engine.py          ← Market & sector advance/decline breadth (regime tilt + F8 factor + confidence feature)
 logger.py                  ← Structured terminal logging (ANSI color, phase timing, run IDs)
 wrci.pine                  ← TradingView Pine Script v6 (mathematical mirror of Python engine)
 ui/
@@ -407,7 +408,7 @@ Sanket uses a custom structured logging system (`logger.py`) that writes directl
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  SANKET TERMINAL — Session Start  v3.4.0
+  SANKET TERMINAL — Session Start  v3.5.0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Run ID     │  20260507_142301_a3f8
   Universe   │  NSE F&O
@@ -438,11 +439,12 @@ console.line()                          # Separator
 
 ```
 Sanket/
-├── sanket.py               # Main entry — Streamlit UI + analysis dispatch (6,835 lines)
-├── priority_engine.py      # Asymmetric priority + Layer-1/3 confidence + meta intelligence (970 lines)
-├── intelligence.py         # Self-tuning Bayesian calibration + Layer-2/3 calibrators (793 lines)
+├── sanket.py               # Main entry — Streamlit UI + analysis dispatch (6,910 lines)
+├── priority_engine.py      # Asymmetric priority (F1–F8) + Layer-1/3 confidence + meta intelligence (1,041 lines)
+├── intelligence.py         # Self-tuning Bayesian calibration + Layer-2/3 calibrators (807 lines)
+├── breadth_engine.py       # Market & sector advance/decline breadth (Paths A/B/C) (292 lines)
 ├── logger.py               # Structured terminal logging system (226 lines)
-├── wrci.pine               # TradingView Pine Script — mathematical mirror (461 lines)
+├── wrci.pine               # TradingView Pine Script — mathematical mirror (529 lines)
 ├── requirements.txt        # Pinned runtime dependencies
 ├── LICENSE                 # Proprietary institutional license
 ├── README.md               # This file
@@ -576,7 +578,7 @@ The **Model Passport** panel (sidebar) provides:
 
 ## TradingView Pine Script Indicator
 
-`wrci.pine` is the companion TradingView indicator — **WRCI [Sanket Core]** (`v3.4.0`). It implements the same mathematical pipeline as the Python engine:
+`wrci.pine` is the companion TradingView indicator — **WRCI [Sanket Core]** (`v3.5.0`). It implements the same mathematical pipeline as the Python engine:
 
 | Calculation | Python | Pine Script |
 |:---|:---|:---|
@@ -630,4 +632,4 @@ See [`LICENSE`](LICENSE) for full terms.
 
 ---
 
-*Sanket v3.4.0 · Pragyam Family · Built by [@thebullishvalue](https://github.com/thebullishvalue)*
+*Sanket v3.5.0 · Pragyam Family · Built by [@thebullishvalue](https://github.com/thebullishvalue)*
