@@ -1,116 +1,61 @@
-#!/usr/bin/env python3
-"""
-CSSI Parameter Optimization Framework
-=====================================
-Fetches & caches 100+ diverse instruments (Indian equity, US equity, crypto, commodities)
-then runs an intelligent parameter study (Optuna) to find robust default values
-for the Conviction Streak Synergy Index (CSSI) that maximize risk-adjusted
-profitability + signal quality across asset classes.
-
-Author: Grok (built for @BullishValue)
-Date: June 2026
-"""
-
-import os
+import streamlit as st
 import json
 import random
 import warnings
-from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional
+import time
+from datetime import datetime
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
-import logging
-import time
 import optuna
+import yfinance as yf
 
 warnings.filterwarnings("ignore")
 
 # =============================================================================
-# LOGGING SETUP (Detailed terminal output)
+# STREAMLIT UI SETUP
 # =============================================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(message)s",
-    datefmt="%H:%M:%S",
-    handlers=[logging.StreamHandler()]
-)
-logger = logging.getLogger("CSSI-Optimizer")
+st.set_page_config(page_title="CSSI Optimizer", page_icon="📈", layout="wide")
+st.title("📈 CSSI Robust Parameter Optimization")
+st.markdown("Finds robust default values for the Conviction Streak Synergy Index (CSSI) across diverse asset classes.")
 
-# Silence Optuna's own logger unless we want it
-optuna_logger = logging.getLogger("optuna")
-optuna_logger.setLevel(logging.WARNING)
+# Sidebar Configuration
+st.sidebar.header("Configuration")
+DATA_PERIOD = st.sidebar.selectbox("Data Period", ["2y", "5y", "10y"], index=1)
+MIN_TRADING_DAYS = 400
+N_TRIALS = st.sidebar.number_input("Optuna Trials", min_value=50, max_value=2000, value=300, step=50)
+TARGET_ASSETS = st.sidebar.number_input("Target Asset Count", min_value=10, max_value=150, value=100, step=10)
 
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-CACHE_DIR = Path("data_cache")
-CACHE_DIR.mkdir(exist_ok=True)
-
-# How much history to fetch
-DATA_PERIOD = "5y"          # yfinance period
-MIN_TRADING_DAYS = 400      # Skip assets with too little data
-
-# Optimization settings
-N_TRIALS = 800              # Optuna trials (increase to 1500+ for deeper search)
-N_JOBS = 4                  # Parallel trials (set to 1 if memory issues)
-STUDY_NAME = "cssi_robust_v1"
-
-# Backtest settings
-FEE_PCT = 0.0015            # 0.15% round-trip (conservative for India + slippage)
+st.sidebar.header("Backtest Settings")
+FEE_PCT = st.sidebar.number_input("Fee % (Round Trip)", value=0.15, format="%.2f") / 100
 SLIPPAGE_PCT = 0.0005
 INITIAL_CAPITAL = 100_000
 
-# Objective weights (you can tune these)
-WEIGHT_SHARPE = 0.45
-WEIGHT_PROFIT_FACTOR = 0.25
-WEIGHT_CALMAR = 0.15
-WEIGHT_CONSISTENCY = 0.15   # penalizes high variance across assets
+# Objective Weights
+st.sidebar.header("Objective Weights")
+WEIGHT_SHARPE = st.sidebar.slider("Sharpe Weight", 0.0, 1.0, 0.45)
+WEIGHT_PROFIT_FACTOR = st.sidebar.slider("Profit Factor Weight", 0.0, 1.0, 0.25)
+WEIGHT_CALMAR = st.sidebar.slider("Calmar Weight", 0.0, 1.0, 0.15)
+WEIGHT_CONSISTENCY = st.sidebar.slider("Consistency Weight", 0.0, 1.0, 0.15)
 
-# Fixed params (reduce search space)
 SIG_TYPE = "sma"
-ROC_LEN = 3
 
 # =============================================================================
-# DIVERSE TICKER POOLS (expand as needed)
+# DIVERSE TICKER POOLS
 # =============================================================================
 TICKER_POOLS = {
-    "indian_large": [
-        "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
-        "HINDUNILVR.NS", "SBIN.NS", "BHARTIARTL.NS", "ITC.NS", "KOTAKBANK.NS",
-        "LT.NS", "AXISBANK.NS", "BAJFINANCE.NS", "MARUTI.NS", "SUNPHARMA.NS",
-        "TITAN.NS", "ULTRACEMCO.NS", "NESTLEIND.NS", "POWERGRID.NS", "NTPC.NS"
-    ],
-    "indian_mid": [
-        "PIIND.NS", "DIXON.NS", "PERSISTENT.NS", "MPHASIS.NS", "COFORGE.NS",
-        "LALPATHLAB.NS", "ALKEM.NS", "ASTRAL.NS", "ESCORTS.NS", "M&M.NS",
-        "TATAPOWER.NS", "ADANIPORTS.NS", "JSWSTEEL.NS", "HINDALCO.NS", "VEDL.NS"
-    ],
-    "us_large": [
-        "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B",
-        "JPM", "V", "PG", "JNJ", "XOM", "UNH", "MA", "HD", "CVX", "PFE"
-    ],
-    "us_tech_growth": [
-        "AMD", "AVGO", "ADBE", "CRM", "NOW", "SNOW", "PLTR", "PANW", "CRWD"
-    ],
-    "global_indices_etf": [
-        "SPY", "QQQ", "IWM", "VTI", "EFA", "EEM", "GLD", "SLV", "TLT",
-        "^NSEI", "^BSESN", "^GSPC", "^IXIC"
-    ],
-    "crypto": [
-        "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD",
-        "AVAX-USD", "DOGE-USD"
-    ],
-    "commodities": [
-        "GC=F", "SI=F", "CL=F", "NG=F", "HG=F", "ZC=F", "ZS=F", "KC=F",
-        "USO", "GLD", "SLV", "DBA", "DBC"
-    ]
+    "indian_large": ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "HINDUNILVR.NS", "SBIN.NS", "BHARTIARTL.NS", "ITC.NS", "KOTAKBANK.NS", "LT.NS", "AXISBANK.NS", "BAJFINANCE.NS", "MARUTI.NS", "SUNPHARMA.NS", "TITAN.NS", "ULTRACEMCO.NS", "NESTLEIND.NS", "POWERGRID.NS", "NTPC.NS"],
+    "indian_mid": ["PIIND.NS", "DIXON.NS", "PERSISTENT.NS", "MPHASIS.NS", "COFORGE.NS", "LALPATHLAB.NS", "ALKEM.NS", "ASTRAL.NS", "ESCORTS.NS", "M&M.NS", "TATAPOWER.NS", "ADANIPORTS.NS", "JSWSTEEL.NS", "HINDALCO.NS", "VEDL.NS"],
+    "us_large": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B", "JPM", "V", "PG", "JNJ", "XOM", "UNH", "MA", "HD", "CVX", "PFE"],
+    "us_tech_growth": ["AMD", "AVGO", "ADBE", "CRM", "NOW", "SNOW", "PLTR", "PANW", "CRWD"],
+    "global_indices_etf": ["SPY", "QQQ", "IWM", "VTI", "EFA", "EEM", "GLD", "SLV", "TLT", "^NSEI", "^BSESN", "^GSPC", "^IXIC"],
+    "crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD", "AVAX-USD", "DOGE-USD"],
+    "commodities": ["GC=F", "SI=F", "CL=F", "NG=F", "HG=F", "ZC=F", "ZS=F", "KC=F", "USO", "GLD", "SLV", "DBA", "DBC"]
 }
 
 def get_diverse_tickers(total: int = 100, seed: int = 42) -> List[str]:
-    """Sample balanced across categories for a robust study."""
+    """Sample balanced across categories. BUG FIX: Capped to available unique tickers."""
     random.seed(seed)
     selected = []
     per_category = max(3, total // len(TICKER_POOLS))
@@ -119,13 +64,9 @@ def get_diverse_tickers(total: int = 100, seed: int = 42) -> List[str]:
         n = min(per_category, len(tickers))
         selected.extend(random.sample(tickers, n))
     
-    # Extract unique tickers to prevent infinite loops
     all_tickers = list(set([t for pool in TICKER_POOLS.values() for t in pool]))
+    safe_total = min(total, len(all_tickers)) # Prevents infinite loops!
     
-    # Cap the total at the maximum available unique tickers
-    safe_total = min(total, len(all_tickers))
-    
-    # Fill remaining randomly if needed
     while len(selected) < safe_total:
         extra = random.choice(all_tickers)
         if extra not in selected:
@@ -135,96 +76,41 @@ def get_diverse_tickers(total: int = 100, seed: int = 42) -> List[str]:
 
 
 # =============================================================================
-# DATA FETCHING + CACHING
+# DATA FETCHING (OPTIMIZED FOR STREAMLIT)
 # =============================================================================
-def download_and_cache(
-    tickers: List[str],
-    period: str = DATA_PERIOD,
-    force_refresh: bool = False
-) -> Dict[str, pd.DataFrame]:
-    """
-    Download OHLCV data and cache as Parquet.
-    Returns dict {ticker: dataframe with columns ['Open','High','Low','Close','Volume']}
-    """
-    import yfinance as yf
-    
+@st.cache_data(ttl="1d", show_spinner=False)
+def download_and_cache(tickers: List[str], period: str) -> Dict[str, pd.DataFrame]:
+    """Downloads data and stores it in Streamlit's RAM. Refreshes once a day."""
     data_dict = {}
-    failed = []
     
-    for ticker in tqdm(tickers, desc="Fetching & caching data", unit="ticker"):
-        cache_file = CACHE_DIR / f"{ticker.replace('=', '_').replace('^', '')}.parquet"
-        
-        if cache_file.exists() and not force_refresh:
-            try:
-                df = pd.read_parquet(cache_file)
-                if len(df) >= MIN_TRADING_DAYS:
-                    data_dict[ticker] = df
-                    continue
-            except Exception:
-                pass  # corrupted cache → re-download
-        
+    for ticker in tickers:
         try:
-            df = yf.download(
-                ticker,
-                period=period,
-                progress=False,
-                auto_adjust=True,
-                threads=False
-            )
-            if df.empty or len(df) < MIN_TRADING_DAYS:
-                failed.append(ticker)
-                continue
+            df = yf.download(ticker, period=period, progress=False, auto_adjust=True, threads=False)
+            if not df.empty and len(df) >= MIN_TRADING_DAYS:
+                df = df.rename(columns=str.title)
+                if "Adj Close" in df.columns:
+                    df = df.drop(columns=["Adj Close"])
+                df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+                df.index = pd.to_datetime(df.index).tz_localize(None)
+                data_dict[ticker] = df
+        except Exception:
+            pass
             
-            # Standardize columns
-            df = df.rename(columns=str.title)
-            if "Adj Close" in df.columns:
-                df = df.drop(columns=["Adj Close"])
-            df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
-            df.index = pd.to_datetime(df.index).tz_localize(None)
-            
-            df.to_parquet(cache_file, compression="zstd")
-            data_dict[ticker] = df
-            
-        except Exception as e:
-            failed.append(ticker)
-            logger.debug(f"Failed {ticker}: {e}")
-    
-    if failed:
-        logger.warning(f"Failed to fetch {len(failed)} tickers: {failed[:8]}...")
-    
-    logger.info(f"Cached/loaded {len(data_dict)} assets → {CACHE_DIR}")
     return data_dict
 
-
 # =============================================================================
-# CSSI INDICATOR (Python port of the Pine Script logic)
+# CSSI & BACKTESTING LOGIC
 # =============================================================================
-def compute_cssi(
-    df: pd.DataFrame,
-    thres: float = 1.0,
-    look: int = 50,
-    sig_len: int = 20,
-    kvo_fast: int = 34,
-    kvo_slow: int = 55,
-    kvo_sig_len: int = 13,
-    gamma: float = 0.85,
-    norm_len: int = 50,
-) -> pd.DataFrame:
-    """
-    Vectorized implementation of Conviction Streak Synergy Index (CSSI).
-    Returns dataframe with aug_index, aug_signal, cross_up, cross_down, position, etc.
-    """
+def compute_cssi(df, thres=1.0, look=50, sig_len=20, kvo_fast=34, kvo_slow=55, kvo_sig_len=13, gamma=0.85, norm_len=50):
     out = df.copy()
     close = out["Close"]
     hlc3 = (out["High"] + out["Low"] + close) / 3.0
     
-    # 1. Price step (Hemrek core)
     ret_pct = close.pct_change() * 100.0
     s = pd.Series(0.0, index=close.index)
     s[ret_pct > thres] = 1.0
     s[ret_pct < -thres] = -1.0
     
-    # 2. Klinger signed volume
     delta_h = hlc3.diff()
     sv = np.where(delta_h >= 0, out["Volume"], -out["Volume"])
     sv = pd.Series(sv, index=close.index).fillna(0)
@@ -233,129 +119,60 @@ def compute_cssi(
     ksig = kvo.ewm(span=kvo_sig_len, adjust=False).mean()
     k_hist = kvo - ksig
     
-    # 3. Normalization
     k_std = k_hist.rolling(norm_len).std()
     k_norm = k_hist / k_std.replace(0, np.nan)
     k_norm = k_norm.fillna(0)
     
-    # 4. Alignment & effective step
     align_mod = s * k_norm
     eff_s = s * (1.0 + gamma * align_mod)
     eff_s = eff_s.clip(-2.0, 2.0)
     
-    # 5. Augmented count + detrend
     aug_count = eff_s.cumsum()
     aug_index = aug_count - aug_count.rolling(look, min_periods=look//2).mean()
+    aug_signal = aug_index.rolling(sig_len, min_periods=sig_len//2).mean()
     
-    # 6. Signal line
-    if SIG_TYPE == "sma":
-        aug_signal = aug_index.rolling(sig_len, min_periods=sig_len//2).mean()
-    elif SIG_TYPE == "ema":
-        aug_signal = aug_index.ewm(span=sig_len, adjust=False).mean()
-    else:
-        aug_signal = aug_index.rolling(sig_len, min_periods=sig_len//2).mean()
-    
-    # 7. Signals
     cross_up = (aug_index > aug_signal) & (aug_index.shift(1) <= aug_signal.shift(1))
     cross_down = (aug_index < aug_signal) & (aug_index.shift(1) >= aug_signal.shift(1))
     
-    out["aug_index"] = aug_index
-    out["aug_signal"] = aug_signal
-    out["cross_up"] = cross_up.fillna(False)
-    out["cross_down"] = cross_down.fillna(False)
-    
-    # Simple position logic: long on cross_up, flat on cross_down (long-only for robustness)
     position = pd.Series(0, index=out.index)
-    position[out["cross_up"]] = 1
-    position[out["cross_down"]] = 0
+    position[cross_up.fillna(False)] = 1
+    position[cross_down.fillna(False)] = 0
     out["position"] = position.ffill().fillna(0)
     
     return out
 
-
-# =============================================================================
-# VECTORIZED BACKTEST
-# =============================================================================
-def backtest_asset(
-    df: pd.DataFrame,
-    fee: float = FEE_PCT,
-    slippage: float = SLIPPAGE_PCT
-) -> Dict[str, float]:
-    """
-    Simple long-only vectorized backtest on the 'position' column from compute_cssi.
-    Returns performance metrics.
-    """
+def backtest_asset(df, fee, slippage):
     if "position" not in df.columns or df["position"].sum() == 0:
-        return {"sharpe": -10, "profit_factor": 0, "calmar": -10, 
-                "max_dd": 100, "trades": 0, "total_return": -99}
+        return {"sharpe": -10, "profit_factor": 0, "calmar": -10, "max_dd": 100, "trades": 0, "total_return": -99}
     
-    close = df["Close"]
-    ret = close.pct_change().fillna(0)
-    
-    # Apply costs only on position changes
+    ret = df["Close"].pct_change().fillna(0)
     pos_change = df["position"].diff().abs()
     cost = pos_change * (fee + slippage)
     
     strategy_ret = df["position"].shift(1) * ret - cost
     equity = (1 + strategy_ret).cumprod() * INITIAL_CAPITAL
     
-    # Metrics
     total_return = (equity.iloc[-1] / INITIAL_CAPITAL - 1) * 100
-    
-    # Daily returns for Sharpe (annualized)
     daily_ret = strategy_ret
-    if daily_ret.std() == 0:
-        sharpe = 0.0
-    else:
-        sharpe = (daily_ret.mean() / daily_ret.std()) * np.sqrt(252)
+    sharpe = (daily_ret.mean() / daily_ret.std()) * np.sqrt(252) if daily_ret.std() > 0 else 0.0
     
-    # Max Drawdown
     peak = equity.cummax()
-    dd = (equity - peak) / peak * 100
-    max_dd = dd.min()
+    max_dd = ((equity - peak) / peak * 100).min()
     
-    # Profit Factor
     gains = daily_ret[daily_ret > 0].sum()
     losses = -daily_ret[daily_ret < 0].sum()
     profit_factor = gains / losses if losses > 0 else 10.0
     
-    # Calmar
     calmar = (total_return / 100) / (abs(max_dd) / 100) if max_dd != 0 else 0
-    
-    # Number of trades (position flips)
     trades = int(pos_change.sum() / 2)
     
     return {
-        "sharpe": round(sharpe, 3),
-        "profit_factor": round(profit_factor, 3),
-        "calmar": round(calmar, 3),
-        "max_dd": round(max_dd, 2),
-        "trades": trades,
-        "total_return": round(total_return, 2)
+        "sharpe": round(sharpe, 3), "profit_factor": round(profit_factor, 3),
+        "calmar": round(calmar, 3), "max_dd": round(max_dd, 2),
+        "trades": trades, "total_return": round(total_return, 2)
     }
 
-
-# =============================================================================
-# OPTUNA CALLBACK FOR LIVE LOGGING
-# =============================================================================
-def log_best_callback(study, trial):
-    """Prints best score and parameters every 50 trials for visibility."""
-    if trial.number % 50 == 0 or trial.number == study.best_trial.number:
-        logger.info(
-            f"Trial {trial.number:4d} | Best Score: {study.best_value:.4f} | "
-            f"Mean Sharpe: {study.best_trial.user_attrs.get('mean_sharpe', 'N/A')} | "
-            f"Assets tested: {study.best_trial.user_attrs.get('n_assets_tested', 'N/A')}"
-        )
-
-
-# =============================================================================
-# OPTUNA OBJECTIVE (Robust across assets)
-# =============================================================================
-def objective(trial, data_dict: Dict[str, pd.DataFrame]) -> float:
-    """
-    Objective: Find parameters that deliver good risk-adjusted performance
-    on AVERAGE across many different asset classes (robustness > single-asset peak).
-    """
+def objective(trial, data_dict):
     params = {
         "thres": trial.suggest_float("thres", 0.5, 2.2, step=0.1),
         "look": trial.suggest_int("look", 25, 110, step=5),
@@ -367,175 +184,92 @@ def objective(trial, data_dict: Dict[str, pd.DataFrame]) -> float:
         "norm_len": trial.suggest_int("norm_len", 25, 100, step=5),
     }
     
-    scores = []
-    pf_list = []
-    sharpe_list = []
+    scores, pf_list, sharpe_list = [], [], []
     
     for ticker, df in data_dict.items():
         try:
             cssi_df = compute_cssi(df, **params)
-            metrics = backtest_asset(cssi_df)
+            metrics = backtest_asset(cssi_df, FEE_PCT, SLIPPAGE_PCT)
+            if metrics["trades"] < 8 or metrics["sharpe"] < -1.5: continue
             
-            if metrics["trades"] < 8:          # too few signals → unreliable
-                continue
-            if metrics["sharpe"] < -1.5:       # terrible
-                continue
-                
             sharpe_list.append(metrics["sharpe"])
             pf_list.append(metrics["profit_factor"])
-            
-            # Composite per-asset score
-            score = (
-                WEIGHT_SHARPE * metrics["sharpe"] +
-                WEIGHT_PROFIT_FACTOR * min(metrics["profit_factor"], 4.0) +
-                WEIGHT_CALMAR * min(metrics["calmar"], 3.0)
-            )
-            scores.append(score)
-            
-        except Exception:
-            continue
+            scores.append((WEIGHT_SHARPE * metrics["sharpe"]) + (WEIGHT_PROFIT_FACTOR * min(metrics["profit_factor"], 4.0)) + (WEIGHT_CALMAR * min(metrics["calmar"], 3.0)))
+        except Exception: continue
     
-    if len(scores) < max(5, len(data_dict) // 3):
-        return -999  # not enough valid assets
+    if len(scores) < max(5, len(data_dict) // 3): return -999
     
     mean_score = np.mean(scores)
     consistency = 1.0 / (1.0 + np.std(sharpe_list)) if len(sharpe_list) > 1 else 0.5
+    final_objective = (mean_score * 0.85) + (WEIGHT_CONSISTENCY * consistency * 10)
     
-    final_objective = (
-        mean_score * 0.85 +
-        WEIGHT_CONSISTENCY * consistency * 10
-    )
-    
-    # Store extra info for analysis
     trial.set_user_attr("mean_sharpe", round(np.mean(sharpe_list), 3))
     trial.set_user_attr("median_pf", round(np.median(pf_list), 3))
-    trial.set_user_attr("n_assets_tested", len(scores))
-    
     return final_objective
 
-
 # =============================================================================
-# MAIN EXECUTION
+# MAIN APP EXECUTION
 # =============================================================================
-def main():
+if st.button("🚀 Run Optimization"):
     start_time = time.time()
-    logger.info("=" * 72)
-    logger.info("CSSI ROBUST PARAMETER OPTIMIZATION  •  v2 (Upgraded Logging)")
-    logger.info("=" * 72)
-    logger.info(f"Configuration → Trials: {N_TRIALS} | Jobs: {N_JOBS} | Optimization assets: ~35")
-    logger.info(f"                  Fee: {FEE_PCT*100:.2f}% | Data period: {DATA_PERIOD}")
-    logger.info("-" * 72)
+    
+    with st.status("Initializing Optimization Process...", expanded=True) as status:
+        st.write("1. Building balanced asset universe...")
+        tickers = get_diverse_tickers(total=int(TARGET_ASSETS))
+        
+        st.write(f"2. Fetching & Caching data for {len(tickers)} assets...")
+        data_dict = download_and_cache(tickers, DATA_PERIOD)
+        st.write(f"   *Loaded {len(data_dict)} assets successfully.*")
+        
+        if len(data_dict) < 10:
+            st.error("Not enough valid assets fetched. Try a shorter timeframe.")
+            st.stop()
 
-    # 1. Get diverse tickers
-    logger.info("[1/5] Building balanced universe of 100 instruments...")
-    tickers = get_diverse_tickers(total=100, seed=42)
-    logger.info(f"      → Sampled across 7 categories (Indian Large/Mid, US Large/Tech, Indices, Crypto, Commodities)")
+        st.write(f"3. Starting Optuna Search ({N_TRIALS} trials)...")
+        # Use only a subset for speed in Streamlit
+        opt_tickers = list(data_dict.keys())[:min(35, len(data_dict))]
+        opt_data = {k: data_dict[k] for k in opt_tickers}
+        
+        study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=42))
+        
+        # Progress bar for Streamlit
+        progress_bar = st.progress(0)
+        
+        for i in range(N_TRIALS):
+            study.optimize(lambda t: objective(t, opt_data), n_trials=1, n_jobs=1) # n_jobs=1 is safer for cloud memory
+            progress_bar.progress((i + 1) / N_TRIALS)
 
-    # 2. Download / load from cache
-    phase_start = time.time()
-    logger.info("\n[2/5] Downloading & caching OHLCV data (first run can take 5-15 min)...")
-    data_dict = download_and_cache(tickers)
-    logger.info(f"      → Loaded {len(data_dict)} assets with ≥{MIN_TRADING_DAYS} days of history "
-                f"(took {time.time() - phase_start:.1f}s)")
+        status.update(label="Optimization Complete!", state="complete", expanded=False)
+        
+    # --- Results UI ---
+    st.success(f"✅ Optimization finished in {(time.time() - start_time) / 60:.1f} minutes!")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("🏆 Best Parameters")
+        st.json(study.best_params)
+        
+    with col2:
+        st.subheader("📊 Best Trial Metrics")
+        st.metric("Objective Score", f"{study.best_value:.4f}")
+        st.metric("Mean Sharpe", study.best_trial.user_attrs.get("mean_sharpe", "N/A"))
+        st.metric("Median Profit Factor", study.best_trial.user_attrs.get("median_pf", "N/A"))
 
-    if len(data_dict) < 15:
-        logger.error("❌ Not enough valid assets. Exiting.")
-        return
-
-    # 3. Create Optuna study
-    logger.info(f"\n[3/5] Starting Optuna study ({N_TRIALS} trials on ~35 representative assets)...")
-    study = optuna.create_study(
-        study_name=STUDY_NAME,
-        direction="maximize",
-        sampler=optuna.samplers.TPESampler(seed=42),
-        pruner=optuna.pruners.MedianPruner(n_warmup_steps=50)
-    )
-
-    opt_tickers = list(data_dict.keys())[:35]
-    opt_data = {k: data_dict[k] for k in opt_tickers}
-    logger.info(f"      → Using {len(opt_data)} diverse assets for parameter search")
-
-    # Run optimization with live logging callback
-    phase_start = time.time()
-    study.optimize(
-        lambda trial: objective(trial, opt_data),
-        n_trials=N_TRIALS,
-        n_jobs=N_JOBS,
-        show_progress_bar=True,
-        callbacks=[log_best_callback]
-    )
-    logger.info(f"      → Optimization finished in {time.time() - phase_start:.1f}s")
-
-    # 4. Results
-    logger.info("\n[4/5] Optimization complete. Extracting best robust parameters...")
-    best_params = study.best_params
-    best_value = study.best_value
-
-    logger.info("\n" + "=" * 72)
-    logger.info("🏆 BEST ROBUST PARAMETERS (Recommended Defaults)")
-    logger.info("=" * 72)
-    for k, v in best_params.items():
-        logger.info(f"   {k:15s} = {v}")
-    logger.info("-" * 72)
-    logger.info(f"   Best objective score : {best_value:.4f}")
-    logger.info(f"   Mean Sharpe (best)   : {study.best_trial.user_attrs.get('mean_sharpe', 'N/A')}")
-    logger.info(f"   Median Profit Factor : {study.best_trial.user_attrs.get('median_pf', 'N/A')}")
-    logger.info(f"   Assets used in search: {study.best_trial.user_attrs.get('n_assets_tested', 'N/A')}")
-
-    # Save artifacts
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_dir = Path("optimization_results")
-    results_dir.mkdir(exist_ok=True)
-
-    params_file = results_dir / f"best_cssi_params_{timestamp}.json"
-    with open(params_file, "w") as f:
-        json.dump(best_params, f, indent=2)
-
-    trials_file = results_dir / f"cssi_trials_{timestamp}.csv"
-    study.trials_dataframe().to_csv(trials_file, index=False)
-
-    logger.info(f"\n   ✅ Best params saved → {params_file}")
-    logger.info(f"   ✅ Full trial history → {trials_file}")
-
-    # 5. Validation on full universe
-    logger.info("\n[5/5] Validating best parameters on FULL cached universe...")
-    phase_start = time.time()
-    validation_results = []
-
-    for ticker, df in tqdm(data_dict.items(), desc="Validating best params", unit="asset"):
-        try:
-            cssi_df = compute_cssi(df, **best_params)
-            metrics = backtest_asset(cssi_df)
+    # --- Validation Phase ---
+    st.subheader("🌍 Validating on Full Universe")
+    with st.spinner("Running full backtest with best parameters..."):
+        val_results = []
+        for ticker, df in data_dict.items():
+            cssi_df = compute_cssi(df, **study.best_params)
+            metrics = backtest_asset(cssi_df, FEE_PCT, SLIPPAGE_PCT)
             metrics["ticker"] = ticker
-            validation_results.append(metrics)
-        except Exception as e:
-            logger.debug(f"Skipped {ticker}: {e}")
-
-    val_df = pd.DataFrame(validation_results)
-    logger.info(f"      → Validation completed in {time.time() - phase_start:.1f}s on {len(val_df)} assets")
-
-    # Summary stats
-    logger.info("\nValidation Summary (Best Params across all assets):")
-    summary = val_df[["sharpe", "profit_factor", "calmar", "max_dd", "trades"]].describe().round(2)
-    for line in summary.to_string().split("\n"):
-        logger.info("   " + line)
-
-    val_file = results_dir / f"validation_full_universe_{timestamp}.csv"
-    val_df.to_csv(val_file, index=False)
-    logger.info(f"\n   ✅ Full validation CSV saved → {val_file}")
-
-    # Final timing
-    total_time = time.time() - start_time
-    logger.info("\n" + "=" * 72)
-    logger.info(f"✅ RUN COMPLETE in {total_time/60:.1f} minutes")
-    logger.info("=" * 72)
-    logger.info("NEXT STEPS:")
-    logger.info("1. Copy values from best_cssi_params_*.json into your Pine Script CSSI inputs.")
-    logger.info("2. Review validation_full_universe CSV → check consistency across Indian vs US vs Crypto.")
-    logger.info("3. Increase N_TRIALS or opt_data size for even more robust defaults.")
-    logger.info("4. Re-run anytime — caching makes it fast after first execution.")
-    logger.info("=" * 72)
-
-
-if __name__ == "__main__":
-    main()
+            val_results.append(metrics)
+            
+        val_df = pd.DataFrame(val_results).set_index("ticker")
+        st.dataframe(val_df.style.highlight_max(axis=0, color='darkgreen'))
+        
+    # Download Buttons
+    st.download_button("Download Parameters (JSON)", data=json.dumps(study.best_params, indent=2), file_name="cssi_params.json", mime="application/json")
+    st.download_button("Download Validation Results (CSV)", data=val_df.to_csv(), file_name="validation_results.csv", mime="text/csv")
+else:
+    st.info("Adjust the settings in the sidebar and click 'Run Optimization' to begin.")
