@@ -86,10 +86,17 @@ def download_and_cache(tickers: List[str], period: str) -> Dict[str, pd.DataFram
     for ticker in tickers:
         try:
             df = yf.download(ticker, period=period, progress=False, auto_adjust=True, threads=False)
+            
+            # --- YFINANCE FIX: Flatten MultiIndex columns ---
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            
             if not df.empty and len(df) >= MIN_TRADING_DAYS:
                 df = df.rename(columns=str.title)
                 if "Adj Close" in df.columns:
                     df = df.drop(columns=["Adj Close"])
+                
+                # Keep only the columns we need, ensuring they are 1D
                 df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
                 df.index = pd.to_datetime(df.index).tz_localize(None)
                 data_dict[ticker] = df
