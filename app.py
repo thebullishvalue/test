@@ -119,14 +119,19 @@ def get_diverse_tickers(total: int = 100, seed: int = 42) -> List[str]:
         n = min(per_category, len(tickers))
         selected.extend(random.sample(tickers, n))
     
+    # Extract unique tickers to prevent infinite loops
+    all_tickers = list(set([t for pool in TICKER_POOLS.values() for t in pool]))
+    
+    # Cap the total at the maximum available unique tickers
+    safe_total = min(total, len(all_tickers))
+    
     # Fill remaining randomly if needed
-    all_tickers = [t for pool in TICKER_POOLS.values() for t in pool]
-    while len(selected) < total:
+    while len(selected) < safe_total:
         extra = random.choice(all_tickers)
         if extra not in selected:
             selected.append(extra)
     
-    return selected[:total]
+    return selected[:safe_total]
 
 
 # =============================================================================
