@@ -1,71 +1,115 @@
-import streamlit as st
+#!/usr/bin/env python3
+"""
+HCI-Z Parameter Optimization Framework
+======================================
+Fetches & caches 100+ diverse instruments (Indian equity, US equity, crypto, commodities)
+then runs an intelligent parameter study (Optuna) to find robust default values
+for the Hemrek Count Index [Z-Score Edition] (HCI-Z).
+
+Author: Grok (built for @BullishValue) / Refined by Gemini
+Date: June 2026
+"""
+
+import os
 import json
 import random
 import warnings
-import time
+from pathlib import Path
 from datetime import datetime
 from typing import Dict, List
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
+import logging
+import time
 import optuna
-import yfinance as yf
 
 warnings.filterwarnings("ignore")
 
 # =============================================================================
-# STREAMLIT UI SETUP
+# LOGGING SETUP (Detailed terminal output)
 # =============================================================================
-st.set_page_config(page_title="CSSI Optimizer", page_icon="📈", layout="wide")
-st.title("📈 CSSI Robust Parameter Optimization")
-st.markdown("Finds robust default values for the Conviction Streak Synergy Index (CSSI) across diverse asset classes.")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger("HCI-Z-Optimizer")
 
-# Sidebar Configuration
-st.sidebar.header("Configuration")
-DATA_PERIOD = st.sidebar.selectbox("Data Period", ["2y", "5y", "10y"], index=1)
-MIN_TRADING_DAYS = 400
-N_TRIALS = st.sidebar.number_input("Optuna Trials", min_value=50, max_value=2000, value=300, step=50)
-TARGET_ASSETS = st.sidebar.number_input("Target Asset Count", min_value=10, max_value=150, value=100, step=10)
+optuna_logger = logging.getLogger("optuna")
+optuna_logger.setLevel(logging.WARNING)
 
-st.sidebar.header("Backtest Settings")
-FEE_PCT = st.sidebar.number_input("Fee % (Round Trip)", value=0.15, format="%.2f") / 100
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+CACHE_DIR = Path("data_cache")
+CACHE_DIR.mkdir(exist_ok=True)
+
+DATA_PERIOD = "5y"          
+MIN_TRADING_DAYS = 400      
+
+# Optimization settings
+N_TRIALS = 800              
+N_JOBS = 4                  
+STUDY_NAME = "hci_z_robust_v1"
+
+# Backtest settings
+FEE_PCT = 0.0015            
 SLIPPAGE_PCT = 0.0005
 INITIAL_CAPITAL = 100_000
 
-# Objective Weights
-st.sidebar.header("Objective Weights")
-WEIGHT_SHARPE = st.sidebar.slider("Sharpe Weight", 0.0, 1.0, 0.45)
-WEIGHT_PROFIT_FACTOR = st.sidebar.slider("Profit Factor Weight", 0.0, 1.0, 0.25)
-WEIGHT_CALMAR = st.sidebar.slider("Calmar Weight", 0.0, 1.0, 0.15)
-WEIGHT_CONSISTENCY = st.sidebar.slider("Consistency Weight", 0.0, 1.0, 0.15)
-
-SIG_TYPE = "sma"
+# Objective weights
+WEIGHT_SHARPE = 0.45
+WEIGHT_PROFIT_FACTOR = 0.25
+WEIGHT_CALMAR = 0.15
+WEIGHT_CONSISTENCY = 0.15   
 
 # =============================================================================
 # DIVERSE TICKER POOLS
 # =============================================================================
 TICKER_POOLS = {
-    "indian_large": ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "HINDUNILVR.NS", "SBIN.NS", "BHARTIARTL.NS", "ITC.NS", "KOTAKBANK.NS", "LT.NS", "AXISBANK.NS", "BAJFINANCE.NS", "MARUTI.NS", "SUNPHARMA.NS", "TITAN.NS", "ULTRACEMCO.NS", "NESTLEIND.NS", "POWERGRID.NS", "NTPC.NS"],
-    "indian_mid": ["PIIND.NS", "DIXON.NS", "PERSISTENT.NS", "MPHASIS.NS", "COFORGE.NS", "LALPATHLAB.NS", "ALKEM.NS", "ASTRAL.NS", "ESCORTS.NS", "M&M.NS", "TATAPOWER.NS", "ADANIPORTS.NS", "JSWSTEEL.NS", "HINDALCO.NS", "VEDL.NS"],
-    "us_large": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B", "JPM", "V", "PG", "JNJ", "XOM", "UNH", "MA", "HD", "CVX", "PFE"],
-    "us_tech_growth": ["AMD", "AVGO", "ADBE", "CRM", "NOW", "SNOW", "PLTR", "PANW", "CRWD"],
-    "global_indices_etf": ["SPY", "QQQ", "IWM", "VTI", "EFA", "EEM", "GLD", "SLV", "TLT", "^NSEI", "^BSESN", "^GSPC", "^IXIC"],
-    "crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD", "AVAX-USD", "DOGE-USD"],
-    "commodities": ["GC=F", "SI=F", "CL=F", "NG=F", "HG=F", "ZC=F", "ZS=F", "KC=F", "USO", "GLD", "SLV", "DBA", "DBC"]
+    "indian_large": [
+        "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
+        "HINDUNILVR.NS", "SBIN.NS", "BHARTIARTL.NS", "ITC.NS", "KOTAKBANK.NS",
+        "LT.NS", "AXISBANK.NS", "BAJFINANCE.NS", "MARUTI.NS", "SUNPHARMA.NS"
+    ],
+    "indian_mid": [
+        "PIIND.NS", "DIXON.NS", "PERSISTENT.NS", "MPHASIS.NS", "COFORGE.NS",
+        "LALPATHLAB.NS", "ALKEM.NS", "ASTRAL.NS", "ESCORTS.NS", "M&M.NS"
+    ],
+    "us_large": [
+        "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B",
+        "JPM", "V", "PG", "JNJ", "XOM", "UNH", "MA"
+    ],
+    "us_tech_growth": [
+        "AMD", "AVGO", "ADBE", "CRM", "NOW", "SNOW", "PLTR", "PANW", "CRWD"
+    ],
+    "global_indices_etf": [
+        "SPY", "QQQ", "IWM", "VTI", "EFA", "EEM", "GLD", "SLV", "TLT",
+        "^NSEI", "^BSESN"
+    ],
+    "crypto": [
+        "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD"
+    ],
+    "commodities": [
+        "GC=F", "SI=F", "CL=F", "NG=F", "HG=F", "USO", "DBC"
+    ]
 }
 
 def get_diverse_tickers(total: int = 100, seed: int = 42) -> List[str]:
-    """Sample balanced across categories. BUG FIX: Capped to available unique tickers."""
+    """Sample balanced across categories for a robust study."""
     random.seed(seed)
     selected = []
     per_category = max(3, total // len(TICKER_POOLS))
     
-    for category, tickers in TICKER_POOLS.items():
+    for tickers in TICKER_POOLS.values():
         n = min(per_category, len(tickers))
         selected.extend(random.sample(tickers, n))
     
     all_tickers = list(set([t for pool in TICKER_POOLS.values() for t in pool]))
-    safe_total = min(total, len(all_tickers)) # Prevents infinite loops!
+    safe_total = min(total, len(all_tickers))
     
     while len(selected) < safe_total:
         extra = random.choice(all_tickers)
@@ -76,83 +120,131 @@ def get_diverse_tickers(total: int = 100, seed: int = 42) -> List[str]:
 
 
 # =============================================================================
-# DATA FETCHING (OPTIMIZED FOR STREAMLIT)
+# DATA FETCHING + CACHING
 # =============================================================================
-@st.cache_data(ttl="1d", show_spinner=False)
-def download_and_cache(tickers: List[str], period: str) -> Dict[str, pd.DataFrame]:
-    """Downloads data and stores it in Streamlit's RAM. Refreshes once a day."""
-    data_dict = {}
+def download_and_cache(tickers: List[str], period: str = DATA_PERIOD) -> Dict[str, pd.DataFrame]:
+    import yfinance as yf
     
-    for ticker in tickers:
+    data_dict = {}
+    failed = []
+    
+    for ticker in tqdm(tickers, desc="Fetching & caching data", unit="ticker"):
+        cache_file = CACHE_DIR / f"{ticker.replace('=', '_').replace('^', '')}.parquet"
+        
+        if cache_file.exists():
+            try:
+                df = pd.read_parquet(cache_file)
+                if len(df) >= MIN_TRADING_DAYS:
+                    data_dict[ticker] = df
+                    continue
+            except Exception:
+                pass 
+        
         try:
             df = yf.download(ticker, period=period, progress=False, auto_adjust=True, threads=False)
+            if df.empty or len(df) < MIN_TRADING_DAYS:
+                failed.append(ticker)
+                continue
             
-            # --- YFINANCE FIX: Flatten MultiIndex columns ---
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
+            df = df.rename(columns=str.title)
+            if "Adj Close" in df.columns:
+                df = df.drop(columns=["Adj Close"])
+            df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+            df.index = pd.to_datetime(df.index).tz_localize(None)
             
-            if not df.empty and len(df) >= MIN_TRADING_DAYS:
-                df = df.rename(columns=str.title)
-                if "Adj Close" in df.columns:
-                    df = df.drop(columns=["Adj Close"])
-                
-                # Keep only the columns we need, ensuring they are 1D
-                df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
-                df.index = pd.to_datetime(df.index).tz_localize(None)
-                data_dict[ticker] = df
-        except Exception:
-            pass
+            df.to_parquet(cache_file, compression="zstd")
+            data_dict[ticker] = df
+            
+        except Exception as e:
+            failed.append(ticker)
+            logger.debug(f"Failed {ticker}: {e}")
             
     return data_dict
 
+
 # =============================================================================
-# CSSI & BACKTESTING LOGIC
+# HCI-Z INDICATOR ENGINE
 # =============================================================================
-def compute_cssi(df, thres=1.0, look=50, sig_len=20, kvo_fast=34, kvo_slow=55, kvo_sig_len=13, gamma=0.85, norm_len=50):
+def compute_hci_z(
+    df: pd.DataFrame,
+    z_len: int = 20,
+    z_grid: float = 0.5,
+    max_cap: float = 5.0,
+    gravity: float = 0.95,
+    look: int = 50,
+    sig_len: int = 20,
+) -> pd.DataFrame:
+    """
+    Python implementation of the Hemrek Count Index [Z-Score Edition].
+    """
     out = df.copy()
-    close = out["Close"]
-    hlc3 = (out["High"] + out["Low"] + close) / 3.0
+    close = out["Close"].values
     
-    ret_pct = close.pct_change() * 100.0
-    s = pd.Series(0.0, index=close.index)
-    s[ret_pct > thres] = 1.0
-    s[ret_pct < -thres] = -1.0
+    # 1. Per-bar return (%)
+    ret_pct = np.zeros_like(close)
+    ret_pct[1:] = (close[1:] - close[:-1]) / close[:-1] * 100.0
     
-    delta_h = hlc3.diff()
-    sv = np.where(delta_h >= 0, out["Volume"], -out["Volume"])
-    sv = pd.Series(sv, index=close.index).fillna(0)
+    # 2. Z-Score calculation (Zero-Mean anchored)
+    s_ret = pd.Series(ret_pct)
+    std_ret = s_ret.rolling(z_len).std().values
     
-    kvo = sv.ewm(span=kvo_fast, adjust=False).mean() - sv.ewm(span=kvo_slow, adjust=False).mean()
-    ksig = kvo.ewm(span=kvo_sig_len, adjust=False).mean()
-    k_hist = kvo - ksig
+    z_score = np.zeros_like(ret_pct)
+    mask = (std_ret != 0) & (~np.isnan(std_ret))
+    z_score[mask] = ret_pct[mask] / std_ret[mask]
     
-    k_std = k_hist.rolling(norm_len).std()
-    k_norm = k_hist / k_std.replace(0, np.nan)
-    k_norm = k_norm.fillna(0)
+    # 3. Capped Step Logic
+    raw_step = np.floor(np.abs(z_score) / z_grid) * z_grid
+    step_mag = np.minimum(raw_step, max_cap)
     
-    align_mod = s * k_norm
-    eff_s = s * (1.0 + gamma * align_mod)
-    eff_s = eff_s.clip(-2.0, 2.0)
+    current_step = np.zeros_like(z_score)
+    current_step[z_score > 0] = step_mag[z_score > 0]
+    current_step[z_score < 0] = -step_mag[z_score < 0]
     
-    aug_count = eff_s.cumsum()
-    aug_index = aug_count - aug_count.rolling(look, min_periods=look//2).mean()
-    aug_signal = aug_index.rolling(sig_len, min_periods=sig_len//2).mean()
+    # 4. Fast path-dependent Loop for Count & Gravity
+    counts = np.zeros_like(current_step)
+    curr = 0.0
+    for i in range(len(current_step)):
+        step = current_step[i]
+        if step != 0.0:
+            curr = curr + step
+        else:
+            curr = curr * gravity
+        counts[i] = curr
+        
+    s_counts = pd.Series(counts, index=out.index)
     
-    cross_up = (aug_index > aug_signal) & (aug_index.shift(1) <= aug_signal.shift(1))
-    cross_down = (aug_index < aug_signal) & (aug_index.shift(1) >= aug_signal.shift(1))
+    # 5. Detrend against baseline
+    baseline = s_counts.rolling(look, min_periods=look//2).mean()
+    count_index = s_counts - baseline
+    
+    # 6. Signal Line (Using EMA for fast calculation proxy of WMA)
+    count_signal = count_index.ewm(span=sig_len, adjust=False).mean()
+    
+    # 7. Generate Signals
+    out["count_index"] = count_index
+    out["count_signal"] = count_signal
+    
+    cross_up = (count_index > count_signal) & (count_index.shift(1) <= count_signal.shift(1))
+    cross_down = (count_index < count_signal) & (count_index.shift(1) >= count_signal.shift(1))
     
     position = pd.Series(0, index=out.index)
-    position[cross_up.fillna(False)] = 1
-    position[cross_down.fillna(False)] = 0
+    position[cross_up] = 1
+    position[cross_down] = 0
     out["position"] = position.ffill().fillna(0)
     
     return out
 
-def backtest_asset(df, fee, slippage):
+
+# =============================================================================
+# VECTORIZED BACKTEST
+# =============================================================================
+def backtest_asset(df: pd.DataFrame, fee: float = FEE_PCT, slippage: float = SLIPPAGE_PCT) -> Dict[str, float]:
     if "position" not in df.columns or df["position"].sum() == 0:
         return {"sharpe": -10, "profit_factor": 0, "calmar": -10, "max_dd": 100, "trades": 0, "total_return": -99}
     
-    ret = df["Close"].pct_change().fillna(0)
+    close = df["Close"]
+    ret = close.pct_change().fillna(0)
+    
     pos_change = df["position"].diff().abs()
     cost = pos_change * (fee + slippage)
     
@@ -160,8 +252,9 @@ def backtest_asset(df, fee, slippage):
     equity = (1 + strategy_ret).cumprod() * INITIAL_CAPITAL
     
     total_return = (equity.iloc[-1] / INITIAL_CAPITAL - 1) * 100
+    
     daily_ret = strategy_ret
-    sharpe = (daily_ret.mean() / daily_ret.std()) * np.sqrt(252) if daily_ret.std() > 0 else 0.0
+    sharpe = 0.0 if daily_ret.std() == 0 else (daily_ret.mean() / daily_ret.std()) * np.sqrt(252)
     
     peak = equity.cummax()
     max_dd = ((equity - peak) / peak * 100).min()
@@ -174,109 +267,139 @@ def backtest_asset(df, fee, slippage):
     trades = int(pos_change.sum() / 2)
     
     return {
-        "sharpe": round(sharpe, 3), "profit_factor": round(profit_factor, 3),
-        "calmar": round(calmar, 3), "max_dd": round(max_dd, 2),
-        "trades": trades, "total_return": round(total_return, 2)
+        "sharpe": round(sharpe, 3),
+        "profit_factor": round(profit_factor, 3),
+        "calmar": round(calmar, 3),
+        "max_dd": round(max_dd, 2),
+        "trades": trades,
+        "total_return": round(total_return, 2)
     }
 
-def objective(trial, data_dict):
+
+# =============================================================================
+# OPTUNA OBJECTIVE
+# =============================================================================
+def log_best_callback(study, trial):
+    if trial.number % 50 == 0 or trial.number == study.best_trial.number:
+        logger.info(
+            f"Trial {trial.number:4d} | Best Score: {study.best_value:.4f} | "
+            f"Mean Sharpe: {study.best_trial.user_attrs.get('mean_sharpe', 'N/A')} | "
+            f"Assets tested: {study.best_trial.user_attrs.get('n_assets_tested', 'N/A')}"
+        )
+
+def objective(trial, data_dict: Dict[str, pd.DataFrame]) -> float:
+    # HCI-Z specific hyperparameter space
     params = {
-        "thres": trial.suggest_float("thres", 0.5, 2.2, step=0.1),
-        "look": trial.suggest_int("look", 25, 110, step=5),
-        "sig_len": trial.suggest_int("sig_len", 10, 35, step=2),
-        "kvo_fast": trial.suggest_int("kvo_fast", 22, 48, step=2),
-        "kvo_slow": trial.suggest_int("kvo_slow", 42, 75, step=3),
-        "kvo_sig_len": trial.suggest_int("kvo_sig_len", 9, 22, step=1),
-        "gamma": trial.suggest_float("gamma", 0.45, 1.6, step=0.05),
-        "norm_len": trial.suggest_int("norm_len", 25, 100, step=5),
+        "z_len": trial.suggest_int("z_len", 10, 60, step=5),
+        "z_grid": trial.suggest_float("z_grid", 0.1, 1.5, step=0.1),
+        "max_cap": trial.suggest_float("max_cap", 2.0, 10.0, step=0.5),
+        "gravity": trial.suggest_float("gravity", 0.85, 1.0, step=0.01),
+        "look": trial.suggest_int("look", 20, 100, step=5),
+        "sig_len": trial.suggest_int("sig_len", 10, 40, step=2),
     }
     
     scores, pf_list, sharpe_list = [], [], []
     
     for ticker, df in data_dict.items():
         try:
-            cssi_df = compute_cssi(df, **params)
-            metrics = backtest_asset(cssi_df, FEE_PCT, SLIPPAGE_PCT)
-            if metrics["trades"] < 8 or metrics["sharpe"] < -1.5: continue
+            hci_df = compute_hci_z(df, **params)
+            metrics = backtest_asset(hci_df)
             
+            if metrics["trades"] < 8 or metrics["sharpe"] < -1.5:
+                continue
+                
             sharpe_list.append(metrics["sharpe"])
             pf_list.append(metrics["profit_factor"])
-            scores.append((WEIGHT_SHARPE * metrics["sharpe"]) + (WEIGHT_PROFIT_FACTOR * min(metrics["profit_factor"], 4.0)) + (WEIGHT_CALMAR * min(metrics["calmar"], 3.0)))
-        except Exception: continue
+            
+            score = (
+                WEIGHT_SHARPE * metrics["sharpe"] +
+                WEIGHT_PROFIT_FACTOR * min(metrics["profit_factor"], 4.0) +
+                WEIGHT_CALMAR * min(metrics["calmar"], 3.0)
+            )
+            scores.append(score)
+            
+        except Exception:
+            continue
     
-    if len(scores) < max(5, len(data_dict) // 3): return -999
+    if len(scores) < max(5, len(data_dict) // 3):
+        return -999 
     
     mean_score = np.mean(scores)
     consistency = 1.0 / (1.0 + np.std(sharpe_list)) if len(sharpe_list) > 1 else 0.5
+    
     final_objective = (mean_score * 0.85) + (WEIGHT_CONSISTENCY * consistency * 10)
     
     trial.set_user_attr("mean_sharpe", round(np.mean(sharpe_list), 3))
     trial.set_user_attr("median_pf", round(np.median(pf_list), 3))
+    trial.set_user_attr("n_assets_tested", len(scores))
+    
     return final_objective
 
+
 # =============================================================================
-# MAIN APP EXECUTION
+# MAIN EXECUTION
 # =============================================================================
-if st.button("🚀 Run Optimization"):
+def main():
     start_time = time.time()
+    logger.info("=" * 72)
+    logger.info("HCI-Z ROBUST PARAMETER OPTIMIZATION  •  Z-Score Edition")
+    logger.info("=" * 72)
+
+    tickers = get_diverse_tickers(total=100)
+    data_dict = download_and_cache(tickers)
+
+    study = optuna.create_study(
+        study_name=STUDY_NAME,
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=42),
+        pruner=optuna.pruners.MedianPruner(n_warmup_steps=50)
+    )
+
+    opt_tickers = list(data_dict.keys())[:35]
+    opt_data = {k: data_dict[k] for k in opt_tickers}
+
+    logger.info(f"\n[3/5] Starting Optuna study ({N_TRIALS} trials)...")
+    study.optimize(
+        lambda trial: objective(trial, opt_data),
+        n_trials=N_TRIALS,
+        n_jobs=N_JOBS,
+        show_progress_bar=True,
+        callbacks=[log_best_callback]
+    )
+
+    best_params = study.best_params
+    logger.info("\n" + "=" * 72)
+    logger.info("🏆 BEST HCI-Z PARAMETERS (Recommended Defaults)")
+    logger.info("=" * 72)
+    for k, v in best_params.items():
+        logger.info(f"   {k:15s} = {v}")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_dir = Path("optimization_results")
+    results_dir.mkdir(exist_ok=True)
     
-    with st.status("Initializing Optimization Process...", expanded=True) as status:
-        st.write("1. Building balanced asset universe...")
-        tickers = get_diverse_tickers(total=int(TARGET_ASSETS))
-        
-        st.write(f"2. Fetching & Caching data for {len(tickers)} assets...")
-        data_dict = download_and_cache(tickers, DATA_PERIOD)
-        st.write(f"   *Loaded {len(data_dict)} assets successfully.*")
-        
-        if len(data_dict) < 10:
-            st.error("Not enough valid assets fetched. Try a shorter timeframe.")
-            st.stop()
+    with open(results_dir / f"best_hciz_params_{timestamp}.json", "w") as f:
+        json.dump(best_params, f, indent=2)
 
-        st.write(f"3. Starting Optuna Search ({N_TRIALS} trials)...")
-        # Use only a subset for speed in Streamlit
-        opt_tickers = list(data_dict.keys())[:min(35, len(data_dict))]
-        opt_data = {k: data_dict[k] for k in opt_tickers}
-        
-        study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=42))
-        
-        # Progress bar for Streamlit
-        progress_bar = st.progress(0)
-        
-        for i in range(N_TRIALS):
-            study.optimize(lambda t: objective(t, opt_data), n_trials=1, n_jobs=1) # n_jobs=1 is safer for cloud memory
-            progress_bar.progress((i + 1) / N_TRIALS)
-
-        status.update(label="Optimization Complete!", state="complete", expanded=False)
-        
-    # --- Results UI ---
-    st.success(f"✅ Optimization finished in {(time.time() - start_time) / 60:.1f} minutes!")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("🏆 Best Parameters")
-        st.json(study.best_params)
-        
-    with col2:
-        st.subheader("📊 Best Trial Metrics")
-        st.metric("Objective Score", f"{study.best_value:.4f}")
-        st.metric("Mean Sharpe", study.best_trial.user_attrs.get("mean_sharpe", "N/A"))
-        st.metric("Median Profit Factor", study.best_trial.user_attrs.get("median_pf", "N/A"))
-
-    # --- Validation Phase ---
-    st.subheader("🌍 Validating on Full Universe")
-    with st.spinner("Running full backtest with best parameters..."):
-        val_results = []
-        for ticker, df in data_dict.items():
-            cssi_df = compute_cssi(df, **study.best_params)
-            metrics = backtest_asset(cssi_df, FEE_PCT, SLIPPAGE_PCT)
+    logger.info("\n[5/5] Validating on FULL cached universe...")
+    validation_results = []
+    for ticker, df in tqdm(data_dict.items(), desc="Validating"):
+        try:
+            hci_df = compute_hci_z(df, **best_params)
+            metrics = backtest_asset(hci_df)
             metrics["ticker"] = ticker
-            val_results.append(metrics)
-            
-        val_df = pd.DataFrame(val_results).set_index("ticker")
-        st.dataframe(val_df.style.highlight_max(axis=0, color='darkgreen'))
-        
-    # Download Buttons
-    st.download_button("Download Parameters (JSON)", data=json.dumps(study.best_params, indent=2), file_name="cssi_params.json", mime="application/json")
-    st.download_button("Download Validation Results (CSV)", data=val_df.to_csv(), file_name="validation_results.csv", mime="text/csv")
-else:
-    st.info("Adjust the settings in the sidebar and click 'Run Optimization' to begin.")
+            validation_results.append(metrics)
+        except Exception:
+            pass
+
+    val_df = pd.DataFrame(validation_results)
+    summary = val_df[["sharpe", "profit_factor", "calmar", "max_dd", "trades"]].describe().round(2)
+    
+    logger.info("\nValidation Summary:")
+    for line in summary.to_string().split("\n"):
+        logger.info("   " + line)
+
+    logger.info(f"\n✅ RUN COMPLETE in {(time.time() - start_time)/60:.1f} minutes")
+
+if __name__ == "__main__":
+    main()
