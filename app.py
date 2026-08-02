@@ -72,7 +72,7 @@ UNIVERSE["Energy/Commodity Equities"] = """EWZ EWA"""
 UNIVERSE["Sectors"] = """XLB XME PICK XLE XLI XLF KRE GLTR PALL LIT URA SLX REMX WOOD IGF"""
 UNIVERSE["FX Major"] = """DX-Y.NYB UDN USDU FXE FXY FXB FXF FXA FXC CEW"""
 UNIVERSE["FX INR"] = """INR=X EURINR=X GBPINR=X JPYINR=X AUDINR=X NZDINR=X CADINR=X CHFINR=X CNYINR=X SGDINR=X HKDINR=X INRUSD=X BDT=X"""
-UNIVERSE["FX Asia EM"] = """CNY=X CNH=X JPY=X KRW=X MXN=X BRL=X ZAR=X THB=X TWD=X MYR=X"""
+UNIVERSE["FX Asia EM"] = """CNY=X JPY=X KRW=X MXN=X BRL=X ZAR=X THB=X TWD=X MYR=X"""
 UNIVERSE["Style Factors"] = """VTV VUG MTUM USMV SPHB VYM"""
 UNIVERSE["REITs"] = """VNQ VNQI REET"""
 UNIVERSE["Commodity Baskets"] = """DBC GSG DBB DBA GLTR"""
@@ -329,7 +329,7 @@ def simulate_universe(seed, n_days):
 def load_live_universe():
     """Fetch the full live universe from Yahoo Finance (max available history)."""
     import yfinance as yf
-    raw = yf.download(SYMBOLS, period="max", auto_adjust=True, progress=False, threads=True)
+    raw = yf.download(SYMBOLS, period="9y", auto_adjust=True, progress=False, threads=True)
     px = raw["Close"] if "Close" in raw.columns.get_level_values(0) else raw
     px = px.ffill().dropna(axis=1, thresh=int(0.7 * len(px)))
     if px.shape[1] < 120:
