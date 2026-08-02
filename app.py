@@ -51,6 +51,52 @@ MATIC-USD LTC-USD BCH-USD BNB-USD TRX-USD""",
 }
 UNIVERSE["US Equities"] = UNIVERSE["US Equities"].replace("MBT?", "")  # guard
 
+# ---- Extended universe (live yfinance tickers) ----
+UNIVERSE["US Treasuries"] = """BIL SHV SGOV SHY VGSH IEI IEF VGIT TLH TLT VGLT GOVT"""
+UNIVERSE["Yield Indices"] = """^IRX ^FVX ^TNX ^TYX"""
+UNIVERSE["Inflation-Protected"] = """TIP VTIP WIP"""
+UNIVERSE["Aggregate Bonds"] = """BSV BLV AGG BND FLOT BNDW BNDX"""
+UNIVERSE["Corporate IG"] = """LQD VCSH VCIT VCLT"""
+UNIVERSE["High Yield"] = """HYG JNK GHYG BGRN PFF CWB FALN"""
+UNIVERSE["Structured"] = """MBB VMBS BKLN"""
+UNIVERSE["Municipals"] = """MUB VTEB"""
+UNIVERSE["Intl Govt Bonds"] = """IGOV BWX IBND IEGA.L IEAC.L IBGL.L SDEU.L IGLT.L INXG.L SLXX.L"""
+UNIVERSE["APAC Bonds"] = """VGB.AX XBB.TO"""
+UNIVERSE["Equity Benchmarks"] = """ACWI EFA EW EM EWJ EZU EWY EWT EWU"""
+UNIVERSE["Regional Equity"] = """VNM EPHE EIDO EWS UAE INDA"""
+UNIVERSE["Country Indices"] = """^GDAXI ^FCHI ^STOXX50E ^FTSE ^IBEX ^AEX ^SSMI"""
+UNIVERSE["Volatility"] = """^VIX ^MOVE VIXM"""
+UNIVERSE["Energy/Commodity Equities"] = """EWZ EWA"""
+UNIVERSE["Sectors"] = """XLB XME PICK XLE XLI XLF KRE GLTR PALL LIT URA SLX REMX WOOD IGF"""
+UNIVERSE["FX Major"] = """DX-Y.NYB UDN USDU FXE FXY FXB FXF FXA FXC CEW"""
+UNIVERSE["FX INR"] = """INR=X EURINR=X GBPINR=X JPYINR=X AUDINR=X NZDINR=X CADINR=X CHFINR=X CNYINR=X SGDINR=X HKDINR=X INRUSD=X BDT=X"""
+UNIVERSE["FX Asia EM"] = """CNY=X CNH=X JPY=X KRW=X MXN=X BRL=X ZAR=X THB=X TWD=X MYR=X"""
+UNIVERSE["Style Factors"] = """VTV VUG MTUM USMV SPHB VYM"""
+UNIVERSE["REITs"] = """VNQ VNQI REET"""
+UNIVERSE["Commodity Baskets"] = """DBC GSG DBB DBA GLTR"""
+UNIVERSE["Thematic"] = """SMH RINF HYDR"""
+
+CLASS_COLORS = {
+    "US Equities": "#4f9cf9", "Intl Equities": "#7fb3ff", "Indices": "#9aa7ff",
+    "ETFs": "#38c7dc", "FX": "#5fd39a", "Rates": "#f2b544",
+    "Commodities": "#f2884b", "Crypto": "#b7a4f3", "Volatility": "#ff5d6c",
+    "US Treasuries": "#ffe5b4", "Yield Indices": "#ff9999",
+    "Inflation-Protected": "#bebada", "Aggregate Bonds": "#d4b8ff",
+    "Corporate IG": "#cce5ff", "High Yield": "#ffcccc",
+    "Structured": "#d4edda", "Municipals": "#fff3cd",
+    "Intl Govt Bonds": "#e2e3e5", "APAC Bonds": "#f8d7da",
+    "Equity Benchmarks": "#c3e6cb", "Regional Equity": "#d1ecf1",
+    "Country Indices": "#f5f5f5", "FX Major": "#e8e8e8",
+    "FX INR": "#e8e8e8", "FX Asia EM": "#e8e8e8",
+    "Style Factors": "#e8e8e8", "REITs": "#e8e8e8",
+    "Commodity Baskets": "#e8e8e8", "Thematic": "#e8e8e8",
+    "Energy/Commodity Equities": "#e8e8e8", "Sectors": "#e8e8e8",
+}
+
+for cls, blob in list(UNIVERSE.items()):
+    if cls not in CLASS_COLORS:
+        CLASS_COLORS[cls] = "#888888"
+
 SYMBOLS, CLASSES = [], []
 for _cls, _blob in UNIVERSE.items():
     for _s in _blob.split():
@@ -66,13 +112,8 @@ REGIME_META = {
     "HIGH-VOL":  {"color": "#f2b544", "icon": "≈"},
     "RISK-OFF":  {"color": "#ff5d6c", "icon": "▼"},
 }
-CLASS_COLORS = {
-    "US Equities": "#4f9cf9", "Intl Equities": "#7fb3ff", "Indices": "#9aa7ff",
-    "ETFs": "#38c7dc", "FX": "#5fd39a", "Rates": "#f2b544",
-    "Commodities": "#f2884b", "Crypto": "#b7a4f3", "Volatility": "#ff5d6c",
-}
 
-# ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------# ----------------------------------------------------------------------------
 # 2. THEME + CSS SHELL
 # ----------------------------------------------------------------------------
 CSS = """
@@ -284,8 +325,9 @@ def simulate_universe(seed, n_days):
 
 @st.cache_data(show_spinner=False, max_entries=2)
 def load_live_universe():
+    """Fetch the full live universe from Yahoo Finance (max available history)."""
     import yfinance as yf
-    raw = yf.download(SYMBOLS, period="3y", auto_adjust=True, progress=False, threads=True)
+    raw = yf.download(SYMBOLS, period="max", auto_adjust=True, progress=False, threads=True)
     px = raw["Close"] if "Close" in raw.columns.get_level_values(0) else raw
     px = px.ffill().dropna(axis=1, thresh=int(0.7 * len(px)))
     if px.shape[1] < 120:
