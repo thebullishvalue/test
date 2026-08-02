@@ -504,8 +504,10 @@ def run_engine(prices, target, method, ncomp, lookback, refit, peers_k, alpha,
     # Forward fill then backward fill to handle missing values
     prices_clean = prices_clean.ffill().bfill()
     # Replace any remaining non-positive values with a small positive number to avoid log(0)
-    prices_clean = np.where(prices_clean <= 0, 1e-8, prices_clean)
-    # Now compute log returns
+    # Use pandas mask instead of np.where to preserve DataFrame structure
+    prices_clean = prices_clean.mask(prices_clean <= 0, 1e-8)
+    
+    # Compute log returns
     rets = np.log(prices_clean).diff().fillna(0)
     
     # Also replace any infinite values that might have crept in
