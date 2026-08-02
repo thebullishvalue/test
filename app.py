@@ -450,7 +450,6 @@ def fit_factor_model(Xw, method, ncomp):
     # Preprocess: remove columns with all NaN or infinite values, then fill remaining
     if Xw.size == 0:
         # Return dummy model if no data
-        from sklearn.decomposition import PCA
         m = PCA(n_components=1, random_state=0)
         S = np.zeros((Xw.shape[0], 1))
         ev = np.array([1.0])
