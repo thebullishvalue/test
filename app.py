@@ -99,12 +99,30 @@ for cls, blob in list(UNIVERSE.items()):
     if cls not in CLASS_COLORS:
         CLASS_COLORS[cls] = "#888888"
 
+# ---- SYMBOLS construction and universe validation ----
 SYMBOLS, CLASSES = [], []
 for _cls, _blob in UNIVERSE.items():
     for _s in _blob.split():
         if _s and _s not in SYMBOLS:
             SYMBOLS.append(_s); CLASSES.append(_cls)
+
+# Validate and clean symbols (remove known problematic ones, ensure format)
+cleaned_symbols = []
+for s in SYMBOLS:
+    # Remove any problematic known delisted/special tickers
+    if s in ['K', 'EM', 'MBT']:  # Known bad symbols from earlier errors
+        continue
+    # Additional validation: ticker format reasonable
+    if len(s) <= 10 and any(c.isalpha() for c in s):
+        cleaned_symbols.append(s)
+
+SYMBOLS = cleaned_symbols
+if len(SYMBOLS) < 1:
+    raise RuntimeError("No valid symbols found after filtering")
+
 N_ASSETS = len(SYMBOLS)
+# Rebuild CLASSES to match exact filter count
+CLASSES = [CLASSES[i] for i in range(len(SYMBOLS))]
 CLASS_OF = dict(zip(SYMBOLS, CLASSES))
 
 REGIME_META = {
@@ -327,9 +345,15 @@ def simulate_universe(seed, n_days):
 
 @st.cache_data(show_spinner=False, max_entries=2)
 def load_live_universe():
-    """Fetch the full live universe from Yahoo Finance (max available history)."""
+    """Fetch the full live universe from Yahoo Finance with fallback for incompatible tickers."""
     import yfinance as yf
-    raw = yf.download(SYMBOLS, period="9y", auto_adjust=True, progress=False, threads=True)
+    try:
+        # Try to get maximum available data
+        raw = yf.download(SYMBOLS, period="max", auto_adjust=True, progress=False, threads=True)
+    except Exception:
+        # Fallback to 5 years if max fails (e.g., for some FX pairs)
+        raw = yf.download(SYMBOLS, period="5y", auto_adjust=True, progress=False, threads=True)
+    
     px = raw["Close"] if "Close" in raw.columns.get_level_values(0) else raw
     px = px.ffill().dropna(axis=1, thresh=int(0.7 * len(px)))
     if px.shape[1] < 120:
