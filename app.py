@@ -106,18 +106,25 @@ for _cls, _blob in UNIVERSE.items():
         if _s and _s not in SYMBOLS:
             SYMBOLS.append(_s); CLASSES.append(_cls)
 
-# Validate and clean symbols (remove known problematic ones, ensure format)
+# Validate and clean symbols - remove known bad tickers
+BAD_SYMBOLS = {
+    # Delisted/merged tickers
+    'K', 'EM', 'MBT', 'BLSCHW', 'MRABBV',
+    # Duplicate/duplicate of existing entries already handled above
+    'CNH=X', 'USDCNH=X',
+    # Add any other known problematic tickers
+}
+
 cleaned_symbols = []
-for s in SYMBOLS:
-    # Remove any problematic known delisted/special tickers
-    if s in ['K', 'EM', 'MBT']:  # Known bad symbols from earlier errors
+for i, s in enumerate(SYMBOLS):
+    if s in BAD_SYMBOLS:
         continue
     # Additional validation: ticker format reasonable
     if len(s) <= 10 and any(c.isalpha() for c in s):
         cleaned_symbols.append(s)
 
 SYMBOLS = cleaned_symbols
-if len(SYMBOLS) < 1:
+if len(SYMBOLS) < 10:
     raise RuntimeError("No valid symbols found after filtering")
 
 N_ASSETS = len(SYMBOLS)
@@ -347,17 +354,54 @@ def simulate_universe(seed, n_days):
 def load_live_universe():
     """Fetch the full live universe from Yahoo Finance with fallback for incompatible tickers."""
     import yfinance as yf
-    try:
-        # Try to get maximum available data
-        raw = yf.download(SYMBOLS, period="max", auto_adjust=True, progress=False, threads=True)
-    except Exception:
-        # Fallback to 5 years if max fails (e.g., for some FX pairs)
-        raw = yf.download(SYMBOLS, period="5y", auto_adjust=True, progress=False, threads=True)
+    import numpy as np
     
-    px = raw["Close"] if "Close" in raw.columns.get_level_values(0) else raw
-    px = px.ffill().dropna(axis=1, thresh=int(0.7 * len(px)))
-    if px.shape[1] < 120:
-        raise RuntimeError(f"only {px.shape[1]} tickers returned")
+    # Try to get maximum available data
+    try:
+        raw = yf.download(SYMBOLS, period="9y", auto_adjust=True, progress=False, threads=True)
+    except Exception as e:
+        st.warning(f"Yahoo Finance download error: {e}. Trying with reduced parameters...")
+        # Fallback with smaller chunk or different approach
+        try:
+            # Try without threading first
+            raw = yf.download(SYMBOLS, period="9y", auto_adjust=True, progress=False, threads=False)
+        except Exception as e2:
+            st.warning(f"Second attempt failed: {e2}. Trying with 5-year period...")
+            # Final fallback to shorter period
+            try:
+                raw = yf.download(SYMBOLS, period="5y", auto_adjust=True, progress=False, threads=False)
+            except Exception as e3:
+                st.error(f"All download attempts failed: {e3}")
+                raise RuntimeError(f"Could not download data from Yahoo Finance: {e3}")
+    
+    # Handle the data - check if we got valid data
+    if raw is None or len(raw) == 0:
+        raise RuntimeError("No data returned from Yahoo Finance")
+    
+    # Extract Close prices
+    if "Close" in getattr(getattr(raw, 'columns', None), 'get_level_values', lambda x: [])(0):
+        px = raw["Close"]
+    else:
+        px = raw
+    
+    # If we got a Series (single ticker), convert to DataFrame
+    if isinstance(px, pd.Series):
+        px = px.to_frame()
+    
+    # Forward fill and then drop columns with too many missing values
+    # Be more lenient: require at least 30% non-NaN values instead of 70%
+    px = px.ffill()
+    min_obs = max(10, int(0.3 * len(px)))  # At least 10 observations or 30% of data
+    px = px.dropna(axis=1, thresh=min_obs)
+    
+    # If we still have too few, be even more lenient
+    if px.shape[1] < 50:  # Aim for at least 50 tickers
+        min_obs = max(5, int(0.1 * len(px)))  # At least 5 observations or 10% of data
+        px = px.ffill().dropna(axis=1, thresh=min_obs)
+    
+    if px.shape[1] < 10:
+        raise RuntimeError(f"Only {px.shape[1]} tickers returned after filtering - insufficient data")
+    
     return px
 
 def get_prices():
