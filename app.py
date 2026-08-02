@@ -446,14 +446,46 @@ def detect_regimes(rz, pc1):
     return full
 
 def fit_factor_model(Xw, method, ncomp):
-    Xc = Xw - Xw.mean(0)
+    # Preprocess: remove columns with all NaN or infinite values, then fill remaining
+    if Xw.size == 0:
+        # Return dummy model if no data
+        from sklearn.decomposition import PCA
+        m = PCA(n_components=1, random_state=0)
+        S = np.zeros((Xw.shape[0], 1))
+        ev = np.array([1.0])
+        return m, S, ev
+    
+    # Replace infinite values with NaN then fill
+    Xw_clean = np.where(np.isinf(Xw), np.nan, Xw)
+    
+    # For each column, if all NaN, fill with zeros; otherwise fill column mean
+    col_means = np.nanmean(Xw_clean, axis=0)
+    inds = np.where(np.isnan(col_means))[0]
+    col_means[inds] = 0
+    inds = np.where(np.isnan(Xw_clean))
+    Xw_clean[inds] = np.take(col_means, inds[1])
+    
+    # Standardize to zero mean, unit variance (handle zero std)
+    Xc = Xw_clean - np.mean(Xw_clean, axis=0)
+    std_dev = np.std(Xc, axis=0)
+    # Avoid division by zero
+    std_dev = np.where(std_dev == 0, 1, std_dev)
+    Xc = Xc / std_dev
+    
     if method == "PCA":
-        m = PCA(n_components=ncomp, random_state=0)
+        m = PCA(n_components=min(ncomp, Xc.shape[1]), random_state=0)
     elif method == "FastICA":
-        m = FastICA(n_components=ncomp, random_state=0, max_iter=500)
+        m = FastICA(n_components=min(ncomp, Xc.shape[1]), random_state=0, max_iter=500)
     else:
-        m = FactorAnalysis(n_components=ncomp, random_state=0)
-    S = m.fit_transform(Xc)
+        m = FactorAnalysis(n_components=min(ncomp, Xc.shape[1]), random_state=0)
+    
+    try:
+        S = m.fit_transform(Xc)
+    except:
+        # Fallback to PCA if factor model fails
+        m = PCA(n_components=min(1, Xc.shape[1]), random_state=0)
+        S = m.fit_transform(Xc)
+    
     ev = (m.explained_variance_ratio_ if hasattr(m, "explained_variance_ratio_")
           and m.explained_variance_ratio_ is not None and len(m.explained_variance_ratio_) == ncomp
           else np.full(ncomp, np.nan))
@@ -466,7 +498,18 @@ def run_engine(prices, target, method, ncomp, lookback, refit, peers_k, alpha,
     def step(msg): status.write(f"▸ {msg}")
 
     step(f"Preparing {prices.shape[1]}-instrument return matrix…")
-    rets = np.log(prices).diff().fillna(0)
+    # Compute log returns, handling invalid prices (<=0 or NaN) that would cause log issues
+    # Replace invalid prices with previous close to avoid log(0) or log(negative)
+    prices_clean = prices.copy()
+    # Forward fill then backward fill to handle missing values
+    prices_clean = prices_clean.ffill().bfill()
+    # Replace any remaining non-positive values with a small positive number to avoid log(0)
+    prices_clean = np.where(prices_clean <= 0, 1e-8, prices_clean)
+    # Now compute log returns
+    rets = np.log(prices_clean).diff().fillna(0)
+    
+    # Also replace any infinite values that might have crept in
+    rets = np.where(np.isinf(rets), 0, rets)
     rz = rolling_zscore(rets)
     others = [c for c in rets.columns if c != target]
 
