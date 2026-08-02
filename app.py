@@ -14,6 +14,7 @@ from sklearn.decomposition import PCA, FastICA, FactorAnalysis
 from sklearn.linear_model import Ridge
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
 
 st.set_page_config(page_title="FVE — Fair Value Engine", layout="wide",
                     initial_sidebar_state="expanded")
