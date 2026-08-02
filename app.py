@@ -1,1153 +1,891 @@
-# app.py
-# ============================================================================
-#  FVE — FAIR VALUE ENGINE
-#  Market-relative valuation across a 200+ instrument cross-asset universe.
-#  Run:  streamlit run app.py
-# ============================================================================
-import time
+"""
+FVE — Fair Value Engine
+=======================
+
+Streamlit dashboard for cross-sectional, market-relative valuation.
+
+    streamlit run app.py
+
+The engine estimates a target asset's fair value as the price path implied by
+a 200+ instrument cross-asset universe, and publishes the deviation as a
+bounded, adaptively-normalised oscillator. All modelling lives in the ``fve``
+package; this file is presentation and wiring only.
+"""
+from __future__ import annotations
+
+import warnings
+from dataclasses import asdict
+
 import numpy as np
 import pandas as pd
-import streamlit as st
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from sklearn.decomposition import PCA, FastICA, FactorAnalysis
-from sklearn.linear_model import Ridge
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
+import streamlit as st
+
+from fve import __version__
+from fve.backtest import (decile_forward_returns, information_coefficients,
+                          run_backtest, signal_event_study)
+from fve.cache import begin_force_refresh
+from fve.config import BacktestConfig, DataConfig, EngineConfig, REGIME_META
+from fve.data import load_universe, provider_status, resolve_symbol
+from fve.engine import run_engine, snapshot
+from fve import explain as ex
+from fve import theme, viz
+from fve.regimes import regime_summary
+from fve.universe import (CLASS_OF, FREEFORM_MARKETS, MARKET_HINTS, TAPE,
+                          UNIVERSE, class_breakdown, symbols_for_tier,
+                          target_categories)
+
+warnings.filterwarnings("ignore")
 
 st.set_page_config(page_title="FVE — Fair Value Engine", layout="wide",
-                    initial_sidebar_state="expanded")
+                   initial_sidebar_state="expanded", page_icon="◈")
+st.markdown(theme.CSS, unsafe_allow_html=True)
 
-# Hide the main Streamlit header and menu bar for a cleaner layout
-st.markdown("""<style>
-    #header {visibility: hidden;}
-    .css-18e3th9 {display: none;}
-    .css-1d391u8 {display: none;}
-    </style>""", unsafe_allow_html=True)
 
-# ----------------------------------------------------------------------------
-# 1. UNIVERSE DEFINITION  (212 instruments, 9 asset classes)
-# ----------------------------------------------------------------------------
-UNIVERSE = {
-    "US Equities": """AAPL MSFT NVDA GOOGL AMZN META TSLA AVGO AMD INTC CRM ORCL ADBE NFLX PANW
-CRWD PLTR SNOW NET DDOG ZS OKTA QCOM TXN MU AMAT LRCX KLAC SNPS CDNS V MA JPM BAC GS MS WFC
-C AXP BLK SCHW COIN HOOD PYPL XYZ UBER ABNB SHOP SPOT RBLX DKNG PINS SNAP ROKU F GM T VZ DIS
-CMCSA CHTR KO PEP WMT COST MCD NKE SBUX TGT HD LOW CAT DE GE HON MMM UPS RTX LMT NOC BA GD UNP
-CSX NSC XOM CVX COP SLB OXY JNJ PFE UNH MRK ABBV LLY TMO ABT DHR BMY AMGN GILD ISRG MDT SYK
-BSX EL CL GIS K MBT?""",
-    "Intl Equities": """TSM ASML NVO AZN SHEL BHP RIO VALE PBR SAP SIE.DE MC.PA TTE.PA NESN.SW
-7203.T 6758.T 8306.T 9984.T 005930.KS RELIANCE.NS""",
-    "Indices": """^GSPC ^IXIC ^DJI ^RUT ^FTSE ^GDAXI ^N225 ^HSI ^STOXX50E ^GSPTSE ^BSESN ^KS11""",
-    "ETFs": """SPY QQQ IWM DIA XLF XLK XLE XLV XLI XLP XLU XLB XLRE XLC TLT IEF HYG LQD TIP
-AGG BND GLD SLV USO VNQ GDX KWEB EEM EFA VWO EWJ FXI""",
-    "FX": """EURUSD=X GBPUSD=X USDJPY=X USDCHF=X AUDUSD=X USDCAD=X NZDUSD=X USDCNH=X DX-Y.NYB
-EURJPY=X""",
-    "Rates": """^IRX ^FVX ^TNX ^TYX ZB=F ZN=F ZF=F ZT=F""",
-    "Commodities": """CL=F BZ=F NG=F HG=F GC=F SI=F PL=F PA=F ZC=F ZS=F ZW=F KC=F CC=F CT=F SB=F
-ZL=F""",
-    "Crypto": """BTC-USD ETH-USD SOL-USD XRP-USD ADA-USD DOGE-USD AVAX-USD DOT-USD LINK-USD
-MATIC-USD LTC-USD BCH-USD BNB-USD TRX-USD""",
-    "Volatility": """^VIX ^VXN ^MOVE VIXY UVXY SVXY""",
-}
-# Fix known issues in the original strings
-UNIVERSE["US Equities"] = UNIVERSE["US Equities"].replace("K ", "").replace("MBT?", "MBT")
-UNIVERSE["FX"] = UNIVERSE["FX"].replace("USDCNH=X ", "")
+# ---------------------------------------------------------------------------
+# Cached compute
+# ---------------------------------------------------------------------------
+@st.cache_data(show_spinner=False, max_entries=4)
+def load_data(tier: str, years: int, synthetic: bool, seed: int, target: str):
+    cfg = DataConfig(years=years, synthetic=synthetic, seed=seed)
+    # The explanatory universe is passed target-independent on purpose: the
+    # panel cache is keyed on this list, so appending a free-form ticker would
+    # mint a new key per target and re-download the universe every time. A
+    # target outside the universe is fetched separately by load_universe.
+    symbols = symbols_for_tier(tier)
 
-# ---- Extended universe (live yfinance tickers) ----
-UNIVERSE["US Treasuries"] = """BIL SHV SGOV SHY VGSH IEI IEF VGIT TLH TLT VGLT GOVT"""
-UNIVERSE["Yield Indices"] = """^IRX ^FVX ^TNX ^TYX"""
-UNIVERSE["Inflation-Protected"] = """TIP VTIP WIP"""
-UNIVERSE["Aggregate Bonds"] = """BSV BLV AGG BND FLOT BNDW BNDX"""
-UNIVERSE["Corporate IG"] = """LQD VCSH VCIT VCLT"""
-UNIVERSE["High Yield"] = """HYG JNK GHYG BGRN PFF CWB FALN"""
-UNIVERSE["Structured"] = """MBB VMBS BKLN"""
-UNIVERSE["Municipals"] = """MUB VTEB"""
-UNIVERSE["Intl Govt Bonds"] = """IGOV BWX IBND IEGA.L IEAC.L IBGL.L SDEU.L IGLT.L INXG.L SLXX.L"""
-UNIVERSE["APAC Bonds"] = """VGB.AX XBB.TO"""
-UNIVERSE["Equity Benchmarks"] = """ACWI EFA EW EM EWJ EZU EWY EWT EWU"""
-UNIVERSE["Regional Equity"] = """VNM EPHE EIDO EWS UAE INDA"""
-UNIVERSE["Country Indices"] = """^GDAXI ^FCHI ^STOXX50E ^FTSE ^IBEX ^AEX ^SSMI"""
-UNIVERSE["Volatility"] = """^VIX ^MOVE VIXM"""
-UNIVERSE["Energy/Commodity Equities"] = """EWZ EWA"""
-UNIVERSE["Sectors"] = """XLB XME PICK XLE XLI XLF KRE GLTR PALL LIT URA SLX REMX WOOD IGF"""
-UNIVERSE["FX Major"] = """DX-Y.NYB UDN USDU FXE FXY FXB FXF FXA FXC CEW"""
-UNIVERSE["FX INR"] = """INR=X EURINR=X GBPINR=X JPYINR=X AUDINR=X NZDINR=X CADINR=X CHFINR=X CNYINR=X SGDINR=X HKDINR=X INRUSD=X BDT=X"""
-UNIVERSE["FX Asia EM"] = """CNY=X JPY=X KRW=X MXN=X BRL=X ZAR=X THB=X TWD=X MYR=X"""
-UNIVERSE["Style Factors"] = """VTV VUG MTUM USMV SPHB VYM"""
-UNIVERSE["REITs"] = """VNQ VNQI REET"""
-UNIVERSE["Commodity Baskets"] = """DBC GSG DBB DBA GLTR"""
-UNIVERSE["Thematic"] = """SMH RINF HYDR"""
+    bar = st.progress(0.0, text="Contacting data provider…")
 
-CLASS_COLORS = {
-    "US Equities": "#4f9cf9", "Intl Equities": "#7fb3ff", "Indices": "#9aa7ff",
-    "ETFs": "#38c7dc", "FX": "#5fd39a", "Rates": "#f2b544",
-    "Commodities": "#f2884b", "Crypto": "#b7a4f3", "Volatility": "#ff5d6c",
-    "US Treasuries": "#ffe5b4", "Yield Indices": "#ff9999",
-    "Inflation-Protected": "#bebada", "Aggregate Bonds": "#d4b8ff",
-    "Corporate IG": "#cce5ff", "High Yield": "#ffcccc",
-    "Structured": "#d4edda", "Municipals": "#fff3cd",
-    "Intl Govt Bonds": "#e2e3e5", "APAC Bonds": "#f8d7da",
-    "Equity Benchmarks": "#c3e6cb", "Regional Equity": "#d1ecf1",
-    "Country Indices": "#f5f5f5", "FX Major": "#e8e8e8",
-    "FX INR": "#e8e8e8", "FX Asia EM": "#e8e8e8",
-    "Style Factors": "#e8e8e8", "REITs": "#e8e8e8",
-    "Commodity Baskets": "#e8e8e8", "Thematic": "#e8e8e8",
-    "Energy/Commodity Equities": "#e8e8e8", "Sectors": "#e8e8e8",
-}
+    def report(done, total, msg):
+        bar.progress(min(done / max(total, 1), 1.0), text=msg)
 
-for cls, blob in list(UNIVERSE.items()):
-    if cls not in CLASS_COLORS:
-        CLASS_COLORS[cls] = "#888888"
+    try:
+        bundle = load_universe(symbols, cfg, target=target, progress=report)
+    finally:
+        bar.empty()
+    return bundle
 
-# ---- SYMBOLS construction and universe validation ----
-SYMBOLS, CLASSES = [], []
-for _cls, _blob in UNIVERSE.items():
-    for _s in _blob.split():
-        if _s and _s not in SYMBOLS:
-            SYMBOLS.append(_s); CLASSES.append(_cls)
-
-# Validate and clean symbols - remove known bad tickers
-BAD_SYMBOLS = {
-    # Delisted/merged tickers
-    'K', 'EM', 'MBT', 'BLSCHW', 'MRABBV',
-    # Duplicate/duplicate of existing entries already handled above
-    'CNH=X', 'USDCNH=X',
-    # Add any other known problematic tickers
-}
-
-cleaned_symbols = []
-for i, s in enumerate(SYMBOLS):
-    if s in BAD_SYMBOLS:
-        continue
-    # Additional validation: ticker format reasonable
-    if len(s) <= 10 and any(c.isalpha() for c in s):
-        cleaned_symbols.append(s)
-
-SYMBOLS = cleaned_symbols
-if len(SYMBOLS) < 10:
-    raise RuntimeError("No valid symbols found after filtering")
-
-N_ASSETS = len(SYMBOLS)
-# Rebuild CLASSES to match exact filter count
-CLASSES = [CLASSES[i] for i in range(len(SYMBOLS))]
-CLASS_OF = dict(zip(SYMBOLS, CLASSES))
-
-REGIME_META = {
-    "RISK-ON":   {"color": "#2fd08c", "icon": "▲"},
-    "TREND":     {"color": "#38c7dc", "icon": "↗"},
-    "MEAN-REV":  {"color": "#b7a4f3", "icon": "⇄"},
-    "HIGH-VOL":  {"color": "#f2b544", "icon": "≈"},
-    "RISK-OFF":  {"color": "#ff5d6c", "icon": "▼"},
-}
-
-# ----------------------------------------------------------------------------# ----------------------------------------------------------------------------
-# 2. THEME + CSS SHELL
-# ----------------------------------------------------------------------------
-CSS = """
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
-
-html, body, [class*="css"]  { font-family: 'IBM Plex Sans', sans-serif; }
-.stApp { background:
-  radial-gradient(1100px 700px at 88% -12%, rgba(56,132,255,.10), transparent 60%),
-  radial-gradient(900px 650px at -8% 108%, rgba(242,181,68,.07), transparent 55%),
-  radial-gradient(700px 500px at 55% 118%, rgba(63,216,201,.05), transparent 60%),
-  #0c1322; }
-.stApp::before { content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
-  background-image: linear-gradient(rgba(120,150,210,.045) 1px, transparent 1px),
-                    linear-gradient(90deg, rgba(120,150,210,.045) 1px, transparent 1px);
-  background-size: 44px 44px;
-  mask-image: radial-gradient(1200px 800px at 50% 0%, black 30%, transparent 85%); }
-.block-container { padding-top: 1.4rem; }
-div[data-testid="stVerticalBlock"] { position: relative; z-index: 1; }
-
-/* ---------- header ---------- */
-.fve-head { display:flex; align-items:flex-end; justify-content:space-between; gap:16px;
-  flex-wrap:wrap; margin-bottom:6px; }
-.fve-brand { font-family:'Space Grotesk'; font-weight:700; font-size:30px; letter-spacing:-.02em;
-  color:#eef3ff; line-height:1; }
-.fve-brand em { font-style:normal; color:#f2b544; }
-.fve-sub { font-family:'IBM Plex Mono'; font-size:11px; letter-spacing:.16em; color:#7f93b8;
-  text-transform:uppercase; margin-top:7px; }
-.fve-chips { display:flex; gap:8px; flex-wrap:wrap; }
-.chip { font-family:'IBM Plex Mono'; font-size:10.5px; letter-spacing:.08em; color:#a9bcdd;
-  border:1px solid rgba(140,165,215,.22); background:rgba(18,28,46,.7); padding:5px 10px;
-  border-radius:6px; display:inline-flex; align-items:center; gap:7px; transition:.25s; }
-.chip:hover { border-color:rgba(63,216,201,.5); color:#dff6f2; transform:translateY(-1px); }
-.dot { width:7px; height:7px; border-radius:50%; background:#2fd08c;
-  box-shadow:0 0 0 0 rgba(47,208,140,.6); animation:pulse 1.8s infinite; }
-@keyframes pulse { 70% { box-shadow:0 0 0 8px rgba(47,208,140,0);} 100% { box-shadow:0 0 0 0 rgba(47,208,140,0);} }
-
-/* ---------- ticker tape ---------- */
-.tape-wrap { overflow:hidden; border-top:1px solid rgba(140,165,215,.14);
-  border-bottom:1px solid rgba(140,165,215,.14); margin:12px 0 20px; padding:8px 0;
-  mask-image:linear-gradient(90deg, transparent, black 6%, black 94%, transparent); }
-.tape { display:inline-flex; gap:34px; white-space:nowrap; animation:tape 38s linear infinite;
-  font-family:'IBM Plex Mono'; font-size:12px; }
-.tape-wrap:hover .tape { animation-play-state:paused; }
-@keyframes tape { from{transform:translateX(0)} to{transform:translateX(-50%)} }
-.tape b { color:#c9d7f2; font-weight:500; } .tape .up{color:#2fd08c} .tape .dn{color:#ff5d6c}
-
-/* ---------- KPI cards ---------- */
-.kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:12px; }
-.kpi { background:linear-gradient(180deg, rgba(21,32,52,.92), rgba(15,23,39,.92));
-  border:1px solid rgba(140,165,215,.16); border-radius:10px; padding:14px 16px 13px;
-  transition:transform .22s, border-color .22s, box-shadow .22s; position:relative; overflow:hidden; }
-.kpi:hover { transform:translateY(-3px); border-color:rgba(63,216,201,.45);
-  box-shadow:0 10px 28px -14px rgba(63,216,201,.35); }
-.kpi .lab { font-family:'IBM Plex Mono'; font-size:9.5px; letter-spacing:.16em; color:#7f93b8;
-  text-transform:uppercase; margin-bottom:8px; }
-.kpi .val { font-family:'IBM Plex Mono'; font-size:27px; font-weight:600; color:#eef3ff;
-  line-height:1.05; }
-.kpi .aux { font-size:11.5px; margin-top:7px; color:#93a7c9; }
-.kpi .aux .up{color:#2fd08c; font-weight:600} .kpi .aux .dn{color:#ff5d6c; font-weight:600}
-.kpi .aux .amber{color:#f2b544; font-weight:600}
-.kpi.accent-amber { border-top:2px solid #f2b544; } .kpi.accent-cyan { border-top:2px solid #3fd8c9; }
-.kpi.accent-green { border-top:2px solid #2fd08c; } .kpi.accent-red { border-top:2px solid #ff5d6c; }
-.kpi.accent-blue { border-top:2px solid #4f9cf9; } .kpi.accent-violet { border-top:2px solid #b7a4f3; }
-.meter { height:5px; border-radius:3px; background:rgba(140,165,215,.15); margin-top:10px;
-  overflow:hidden; }
-.meter i { display:block; height:100%; border-radius:3px; transition:width .8s ease; }
-.pill { display:inline-block; font-family:'IBM Plex Mono'; font-size:11px; letter-spacing:.1em;
-  padding:4px 11px; border-radius:20px; font-weight:600; }
-
-/* ---------- section headers ---------- */
-.sec-kick { font-family:'IBM Plex Mono'; font-size:10px; letter-spacing:.22em; color:#f2b544;
-  text-transform:uppercase; }
-.sec-title { font-family:'Space Grotesk'; font-size:21px; font-weight:600; color:#eef3ff;
-  margin:2px 0 2px; letter-spacing:-.01em; }
-.sec-desc { font-size:12.5px; color:#8ba0c4; margin-bottom:8px; }
-
-/* ---------- streamlit chrome ---------- */
-[data-testid="stTabs"] [data-baseweb="tab-list"] { gap:6px; border-bottom:1px solid rgba(140,165,215,.18); }
-[data-testid="stTabs"] [data-baseweb="tab"] { background:transparent; border-radius:8px 8px 0 0;
-  padding:8px 16px; font-family:'Space Grotesk'; font-size:13px; color:#93a7c9; }
-[data-testid="stTabs"] [aria-selected="true"] { background:rgba(63,216,201,.08); color:#eef3ff !important;
-  box-shadow: inset 0 -2px 0 #3fd8c9; }
-.stButton > button { width:100%; background:linear-gradient(180deg,#17324e,#122档); }
-.stButton > button { background:linear-gradient(180deg, #17324e, #12253c); color:#dff6f2;
-  border:1px solid rgba(63,216,201,.4); border-radius:8px; font-family:'Space Grotesk';
-  font-weight:600; letter-spacing:.04em; transition:.25s; }
-.stButton > button:hover { border-color:#3fd8c9; box-shadow:0 0 18px -4px rgba(63,216,201,.5);
-  transform:translateY(-1px); color:#fff; }
-div[data-baseweb="select"] > div, .stTextInput input, .stTextArea textarea {
-  background:rgba(18,28,46,.85) !important; border-color:rgba(140,165,215,.25) !important; }
-[data-testid="stMetric"] { display:none; }
-footer { visibility:hidden; }
-</style>
-"""
-st.markdown(CSS, unsafe_allow_html=True)
-
-# ----------------------------------------------------------------------------
-# 3. PLOTTING HELPERS
-# ----------------------------------------------------------------------------
-AX = dict(gridcolor="rgba(140,165,215,.08)", zerolinecolor="rgba(140,165,215,.14)",
-          tickfont=dict(family="IBM Plex Mono", size=10, color="#8fa3c4"),
-          title_font=dict(family="IBM Plex Mono", size=10, color="#7f93b8"))
-def fig_base(fig, height=420, legend=True):
-    fig.update_layout(
-        template="plotly_dark", height=height,
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(13,20,35,.55)",
-        margin=dict(l=8, r=8, t=30, b=8), hoverlabel=dict(bgcolor="#101a2c",
-            bordercolor="rgba(63,216,201,.4)", font=dict(family="IBM Plex Mono", size=11)),
-        showlegend=legend, legend=dict(orientation="h", y=1.08, x=0,
-            font=dict(family="IBM Plex Mono", size=10, color="#a9bcdd")),
-        xaxis=dict(**AX), yaxis=dict(**AX))
-    return fig
-
-def fmt_px(v):
-    a = abs(v)
-    if a >= 10000: return f"{v:,.0f}"
-    if a >= 100:   return f"{v:,.2f}"
-    if a >= 1:     return f"{v:.3f}"
-    return f"{v:.5f}"
-
-# ----------------------------------------------------------------------------
-# 4. DATA LAYER
-# ----------------------------------------------------------------------------
-FACTOR_NAMES = ["MKT", "RATES", "INFL", "MOM", "USD", "CRY"]
-
-def _class_loadings(cls, sym, rng):
-    L = dict(zip(FACTOR_NAMES, [0.0]*6))
-    if cls in ("US Equities", "Intl Equities"):
-        L = dict(MKT=1.0, RATES=-0.25, INFL=0.10, MOM=0.35, USD=-0.10, CRY=0.0)
-        if sym in ("NVDA","TSLA","AMD","PLTR","COIN","CRWD","SNOW","MSTR","HOOD","RBLX"):
-            L["MKT"], L["MOM"], L["CRY"] = 1.45, 0.55, 0.25
-        if sym in ("XOM","CVX","COP","SLB","OXY"): L["INFL"] = 0.55
-        if cls == "Intl Equities": L["USD"] = -0.35
-    elif cls == "Indices":
-        L = dict(MKT=1.0, RATES=-0.15, INFL=0.05, MOM=0.30, USD=-0.15, CRY=0.0)
-    elif cls == "ETFs":
-        L = dict(MKT=0.9, RATES=-0.10, INFL=0.10, MOM=0.25, USD=-0.05, CRY=0.0)
-        if sym in ("TLT","IEF","AGG","BND"): L = dict(MKT=0.10, RATES=0.85, INFL=0.15, MOM=0.1, USD=0.0, CRY=0.0)
-        if sym in ("HYG","LQD","TIP"):       L = dict(MKT=0.35, RATES=0.60, INFL=0.20, MOM=0.1, USD=0.0, CRY=0.0)
-        if sym in ("GLD","SLV","GDX"):       L = dict(MKT=0.15, RATES=0.10, INFL=0.75, MOM=0.2, USD=-0.55, CRY=0.0)
-        if sym in ("USO","XLE"):             L = dict(MKT=0.30, RATES=0.0,  INFL=0.95, MOM=0.2, USD=-0.35, CRY=0.0)
-        if sym in ("VNQ","XLRE"):            L["RATES"] = 0.45
-        if sym in ("KWEB","FXI","EEM","VWO","EWJ","EFA"): L["USD"] = -0.40
-    elif cls == "FX":
-        usd_short = any(sym.startswith(p) for p in ("EUR","GBP","AUD","NZD"))
-        L = dict(MKT=0.10, RATES=0.20, INFL=0.05, MOM=0.15, USD=-0.90 if usd_short else 0.90, CRY=0.0)
-    elif cls == "Rates":
-        L = dict(MKT=-0.10, RATES=0.90, INFL=0.25, MOM=0.10, USD=0.05, CRY=0.0)
-    elif cls == "Commodities":
-        L = dict(MKT=0.20, RATES=0.05, INFL=0.85, MOM=0.20, USD=-0.40, CRY=0.0)
-    elif cls == "Crypto":
-        L = dict(MKT=0.45, RATES=-0.05, INFL=0.05, MOM=0.50, USD=-0.10, CRY=0.95)
-    elif cls == "Volatility":
-        L = dict(MKT=-1.25, RATES=-0.05, INFL=0.0, MOM=-0.20, USD=0.0, CRY=-0.05)
-    noise = rng.normal(0, 0.12, 6)
-    return np.array([L[k] for k in FACTOR_NAMES]) + noise
 
 @st.cache_data(show_spinner=False, max_entries=6)
-def simulate_universe(seed, n_days):
-    """Latent-factor DGP with a Markov regime chain — deterministic per seed."""
-    rng = np.random.default_rng(seed)
-    dates = pd.bdate_range(end="2026-07-31", periods=n_days)
-    n = N_ASSETS
-    # --- regime chain: 0 RISK-ON  1 TREND  2 MEAN-REV  3 HIGH-VOL  4 RISK-OFF
-    P = np.array([[.965,.015,.008,.008,.004],
-                  [.012,.965,.012,.007,.004],
-                  [.010,.014,.960,.010,.006],
-                  [.012,.008,.010,.950,.020],
-                  [.010,.004,.006,.025,.955]])
-    reg = np.zeros(n_days, dtype=int)
-    for t in range(1, n_days):
-        reg[t] = rng.choice(5, p=P[reg[t-1]])
-    # --- factor shocks (regime-dependent drift / vol)
-    mu = {  "MKT":  [.0009,.0003,.0000,.0000,-.0012],
-            "RATES":[.0001,.0001,-.0001,.0002,-.0003],
-            "INFL": [.0001,.0001,.0002,.0004,.0002],
-            "MOM":  [.0002,.0002,.0000,.0000,-.0004],
-            "USD":  [-.0001,.0000,.0001,.0002,.0004],
-            "CRY":  [.0020,.0005,.0000,.0005,-.0030]}
-    sd = {  "MKT":  [.0060,.0045,.0050,.0110,.0095],
-            "RATES":[.0030,.0025,.0030,.0050,.0045],
-            "INFL": [.0050,.0040,.0045,.0080,.0070],
-            "MOM":  [.0040,.0035,.0030,.0060,.0055],
-            "USD":  [.0030,.0025,.0025,.0045,.0040],
-            "CRY":  [.0220,.0160,.0140,.0300,.0260]}
-    F = np.column_stack([rng.normal(np.array(mu[k])[reg], np.array(sd[k])[reg]) for k in FACTOR_NAMES])
-    F[:, 3] = pd.Series(F[:, 3]).ewm(alpha=.12).mean().values          # momentum persistence
-    beta_mult = np.array([1.0, 1.0, 1.0, 1.35, 1.6])[reg]              # beta expansion in stress
-    idio_mult = np.array([0.85, 0.9, 1.0, 1.5, 1.35])[reg]
-    # --- per-asset structure
-    B = np.vstack([_class_loadings(CLASSES[i], SYMBOLS[i], rng) for i in range(n)])
-    idio_base = np.array([
-        {"US Equities":.011,"Intl Equities":.012,"Indices":.008,"ETFs":.009,"FX":.005,
-         "Rates":.004,"Commodities":.013,"Crypto":.028,"Volatility":.05}[c] for c in CLASSES])
-    alpha = rng.normal(0.0002, .0004, n)
-    R = alpha + (F @ B.T) * beta_mult[:, None] + rng.normal(0, 1, (n_days, n)) * (idio_base * idio_mult[:, None])
-    p0 = np.empty(n)
-    for i, (s, c) in enumerate(zip(SYMBOLS, CLASSES)):
-        if c == "Crypto":      p0[i] = np.exp(rng.uniform(np.log(.08), np.log(60000)))
-        elif c == "FX":        p0[i] = 150.0 if "JPY" in s else rng.uniform(.6, 1.7)
-        elif c == "Rates":     p0[i] = rng.uniform(.5, 5.0)
-        elif c == "Volatility":p0[i] = rng.uniform(12, 35)
-        elif c == "Indices":   p0[i] = rng.uniform(3000, 42000)
-        elif c == "Commodities":p0[i] = 2400.0 if "GC" in s else rng.uniform(18, 260)
-        else:                  p0[i] = np.exp(rng.uniform(np.log(25), np.log(700)))
-    prices = pd.DataFrame(p0 * np.exp(np.cumsum(R, 0)), index=dates, columns=SYMBOLS)
-    return prices, pd.Series(reg, index=dates)
+def calibrate(prices: pd.DataFrame, cfg_key: tuple, _cfg: EngineConfig):
+    """Calibrate, memoised on ``(prices, cfg_key)``.
 
-@st.cache_data(show_spinner=False, max_entries=2)
-def load_live_universe():
-    """Fetch the full live universe from Yahoo Finance with fallback for incompatible tickers."""
-    import yfinance as yf
-    import numpy as np
-    
-    # Try to get maximum available data
+    ``cfg_key`` is never read — it exists so the cache keys on the
+    configuration. The config itself is passed underscore-prefixed because
+    Streamlit cannot hash a dataclass, and would otherwise refuse the call.
+    """
+    bar = st.progress(0.0, text="Calibrating…")
+
+    def report(frac, msg):
+        bar.progress(frac, text=msg)
+
     try:
-        raw = yf.download(SYMBOLS, period="9y", auto_adjust=True, progress=False, threads=True)
-    except Exception as e:
-        st.warning(f"Yahoo Finance download error: {e}. Trying with reduced parameters...")
-        # Fallback with smaller chunk or different approach
-        try:
-            # Try without threading first
-            raw = yf.download(SYMBOLS, period="9y", auto_adjust=True, progress=False, threads=False)
-        except Exception as e2:
-            st.warning(f"Second attempt failed: {e2}. Trying with 5-year period...")
-            # Final fallback to shorter period
-            try:
-                raw = yf.download(SYMBOLS, period="5y", auto_adjust=True, progress=False, threads=False)
-            except Exception as e3:
-                st.error(f"All download attempts failed: {e3}")
-                raise RuntimeError(f"Could not download data from Yahoo Finance: {e3}")
-    
-    # Handle the data - check if we got valid data
-    if raw is None or len(raw) == 0:
-        raise RuntimeError("No data returned from Yahoo Finance")
-    
-    # Extract Close prices
-    if "Close" in getattr(getattr(raw, 'columns', None), 'get_level_values', lambda x: [])(0):
-        px = raw["Close"]
-    else:
-        px = raw
-    
-    # If we got a Series (single ticker), convert to DataFrame
-    if isinstance(px, pd.Series):
-        px = px.to_frame()
-    
-    # Forward fill and then drop columns with too many missing values
-    # Be more lenient: require at least 30% non-NaN values instead of 70%
-    px = px.ffill()
-    min_obs = max(10, int(0.3 * len(px)))  # At least 10 observations or 30% of data
-    px = px.dropna(axis=1, thresh=min_obs)
-    
-    # If we still have too few, be even more lenient
-    if px.shape[1] < 50:  # Aim for at least 50 tickers
-        min_obs = max(5, int(0.1 * len(px)))  # At least 5 observations or 10% of data
-        px = px.ffill().dropna(axis=1, thresh=min_obs)
-    
-    if px.shape[1] < 10:
-        raise RuntimeError(f"Only {px.shape[1]} tickers returned after filtering - insufficient data")
-    
-    return px
+        result = run_engine(prices, _cfg, progress=report)
+    finally:
+        bar.empty()
+    return result
 
-def get_prices():
-    """Fetch live prices via yfinance — no simulation fallback."""
-    prices = load_live_universe()
-    return prices, "LIVE"
 
-# ----------------------------------------------------------------------------
-# 5. STATISTICAL CORE
-# ----------------------------------------------------------------------------
-def rolling_zscore(df, w=63, minp=30):
-    mu = df.rolling(w, min_periods=minp).mean()
-    sd = df.rolling(w, min_periods=minp).std().replace(0, np.nan)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        return ((df - mu) / sd).fillna(0.0)
-
-def detect_regimes(rz, pc1):
-    """KMeans on market features → labelled regimes (data-driven, not the DGP's labels)."""
-    mkt = pc1.rolling(21).mean()
-    vol = pc1.rolling(21).std()
-    disp = rz.std(axis=1).rolling(21).mean()
-    X = pd.concat([mkt, vol, disp], axis=1).dropna()
-    Xs = StandardScaler().fit_transform(X)
-    km = KMeans(n_clusters=5, n_init=10, random_state=7).fit(Xs)
-    lab = pd.Series(km.labels_, index=X.index)
-    names = {}
-    stats_c = pd.DataFrame({c: [lab.eq(c).mean(),
-                                X.loc[lab.eq(c), X.columns[0]].mean(),
-                                X.loc[lab.eq(c), X.columns[1]].mean(),
-                                X.loc[lab.eq(c), X.columns[2]].mean()]
-                            for c in range(5)}, index=["share","ret","vol","disp"]).T
-    order_vol = stats_c["vol"].sort_values(ascending=False).index.tolist()
-    hv = order_vol[0]; names[hv] = "HIGH-VOL"
-    rest = [c for c in order_vol[1:]]
-    rets = stats_c.loc[rest, "ret"]
-    ro, ron = rets.idxmin(), rets.idxmax()
-    names[ro], names[ron] = "RISK-OFF", "RISK-ON"
-    mid = [c for c in rest if c not in (ro, ron)]
-    d0, d1 = stats_c.loc[mid, "disp"].sort_values(ascending=False).index.tolist()
-    names[d0], names[d1] = "MEAN-REV", "TREND"
-    full = pd.Series("TREND", index=rz.index)
-    full.loc[lab.index] = lab.map(names)
-    return full
-
-def fit_factor_model(Xw, method, ncomp):
-    # Preprocess: remove columns with all NaN or infinite values, then fill remaining
-    if Xw.size == 0:
-        # Return dummy model if no data
-        m = PCA(n_components=1, random_state=0)
-        S = np.zeros((Xw.shape[0], 1))
-        ev = np.array([1.0])
-        return m, S, ev
-    
-    # Replace infinite values with NaN then fill
-    Xw_clean = np.where(np.isinf(Xw), np.nan, Xw)
-    
-    # For each column, if all NaN, fill with zeros; otherwise fill column mean
-    with np.errstate(invalid='ignore', divide='ignore'):
-        col_means = np.nanmean(Xw_clean, axis=0)
-    inds = np.where(np.isnan(col_means))[0]
-    col_means[inds] = 0
-    inds = np.where(np.isnan(Xw_clean))
-    Xw_clean[inds] = np.take(col_means, inds[1])
-    
-    # Standardize to zero mean, unit variance (handle zero std)
-    Xc = Xw_clean - np.mean(Xw_clean, axis=0)
-    std_dev = np.std(Xc, axis=0)
-    # Avoid division by zero
-    std_dev = np.where(std_dev == 0, 1, std_dev)
-    Xc = Xc / std_dev
-    
-    if method == "PCA":
-        m = PCA(n_components=min(ncomp, Xc.shape[1]), random_state=0)
-    elif method == "FastICA":
-        m = FastICA(n_components=min(ncomp, Xc.shape[1]), random_state=0, max_iter=500)
-    else:
-        m = FactorAnalysis(n_components=min(ncomp, Xc.shape[1]), random_state=0)
-    
-    try:
-        S = m.fit_transform(Xc)
-    except:
-        # Fallback to PCA if factor model fails
-        m = PCA(n_components=min(1, Xc.shape[1]), random_state=0)
-        S = m.fit_transform(Xc)
-    
-    ev = (m.explained_variance_ratio_ if hasattr(m, "explained_variance_ratio_")
-          and m.explained_variance_ratio_ is not None and len(m.explained_variance_ratio_) == ncomp
-          else np.full(ncomp, np.nan))
-    return m, S, ev
-
-def run_engine(prices, target, method, ncomp, lookback, refit, peers_k, alpha,
-               decay, regime_weight, norm_win, bound, smooth, span, thr_q):
-    t0 = time.time()
-    status = st.status("Calibrating Fair Value Engine…", expanded=True)
-    def step(msg): status.write(f"▸ {msg}")
-
-    step(f"Preparing {prices.shape[1]}-instrument return matrix…")
-    # Compute log returns, handling invalid prices (<=0 or NaN) that would cause log issues
-    # Replace invalid prices with previous close to avoid log(0) or log(negative)
-    prices_clean = prices.copy()
-    # Forward fill then backward fill to handle missing values
-    prices_clean = prices_clean.ffill().bfill()
-    # Replace any remaining non-positive values with a small positive number to avoid log(0)
-    # Use pandas mask instead of np.where to preserve DataFrame structure
-    prices_clean = prices_clean.mask(prices_clean <= 0, 1e-8)
-    
-    # Compute log returns
-    rets = np.log(prices_clean).diff().fillna(0)
-    
-    # Also replace any infinite values that might have crept in
-    rets = rets.mask(np.isinf(rets), 0)
-    rz = rolling_zscore(rets)
-    others = [c for c in rets.columns if c != target]
-
-    step(f"Extracting {ncomp} latent factors ({method}) + classifying regimes…")
-    m0, S0, _ = fit_factor_model(rz[others].iloc[:lookback].values, method, ncomp)
-    pc1 = pd.Series(m0.transform(rz[others].values)[:, 0], index=rets.index)
-    regimes = detect_regimes(rz, pc1)
-
-    step("Walk-forward fair-value regression (regime-weighted)…")
-    T = len(rets)
-    yhat = np.full(T, np.nan)
-    chunk_regimes, chunk_r2, chunk_beta = [], [], []
-    last_model = None
-    t = lookback
-    while t < T:
-        w = slice(t - lookback, t)
-        Xw = rz[others].iloc[w].values
-        m, S, _ = fit_factor_model(Xw, method, ncomp)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            corr = rets[others].iloc[w].corrwith(rets[target].iloc[w]).fillna(0.0).abs()
-        peers = corr.sort_values(ascending=False).head(peers_k).index.tolist()
-        X = np.hstack([S, rz[peers].iloc[w].values])
-        y = rets[target].iloc[w].values
-        cur_reg = regimes.iloc[t - 1]
-        age = np.arange(lookback)[::-1]
-        wts = np.power(decay, age / 21.0)
-        if regime_weight:
-            wts = wts * np.where(regimes.iloc[w].values == cur_reg, 1.6, 0.7)
-        mdl = Ridge(alpha=alpha).fit(X, y, sample_weight=wts)
-        end = min(t + refit, T)
-        Xf = np.hstack([m.transform(rz[others].iloc[t:end].values),
-                        rz[peers].iloc[t:end].values])
-        yhat[t:end] = Xf @ mdl.coef_ + mdl.intercept_
-        in_r2 = mdl.score(X, y, sample_weight=wts)
-        chunk_regimes += [cur_reg] * (end - t)
-        chunk_r2 += [in_r2] * (end - t)
-        chunk_beta.append((mdl.coef_.copy(), peers, t))
-        last_model = (mdl, m, peers, w, in_r2)
-        t = end
-
-    step("Assembling fair value path, oscillator & diagnostics…")
-    price = prices[target]
-    start = lookback
-    fv = pd.Series(np.nan, index=rets.index)
-    fv.iloc[start:] = price.iloc[start] * np.exp(np.cumsum(yhat[start:] - rets[target].iloc[start]))
-    # fair value accumulates model-implied returns from the anchor price
-    impl = pd.Series(yhat, index=rets.index).fillna(0.0)
-    fv = price.iloc[start] * np.exp(impl.iloc[start:].cumsum())
-    mis = np.log(price / fv)                                   # log mispricing
-    mispct = (np.exp(mis) - 1) * 100
-    gap = price - fv
-
-    mu = mis.rolling(norm_win, min_periods=20).mean()
-    sd = mis.rolling(norm_win, min_periods=20).std().replace(0, np.nan)
-    z = ((mis - mu) / sd).fillna(0.0)
-    fvo_raw = 100 * np.tanh(z / bound)
-
-    if smooth == "EMA":
-        fvo_s = fvo_raw.ewm(span=span, min_periods=1).mean()
-        band = (fvo_raw - fvo_s).rolling(42, min_periods=10).std()
-    elif smooth == "Kalman":
-        q, r_ = 0.8, max(np.nanvar(np.diff(fvo_raw.values)), 1e-6) * span
-        x = fvo_raw.values.astype(float); out = np.zeros_like(x); P = np.zeros_like(x)
-        xv, Pv = x[0], 1.0
-        for i, v in enumerate(x):
-            Pv += q; K = Pv / (Pv + r_); xv += K * (v - xv); Pv *= (1 - K)
-            out[i], P[i] = xv, Pv
-        fvo_s = pd.Series(out, index=fvo_raw.index)
-        band = 1.96 * np.sqrt(P)
-    else:
-        fvo_s, band = fvo_raw.copy(), fvo_raw.rolling(42, min_periods=10).std()
-    band = pd.Series(band, index=fvo_raw.index).fillna(8)
-
-    ob = fvo_s.expanding(min_periods=60).quantile(1 - thr_q)
-    os_ = fvo_s.expanding(min_periods=60).quantile(thr_q)
-
-    # rolling fit & residual diagnostics
-    resid = rets[target] - pd.Series(yhat, index=rets.index)
-    r2 = (1 - resid.pow(2).rolling(63).mean() / rets[target].pow(2).rolling(63).mean()).clip(0, 1)
-    sigma_e = resid.rolling(42).std() * 100
-    std_res = (resid / resid.rolling(63).std()).fillna(0)
-    cus, brk, s = [], [], 0.0
-    for i, e in enumerate(std_res.values):
-        s = max(0.0, s + abs(e) - 0.5)
-        cus.append(s)
-        if s > 6: brk.append(i); s = 0.0
-        else: brk.append(np.nan)
-    cusum = pd.Series(cus, index=resid.index)
-
-    # confidence score
-    # Convert regime labels to numeric codes for rolling calculation
-    regime_codes = regimes.astype('category').cat.codes
-    reg_purity = regime_codes.rolling(21).apply(lambda x: (x == x.iloc[-1]).mean(), raw=False)
-    beta_drift = pd.Series(np.nan, index=rets.index)
-    prev = None
-    for coef, _, tidx in chunk_beta:
-        d = 0.0 if prev is None else float(np.mean(np.abs(coef - prev)))
-        beta_drift.iloc[tidx] = d; prev = coef
-    beta_drift = beta_drift.ffill().fillna(0)
-    stab = np.exp(-8 * beta_drift)
-    conf = (100 * (0.55 * r2.ffill().fillna(0) + 0.25 * reg_purity + 0.20 * stab)).clip(5, 99)
-
-    # OU half-life → mean-reversion probability
-    dmis = mis.diff(); lag = mis.shift(1)
-    df_ou = pd.concat([dmis, lag], axis=1).dropna()
-    theta = pd.Series(np.nan, index=mis.index)
-    vals = df_ou.values
-    for i in range(63, len(df_ou), 5):
-        yy, xx = vals[i-63:i, 0], vals[i-63:i, 1]
-        b = np.polyfit(xx, yy, 1)[0]
-        theta.iloc[df_ou.index.get_loc(df_ou.index[i])] = -b
-    theta = theta.ffill().clip(0.005, 0.6)
-    halflife = (np.log(2) / theta).clip(2, 120)
-    horizon = st.session_state.get("mr_horizon", 10)
-    p_mr = ((1 - np.exp(-theta * horizon)) *
-            (1 / (1 + np.exp(-(z.abs() - 1.2) / 0.6))) * (0.4 + 0.6 * conf / 100) * 100).clip(0, 99)
-
-    # signals & divergences
-    sig_dn = (fvo_s.shift(1) > os_.shift(1)) & (fvo_s <= os_)
-    sig_up = (fvo_s.shift(1) < ob.shift(1)) & (fvo_s >= ob)
-    phi, plo = price.rolling(20).max(), price.rolling(20).min()
-    fhi, flo = fvo_s.rolling(20).max(), fvo_s.rolling(20).min()
-    div_bear = (price >= phi.shift(1)) & (fvo_s < fhi.shift(1) - 6)
-    div_bull = (price <= plo.shift(1)) & (fvo_s > flo.shift(1) + 6)
-    for arr in (div_bear, div_bull):
-        idx = np.flatnonzero(arr.values); last = -30
-        for i in idx:
-            if i - last < 15: arr.iloc[i] = False
-            else: last = i
-
-    # explainability — exact linear attribution on the final window
-    mdl, m, peers, w, in_r2 = last_model
-    feat_names = [f"PC{i+1}" for i in range(ncomp)] + peers
-    Xlast = np.hstack([m.transform(rz[others].iloc[-63:].values), rz[peers].iloc[-63:].values])
-    ylast = rets[target].iloc[-63:].values
-    contrib = pd.DataFrame(Xlast * mdl.coef_, index=rets.index[-63:], columns=feat_names) * 1e4  # bp/day
-    base_r2 = mdl.score(Xlast, ylast)
-    rng_l = np.random.default_rng(1)
-    perm = {}
-    for j, name in enumerate(feat_names):
-        Xp = Xlast.copy(); Xp[:, j] = rng_l.permutation(Xp[:, j])
-        perm[name] = max(base_r2 - mdl.score(Xp, ylast), 0.0)
-    perm_imp = pd.Series(perm).sort_values(ascending=False)
-    factor_exp = pd.Series(mdl.coef_[:ncomp] * 1e4, index=feat_names[:ncomp])
-    comp_var = (m.explained_variance_ratio_ * 100) if hasattr(m, "explained_variance_ratio_") \
-               and m.explained_variance_ratio_ is not None else np.full(ncomp, np.nan)
-
-    # multi-timeframe oscillator
-    mtf = {}
-    for lab_, w_ in (("Intraday / 21d", 21), ("Swing / 63d", 63), ("Position / 126d", 126)):
-        zw = ((mis - mis.rolling(w_, min_periods=10).mean()) /
-              mis.rolling(w_, min_periods=10).std().replace(0, np.nan)).fillna(0)
-        mtf[lab_] = 100 * np.tanh(zw / bound)
-
-    status.update(label=f"Engine calibrated in {time.time()-t0:.1f}s", state="complete", expanded=False)
-    return dict(dates=rets.index, price=price, fv=fv, gap=gap, mis=mis, mispct=mispct,
-                z=z, fvo_raw=fvo_raw, fvo=fvo_s, band=band, ob=ob, os_=os_, r2=r2,
-                sigma_e=sigma_e, cusum=cusum, breaks=np.array(brk, dtype=float),
-                regimes=regimes, sig_dn=sig_dn, sig_up=sig_up, div_bear=div_bear,
-                div_bull=div_bull, conf=conf, p_mr=p_mr, halflife=halflife,
-                contrib=contrib, perm_imp=perm_imp, factor_exp=factor_exp,
-                comp_var=comp_var, mtf=mtf, rets=rets, peers=peers, in_r2=in_r2,
-                ncomp=ncomp, method=method, n_assets=prices.shape[1])
-
-# ----------------------------------------------------------------------------
-# 6. BACKTESTER
-# ----------------------------------------------------------------------------
-def backtest(E, allow_short, exit_lvl, max_hold):
-    fvo, ob, os_ = E["fvo"].values, E["ob"].values, E["os_"].values
-    r = E["rets"][ [c for c in E["rets"].columns if c == E["price"].name][0] ].values \
-        if E["price"].name in E["rets"].columns else E["rets"].iloc[:, 0].values
-    r = E["rets"].get(E["price"].name, E["rets"].iloc[:, 0]).values
-    T = len(fvo); pos, entry, held = 0, 0, 0
-    strat = np.zeros(T); trades = []
-    for t in range(T - 1):
-        strat[t + 1] = pos * r[t + 1]
-        if pos == 0:
-            if np.isfinite(os_[t]) and fvo[t] < os_[t]:
-                pos, entry, held = 1, t, 0
-            elif allow_short and np.isfinite(ob[t]) and fvo[t] > ob[t]:
-                pos, entry, held = -1, t, 0
-        else:
-            held += 1
-            exit_long = pos == 1 and (fvo[t] >= exit_lvl or held >= max_hold)
-            exit_shrt = pos == -1 and (fvo[t] <= -exit_lvl or held >= max_hold)
-            if exit_long or exit_shrt:
-                pr = E["price"].values
-                ret_t = pos * (np.log(pr[t]) - np.log(pr[entry]))
-                trades.append(dict(entry=E["dates"][entry].date(), exit=E["dates"][t].date(),
-                                   side="LONG" if pos == 1 else "SHORT", holds=held,
-                                   ret=100 * (np.exp(ret_t) - 1)))
-                pos = 0
-    eq = np.exp(np.nancumsum(strat)); bh = np.exp(np.nancumsum(np.nan_to_num(r)))
-    sd = np.std(strat[lookback_min:]) if (lookback_min := 60) < T else np.std(strat)
-    sharpe = np.mean(strat[60:]) / (sd + 1e-9) * np.sqrt(252)
-    tr = pd.DataFrame(trades)
-    stats_d = dict(n=len(tr), winrate=100 * (tr["ret"] > 0).mean() if len(tr) else np.nan,
-                   avg=tr["ret"].mean() if len(tr) else np.nan,
-                   best=tr["ret"].max() if len(tr) else np.nan,
-                   worst=tr["ret"].min() if len(tr) else np.nan,
-                   hold=tr["holds"].mean() if len(tr) else np.nan, sharpe=sharpe,
-                   cagr=100 * (eq[-1] ** (252 / max(T, 1)) - 1))
-    return pd.Series(eq, index=E["dates"]), pd.Series(bh, index=E["dates"]), tr, stats_d
-
-# ----------------------------------------------------------------------------
-# 7. UI — HEADER, SIDEBAR, KPIs
-# ----------------------------------------------------------------------------
-st.markdown("""
-<div class="fve-head">
-  <div>
-    <div class="fve-brand">FVE <em>//</em> FAIR VALUE ENGINE</div>
-    <div class="fve-sub">Market-relative valuation · cross-asset latent-state model · v2.4</div>
-  </div>
-  <div class="fve-chips">
-    <span class="chip"><span class="dot"></span>ENGINE LIVE</span>
-    <span class="chip">UNIVERSE&nbsp;<b style="color:#eef3ff">""" + str(N_ASSETS) + """</b>&nbsp;INSTRUMENTS</span>
-    <span class="chip">9 ASSET CLASSES</span>
-    <span class="chip">WALK-FORWARD · REGIME-AWARE</span>
-  </div>
-</div>""", unsafe_allow_html=True)
-
-# ---- sidebar ----
+# ---------------------------------------------------------------------------
+# Sidebar — controls
+# ---------------------------------------------------------------------------
 with st.sidebar:
-    st.markdown("<div class='sec-kick'>Engine Controls</div><div class='sec-title' style='font-size:17px'>Live Data Calibration</div>", unsafe_allow_html=True)
-    # Hierarchical asset selector: class → symbol
-    asset_classes = list(UNIVERSE.keys())
-    default_class = CLASS_OF.get("QQQ", asset_classes[0])
-    selected_class = st.selectbox("Asset Class", asset_classes, index=asset_classes.index(default_class))
-    symbols_in_class = UNIVERSE[selected_class].split()
-    default_symbol = "QQQ" if "QQQ" in symbols_in_class else symbols_in_class[0]
-    target = st.selectbox("Target Asset", symbols_in_class, index=symbols_in_class.index(default_symbol))
-    st.markdown("<div class='sec-kick' style='margin-top:14px'>Model</div>", unsafe_allow_html=True)
-    method = st.selectbox("Latent-factor method", ["PCA", "FastICA", "FactorAnalysis"])
-    ncomp = st.slider("Latent factors", 4, 16, 8)
-    lookback = st.select_slider("Calibration window (sessions)", [126, 189, 252, 378], 252)
-    refit = st.select_slider("Recalibration frequency (sessions)", [5, 10, 21, 42], 21)
-    peers_k = st.slider("Orthogonal peer instruments", 5, 30, 15)
-    alpha = st.select_slider("Ridge penalty λ", [0.1, 1.0, 10.0, 100.0], 10.0)
-    decay = st.select_slider("Sample half-life decay", [0.80, 0.88, 0.94, 1.0], 0.94,
-                            format_func=lambda x: "uniform" if x == 1.0 else f"{x}")
-    regime_weight = st.toggle("Regime-aware sample weighting", True)
-    st.markdown("<div class='sec-kick' style='margin-top:14px'>Oscillator</div>", unsafe_allow_html=True)
-    norm_win = st.select_slider("Adaptive normalization window", [21, 42, 63, 126], 63)
-    bound = st.select_slider("Saturation bound (z → ±100)", [1.5, 2.0, 2.5, 3.0], 2.5)
-    smooth = st.selectbox("Smoothing filter", ["Kalman", "EMA", "None"])
-    span = st.slider("Filter gain / span", 2, 21, 6)
-    thr_q = st.select_slider("Dynamic threshold quantile", [0.05, 0.08, 0.12, 0.18, 0.25], 0.12)
-    st.session_state["mr_horizon"] = st.slider("Mean-reversion horizon (sessions)", 1, 42, 10)
-    st.markdown("<div class='sec-kick' style='margin-top:14px'>Backtest</div>", unsafe_allow_html=True)
-    allow_short = st.toggle("Allow short signals", True)
-    exit_lvl = st.slider("Exit at FVO ≥", -40, 40, -10)
-    max_hold = st.slider("Max holding period (sessions)", 5, 60, 21)
-    st.markdown("---")
-    # Run Analysis button
-    if st.button("RUN ANALYSIS"):
-        st.session_state["run_id"] = st.session_state.get("run_id", 0) + 1
-        st.session_state["analyzing"] = True
-        st.rerun()
-    st.caption("Research tool – live data via yfinance. Not investment advice.")
+    st.markdown(theme.section("Engine Controls", "Configuration"), unsafe_allow_html=True)
 
-# ---- load + compute ----
-if st.session_state.get("analyzing", False):
-    prices, feed = get_prices()
-    if target not in prices.columns:
-        target = prices.columns[0]
-    run_id = st.session_state.get("run_id", 0)
+    with st.expander("◈  Data source", expanded=True):
+        n_core = len(symbols_for_tier("core"))
+        n_ext = len(symbols_for_tier("extended"))
+        tier = st.radio("Universe tier", [f"Core ({n_core})", f"Extended ({n_ext})"],
+                        horizontal=True,
+                        help="The explanatory cross-section the target is priced "
+                             "against. Extended gives the factor model more to work "
+                             "with but takes noticeably longer to download.")
+        tier_key = "core" if tier.startswith("Core") else "extended"
+        years = st.select_slider("History (years)", [3, 5, 8, 10], value=8)
+        synthetic = st.toggle(
+            "Demo mode — synthetic market", value=False,
+            help="Generates a reproducible factor-driven market offline. Useful "
+                 "when the data provider is unreachable, and as a control: the "
+                 "simulator contains no exploitable mispricing, so the engine "
+                 "should report roughly zero signal on it.")
+        if st.button("↻  Force refresh from provider"):
+            begin_force_refresh()
+            load_data.clear()
+            st.toast("Cache bypassed for this session — next run refetches live.")
 
-    with st.spinner("Loading live data and calibrating engine…"):
-        E = run_engine(prices, target, method, ncomp, lookback, refit, peers_k, alpha,
-                       decay, regime_weight, norm_win, bound, smooth, span, thr_q)
-else:
-    st.info("Click **RUN ANALYSIS** to fetch live data and run the engine.")
-    st.stop()
+    with st.expander("◈  Target asset", expanded=True):
+        # Asset class → target. Individual equities have no curated list: they
+        # are entered as a ticker and resolved against the provider, which is
+        # both open-ended and honest about what actually exists.
+        categories = target_categories(symbols_for_tier(tier_key))
+        cat_names = list(categories.keys())
 
-# ---- ticker tape ----
-proxies = {"SPY": "US EQ", "EFA": "INTL EQ", "TLT": "RATES", "GLD": "GOLD",
-           "CL=F": "WTI", "BTC-USD": "BTC", "EURUSD=X": "EUR/USD", "^VIX": "VIX",
-           "XLE": "ENERGY", "KWEB": "CHINA"}
-items = ""
-for s, lab in proxies.items():
-    if s in prices.columns and len(prices[s].dropna()) > 2:
-        chg = 100 * (prices[s].iloc[-1] / prices[s].iloc[-2] - 1)
-        cls = "up" if chg >= 0 else "dn"; arrow = "▲" if chg >= 0 else "▼"
-        items += f"<span><b>{lab}</b> <span class='{cls}'>{arrow} {chg:+.2f}%</span></span>"
-st.markdown(f'<div class="tape-wrap"><div class="tape">{items}{items}</div></div>',
-            unsafe_allow_html=True)
+        st.session_state.setdefault("target_category", "US Style/Factor ETFs")
+        if st.session_state["target_category"] not in cat_names:
+            st.session_state["target_category"] = cat_names[0]
+        sel_cat = st.selectbox("Asset class", cat_names, key="target_category")
 
-# ---- KPI console ----
-i = -1
-px_v, fv_v = E["price"].iloc[i], E["fv"].iloc[i]
-gap_v, mis_v = E["gap"].iloc[i], E["mispct"].iloc[i]
-fvo_v, z_v = E["fvo"].iloc[i], E["z"].iloc[i]
-reg_now = E["regimes"].iloc[i]
-rm = REGIME_META[reg_now]
-conf_v, pmr_v = E["conf"].iloc[i], E["p_mr"].iloc[i]
-sig_e = E["sigma_e"].iloc[i]
-verdict = "EXPENSIVE" if mis_v > 1 else ("CHEAP" if mis_v < -1 else "FAIRLY VALUED")
-v_col = "#ff5d6c" if mis_v > 1 else ("#2fd08c" if mis_v < -1 else "#f2b544")
-d1 = E["price"].iloc[-1] / E["price"].iloc[-2] - 1
-hl = E["halflife"].iloc[i]
+        target: str | None = None
+        target_label = ""
 
-fvo_pos = float(np.clip((fvo_v + 100) / 200 * 100, 0, 100))
-kpi_html = f"""
-<div class="kpis">
-  <div class="kpi accent-blue"><div class="lab">{target} · Market Price · {CLASS_OF[target]}</div>
-    <div class="val">{fmt_px(px_v)}</div>
-    <div class="aux"><span class="{'up' if d1>=0 else 'dn'}">{'▲' if d1>=0 else '▼'} {100*d1:+.2f}%</span> 1D · feed {feed}</div></div>
-  <div class="kpi accent-amber"><div class="lab">Model Fair Value</div>
-    <div class="val" style="color:#f2b544">{fmt_px(fv_v)}</div>
-    <div class="aux">implied by {E['n_assets']-1}-instrument state · {E['method']}×{E['ncomp']}F</div></div>
-  <div class="kpi accent-{'red' if gap_v>0 else 'green'}"><div class="lab">Fair Value Gap</div>
-    <div class="val" style="color:{'#ff5d6c' if gap_v>0 else '#2fd08c'}">{('+' if gap_v>0 else '')+fmt_px(gap_v)}</div>
-    <div class="aux"><span class="amber">{mis_v:+.2f}%</span> mispricing · <b style="color:{v_col}">{verdict}</b></div></div>
-  <div class="kpi accent-cyan"><div class="lab">Fair Value Oscillator</div>
-    <div class="val" style="color:#3fd8c9">{fvo_v:+.1f}</div>
-    <div class="meter"><i style="width:{fvo_pos:.0f}%;background:linear-gradient(90deg,#2fd08c,#f2b544,#ff5d6c)"></i></div>
-    <div class="aux">z = {z_v:+.2f}σ · adaptive · bounded ±100</div></div>
-</div>
-<div class="kpis">
-  <div class="kpi" style="border-top:2px solid {rm['color']}"><div class="lab">Market Regime</div>
-    <div class="val" style="font-size:20px"><span class="pill" style="color:{rm['color']};border:1px solid {rm['color']}66;background:{rm['color']}1a">{rm['icon']} {reg_now}</span></div>
-    <div class="aux">data-driven cluster · 5-state</div></div>
-  <div class="kpi accent-green"><div class="lab">Confidence Score</div>
-    <div class="val">{conf_v:.0f}<span style="font-size:14px;color:#7f93b8">/100</span></div>
-    <div class="meter"><i style="width:{conf_v:.0f}%;background:#2fd08c"></i></div>
-    <div class="aux">fit {E['r2'].iloc[i]:.2f} R² · regime purity-weighted</div></div>
-  <div class="kpi accent-violet"><div class="lab">Mean-Reversion P({st.session_state['mr_horizon']}d)</div>
-    <div class="val">{pmr_v:.0f}%</div>
-    <div class="meter"><i style="width:{pmr_v:.0f}%;background:#b7a4f3"></i></div>
-    <div class="aux">OU half-life ≈ {hl:.0f} sessions</div></div>
-  <div class="kpi accent-red"><div class="lab">Residual Risk</div>
-    <div class="val">{sig_e:.2f}<span style="font-size:14px;color:#7f93b8">%/d</span></div>
-    <div class="aux">unexplained idiosyncratic vol · 42d</div></div>
-</div>"""
-st.markdown(kpi_html, unsafe_allow_html=True)
+        if sel_cat in FREEFORM_MARKETS:
+            market = FREEFORM_MARKETS[sel_cat]
+            meta = MARKET_HINTS[market]
+            raw_symbol = st.text_input(
+                "Ticker symbol", key=f"symbol_{market}",
+                placeholder=meta["placeholder"],
+                help="Any listed equity. The symbol is resolved against Yahoo "
+                     "Finance before the engine will run.")
+            if raw_symbol and raw_symbol.strip():
+                if synthetic:
+                    # No provider to probe in demo mode — accept the symbol and
+                    # simulate a series for it.
+                    target = raw_symbol.strip().upper()
+                    target_label = f"{target} · simulated"
+                    st.caption(f"Demo mode — **{target}** will be simulated.")
+                else:
+                    with st.spinner("Resolving symbol…"):
+                        ticker, exchange = resolve_symbol(raw_symbol, market, years)
+                    if ticker is None:
+                        st.error(exchange)
+                    else:
+                        target = ticker
+                        target_label = f"{ticker} · {exchange}"
+                        st.caption(f"**{raw_symbol.strip().upper()} → {ticker}** · "
+                                   f"{exchange}")
+            else:
+                st.caption(meta["hint"])
+        else:
+            options = categories[sel_cat]
+            if st.session_state.get("target_select") not in options:
+                st.session_state["target_select"] = (
+                    "QQQ" if "QQQ" in options else options[0])
+            target = st.selectbox("Target", options, key="target_select")
+            target_label = f"{target} · {CLASS_OF.get(target, '')}"
 
-# ----------------------------------------------------------------------------
-# 8. TABS
-# ----------------------------------------------------------------------------
-tab_val, tab_osc, tab_drv, tab_reg, tab_bt, tab_mtf = st.tabs(
-    ["◈ Valuation", "◈ Oscillator Lab", "◈ Drivers & Explainability",
-     "◈ Regime & Stability", "◈ Signal Backtest", "◈ Multi-Timeframe"])
+    with st.expander("◈  Factor model", expanded=False):
+        method = st.selectbox("Latent factor method",
+                              ["PCA", "ICA", "FactorAnalysis", "Autoencoder"],
+                              help="PCA maximises explained variance; ICA seeks "
+                                   "statistically independent drivers; "
+                                   "FactorAnalysis models idiosyncratic noise "
+                                   "explicitly; Autoencoder allows non-linear "
+                                   "compression.")
+        n_factors = st.slider("Latent factors", 3, 20, 8)
+        n_peers = st.slider("Orthogonal peers", 0, 30, 12,
+                            help="Instruments still correlated with the target "
+                                 "*after* the common factors are removed.")
+        exclude_corr = st.slider("Drop instruments correlated above", 0.80, 1.0, 0.99, 0.01,
+                                 help="Guards against near-perfect proxies. With "
+                                      "an index proxy in the explanatory set, fair "
+                                      "value collapses onto price and the "
+                                      "oscillator becomes noise.")
+        exclude_class = st.toggle("Exclude the target's own asset class", False)
 
-D = E["dates"]
-regime_spans = []
-prev_r, start_i = E["regimes"].iloc[0], 0
-for k in range(1, len(E["regimes"])):
-    if E["regimes"].iloc[k] != prev_r:
-        regime_spans.append((D[start_i], D[k], prev_r)); prev_r, start_i = E["regimes"].iloc[k], k
-regime_spans.append((D[start_i], D[-1], prev_r))
+    with st.expander("◈  Calibration", expanded=False):
+        lookback = st.select_slider("Calibration window (sessions)",
+                                    [126, 189, 252, 378, 504], value=252)
+        refit = st.select_slider("Recalibration interval (sessions)",
+                                 [5, 10, 21, 42, 63], value=21)
+        auto_alpha = st.toggle("Auto-select ridge penalty (GCV)", True)
+        ridge_alpha = st.select_slider("Ridge penalty λ", [0.1, 1.0, 10.0, 100.0, 1000.0],
+                                       value=10.0, disabled=auto_alpha)
+        halflife = st.select_slider("Sample weight half-life (sessions)",
+                                    [0, 21, 42, 63, 126, 252], value=63,
+                                    format_func=lambda x: "uniform" if x == 0 else str(x))
+        regime_weighting = st.toggle("Regime-aware sample weighting", True,
+                                     help="Up-weights history recorded in the same "
+                                          "regime as today.")
 
-def paint_regimes(fig, row=1, alpha_=0.07):
-    for a, b, r in regime_spans[-40:]:
-        fig.add_vrect(x0=a, x1=b, fillcolor=REGIME_META[r]["color"], opacity=alpha_,
-                      layer="below", line_width=0, row=row, col=1)
+    with st.expander("◈  Oscillator", expanded=False):
+        fv_horizon = st.select_slider("Fair value anchor horizon H (sessions)",
+                                      [10, 21, 42, 63, 126], value=63,
+                                      help="Mispricing is the target's cumulative "
+                                           "excess return versus the market-implied "
+                                           "path over the last H sessions.")
+        norm_window = st.select_slider("Adaptive normalisation window",
+                                       [42, 63, 126, 252], value=126)
+        robust_norm = st.toggle("Robust normalisation (median / MAD)", True)
+        saturation = st.select_slider("Saturation κ", [1.5, 2.0, 2.5, 3.0, 4.0], value=2.5)
+        smoothing = st.selectbox("Smoothing filter", ["Kalman", "EMA", "None"])
+        smooth_span = st.slider("Filter span / gain", 2, 21, 6)
+        threshold_q = st.select_slider("Dynamic threshold quantile",
+                                       [0.05, 0.08, 0.12, 0.18, 0.25], value=0.12)
+        mr_horizon = st.slider("Mean-reversion horizon (sessions)", 1, 42, 10)
 
-# ---------------- TAB 1 · VALUATION ----------------
-with tab_val:
-    st.markdown("<div class='sec-kick'>Core Output</div><div class='sec-title'>Price vs. Model-Implied Fair Value</div>"
-                "<div class='sec-desc'>Fair value is the price path implied by the full market state "
-                "(latent factors + orthogonal peers). Bands are ±1σ model uncertainty; markers flag "
-                "statistically significant oscillator crossings and price/oscillator divergences.</div>",
+    with st.expander("◈  Signal backtest", expanded=False):
+        allow_short = st.toggle("Allow short signals", True)
+        exit_level = st.slider("Exit when |FVO| falls below", 0, 60, 10)
+        max_hold = st.slider("Maximum holding period (sessions)", 5, 90, 21)
+        cost_bps = st.slider("Cost per side (bp)", 0.0, 20.0, 2.0, 0.5)
+        size_by_conf = st.toggle("Size positions by confidence", False)
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    run_clicked = st.button("▶  RUN ANALYSIS", type="primary", disabled=target is None)
+    if target is None:
+        st.caption("Choose or enter a target asset to enable the run.")
+    st.caption("Research tool. Market data via Yahoo Finance. "
+               "Not investment advice.")
+
+# ---------------------------------------------------------------------------
+# Staged configuration
+#
+# Nothing below executes off the live widgets. Selections are assembled into a
+# pending configuration and only committed when RUN ANALYSIS is pressed.
+# Streamlit reruns the whole script on every widget interaction, so binding the
+# engine directly to the widgets would kick off a multi-minute download and a
+# full recalibration each time the user touched a control — including while
+# they were still part-way through choosing one.
+# ---------------------------------------------------------------------------
+pending_engine = EngineConfig(
+    target=target or "", tier=tier_key, method=method, n_factors=n_factors,
+    lookback=lookback, refit_every=refit, n_peers=n_peers,
+    ridge_alpha=ridge_alpha, auto_alpha=auto_alpha, halflife_days=float(halflife),
+    regime_weighting=regime_weighting, exclude_corr_above=exclude_corr,
+    exclude_same_class=exclude_class, fv_horizon=fv_horizon,
+    norm_window=norm_window, robust_norm=robust_norm, saturation=saturation,
+    smoothing=smoothing, smooth_span=smooth_span, threshold_q=threshold_q,
+    mr_horizon=mr_horizon,
+)
+pending_bt = BacktestConfig(allow_short=allow_short, exit_level=float(exit_level),
+                            max_hold=max_hold, cost_bps=cost_bps,
+                            size_by_confidence=size_by_conf)
+pending_sig = (tier_key, years, synthetic, target, pending_engine.key(),
+               tuple(sorted(asdict(pending_bt).items())))
+
+if run_clicked and target is not None:
+    st.session_state["active"] = dict(
+        engine=pending_engine, bt=pending_bt, tier=tier_key, years=years,
+        synthetic=synthetic, target=target, label=target_label, sig=pending_sig)
+
+active = st.session_state.get("active")
+
+# ---------------------------------------------------------------------------
+# Landing state
+# ---------------------------------------------------------------------------
+if active is None:
+    st.markdown(theme.header(len(symbols_for_tier(tier_key)), len(UNIVERSE),
+                             "STANDBY", pd.Timestamp.today(), __version__),
                 unsafe_allow_html=True)
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.62, 0.38],
-                        vertical_spacing=0.05, subplot_titles=("", "FAIR VALUE OSCILLATOR"))
-    paint_regimes(fig, 1)
-    fv_lo = E["fv"] * np.exp(-E["sigma_e"] / 100 * np.sqrt(norm_win))
-    fv_hi = E["fv"] * np.exp(E["sigma_e"] / 100 * np.sqrt(norm_win))
-    fig.add_trace(go.Scatter(x=D, y=fv_hi, line=dict(width=0), showlegend=False, hoverinfo="skip"), 1, 1)
-    fig.add_trace(go.Scatter(x=D, y=fv_lo, fill="tonexty", fillcolor="rgba(242,181,68,.10)",
-                             line=dict(width=0), name="±1σ FV band"), 1, 1)
-    fig.add_trace(go.Scatter(x=D, y=E["price"], name=target, line=dict(color="#e8eefc", width=1.6)), 1, 1)
-    fig.add_trace(go.Scatter(x=D, y=E["fv"], name="Fair Value", line=dict(color="#f2b544", width=1.6, dash="dot")), 1, 1)
-    sd_ = E["sig_dn"]; su_ = E["sig_up"]
-    fig.add_trace(go.Scatter(x=D[sd_], y=E["price"][sd_], mode="markers", name="undervalued entry",
-                             marker=dict(symbol="triangle-up", size=11, color="#2fd08c",
-                                         line=dict(color="#0c1322", width=1))), 1, 1)
-    fig.add_trace(go.Scatter(x=D[su_], y=E["price"][su_], mode="markers", name="overvalued entry",
-                             marker=dict(symbol="triangle-down", size=11, color="#ff5d6c",
-                                         line=dict(color="#0c1322", width=1))), 1, 1)
-    db, du = E["div_bear"], E["div_bull"]
-    fig.add_trace(go.Scatter(x=D[db], y=E["price"][db], mode="markers", name="bearish divergence",
-                             marker=dict(symbol="diamond", size=9, color="#ff5d6c", opacity=.85)), 1, 1)
-    fig.add_trace(go.Scatter(x=D[du], y=E["price"][du], mode="markers", name="bullish divergence",
-                             marker=dict(symbol="diamond", size=9, color="#2fd08c", opacity=.85)), 1, 1)
-    # oscillator pane
-    fig.add_trace(go.Scatter(x=D, y=E["ob"], line=dict(color="rgba(255,93,108,.55)", width=1, dash="dash"),
-                             name="dynamic OB"), 2, 1)
-    fig.add_trace(go.Scatter(x=D, y=E["os_"], line=dict(color="rgba(47,208,140,.55)", width=1, dash="dash"),
-                             name="dynamic OS"), 2, 1)
-    fig.add_trace(go.Scatter(x=D, y=np.zeros(len(D)), line=dict(color="rgba(140,165,215,.35)", width=1),
-                             name="fair-value centerline"), 2, 1)
-    fig.add_trace(go.Scatter(x=D, y=E["fvo"] + E["band"], line=dict(width=0), showlegend=False, hoverinfo="skip"), 2, 1)
-    fig.add_trace(go.Scatter(x=D, y=E["fvo"] - E["band"], fill="tonexty", fillcolor="rgba(63,216,201,.10)",
-                             line=dict(width=0), name="confidence band"), 2, 1)
-    fig.add_trace(go.Scatter(x=D, y=E["fvo_raw"], line=dict(color="rgba(63,216,201,.28)", width=1),
-                             name="raw FVO"), 2, 1)
-    fig.add_trace(go.Scatter(x=D, y=E["fvo"], line=dict(color="#3fd8c9", width=2), name="FVO (smoothed)"), 2, 1)
-    fig.add_trace(go.Scatter(x=D[sd_], y=E["fvo"][sd_], mode="markers", showlegend=False,
-                             marker=dict(color="#2fd08c", size=8)), 2, 1)
-    fig.add_trace(go.Scatter(x=D[su_], y=E["fvo"][su_], mode="markers", showlegend=False,
-                             marker=dict(color="#ff5d6c", size=8)), 2, 1)
-    fig.update_yaxes(title_text="price", row=1, col=1, **AX)
-    fig.update_yaxes(title_text="FVO", range=[-105, 105], row=2, col=1, **AX)
-    fig.update_layout(annotations=[dict(text="FAIR VALUE OSCILLATOR · 0 = fairly valued", x=0, y=0.365,
-        xref="paper", yref="paper", showarrow=False, font=dict(family="IBM Plex Mono", size=9, color="#7f93b8"))])
-    st.plotly_chart(fig_base(fig, 640), width="stretch")
-
-    c1, c2 = st.columns([3, 2])
-    with c1:
-        fig2 = go.Figure(go.Bar(x=D, y=E["mispct"], marker_color=np.where(E["mispct"] >= 0, "#ff5d6c", "#2fd08c"), opacity=.8))
-        fig2.add_hline(y=0, line_color="rgba(140,165,215,.3)")
-        fig2.update_layout(title=dict(text="FAIR VALUE GAP (% of price)", font=dict(family="IBM Plex Mono", size=10, color="#7f93b8")))
-        st.plotly_chart(fig_base(fig2, 240), width="stretch")
-    with c2:
-        fig3 = go.Figure(go.Histogram(x=E["mispct"].dropna(), nbinsx=60,
-                                      marker_color="rgba(63,216,201,.55)"))
-        fig3.add_vline(x=mis_v, line_color="#f2b544", line_width=2,
-                       annotation_text=f"now {mis_v:+.2f}%", annotation_font_color="#f2b544")
-        fig3.update_layout(title=dict(text="MISPRICING DISTRIBUTION", font=dict(family="IBM Plex Mono", size=10, color="#7f93b8")))
-        st.plotly_chart(fig_base(fig3, 240), width="stretch")
-
-# ---------------- TAB 2 · OSCILLATOR LAB ----------------
-with tab_osc:
-    st.markdown("<div class='sec-kick'>Signal Anatomy</div><div class='sec-title'>Oscillator Lab</div>"
-                "<div class='sec-desc'>Adaptive normalization keeps readings comparable across volatility regimes; "
-                "thresholds are historical quantiles of the smoothed oscillator, not fixed levels.</div>",
-                unsafe_allow_html=True)
-    c1, c2 = st.columns([3, 2])
-    with c1:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=D, y=E["fvo_raw"], name="raw", line=dict(color="rgba(63,216,201,.3)", width=1)))
-        fig.add_trace(go.Scatter(x=D, y=E["fvo"], name=f"smoothed ({smooth})", line=dict(color="#3fd8c9", width=2)))
-        fig.add_trace(go.Scatter(x=D, y=E["ob"], name="OB quantile", line=dict(color="rgba(255,93,108,.6)", width=1, dash="dash")))
-        fig.add_trace(go.Scatter(x=D, y=E["os_"], name="OS quantile", line=dict(color="rgba(47,208,140,.6)", width=1, dash="dash")))
-        fig.add_hline(y=0, line_color="rgba(140,165,215,.35)")
-        st.plotly_chart(fig_base(fig, 360), width="stretch")
-    with c2:
-        cur = E["fvo"].dropna()
-        fig = go.Figure(go.Histogram(x=cur, nbinsx=55, marker_color="rgba(183,164,243,.6)"))
-        fig.add_vline(x=cur.quantile(1 - thr_q), line_dash="dash", line_color="#ff5d6c")
-        fig.add_vline(x=cur.quantile(thr_q), line_dash="dash", line_color="#2fd08c")
-        fig.add_vline(x=fvo_v, line_color="#f2b544", line_width=2, annotation_text=f"now {fvo_v:+.0f}")
-        fig.update_layout(title=dict(text="FVO EMPIRICAL DISTRIBUTION + DYNAMIC THRESHOLDS",
-                                     font=dict(family="IBM Plex Mono", size=10, color="#7f93b8")))
-        st.plotly_chart(fig_base(fig, 360), width="stretch")
+    st.markdown(theme.section(
+        "Getting started", "A market-relative valuation model",
+        "The engine prices one asset against the state of everything else. Each "
+        "session, the cross-section of 200+ instruments is compressed into latent "
+        "factors plus the orthogonal peers that still matter once those factors are "
+        "removed; a walk-forward, regime-weighted ridge regression maps that market "
+        "state onto the target's return. Fair value is the price path that state "
+        "implies, and the Fair Value Oscillator is the normalised deviation from it."
+    ), unsafe_allow_html=True)
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=D, y=E["z"], name="mispricing z", line=dict(color="#f2b544", width=1.6)))
-        fig.add_hrect(y0=1, y1=3, fillcolor="rgba(255,93,108,.08)", line_width=0)
-        fig.add_hrect(y0=-3, y1=-1, fillcolor="rgba(47,208,140,.08)", line_width=0)
-        st.plotly_chart(fig_base(fig, 260), width="stretch")
-        st.caption("**Adaptive z-score** of log(P/FV) — the pre-saturation signal.")
+        st.markdown(theme.kpi("Selected target", target or "— none —",
+                              target_label or "enter a ticker or pick from the list",
+                              accent="cyan"), unsafe_allow_html=True)
     with c2:
-        pctl = float((cur < fvo_v).mean() * 100)
-        fig = go.Figure(go.Indicator(mode="gauge+number", value=float(fvo_v),
-                number=dict(font=dict(family="IBM Plex Mono", size=34, color="#3fd8c9")),
-                gauge=dict(axis=dict(range=[-100, 100], tickfont=dict(color="#8fa3c4", size=9)),
-                           bar=dict(color="#3fd8c9"), bgcolor="rgba(13,20,35,.6)",
-                           borderwidth=1, bordercolor="rgba(140,165,215,.25)",
-                           steps=[dict(range=[-100, float(cur.quantile(thr_q))], color="rgba(47,208,140,.12)"),
-                                  dict(range=[float(cur.quantile(1-thr_q)), 100], color="rgba(255,93,108,.12)")],
-                           threshold=dict(line=dict(color="#f2b544", width=2), thickness=.75, value=float(fvo_v)))))
-        fig.update_layout(height=260, margin=dict(t=30, b=0), paper_bgcolor="rgba(0,0,0,0)")
-        st.plotly_chart(fig, width="stretch")
-        st.caption(f"Current reading sits at the **{pctl:.0f}th percentile** of history.")
+        st.markdown(theme.kpi("Explanatory universe", f"{len(symbols_for_tier(tier_key))}",
+                              f"{len(UNIVERSE)} asset classes · {years}y history",
+                              accent="blue"), unsafe_allow_html=True)
     with c3:
-        n_bear, n_bull = int(db.sum()), int(du.sum())
-        st.markdown(f"""
-        <div class="kpi accent-red" style="margin-bottom:10px"><div class="lab">Bearish Divergences (12m)</div>
-        <div class="val">{n_bear}</div><div class="aux">price new-high, FVO failing to confirm</div></div>
-        <div class="kpi accent-green"><div class="lab">Bullish Divergences (12m)</div>
-        <div class="val">{n_bull}</div><div class="aux">price new-low, FVO refusing to follow</div></div>
-        <div class="kpi accent-violet" style="margin-top:10px"><div class="lab">OU Mean-Reversion Half-Life</div>
-        <div class="val">{hl:.0f}d</div><div class="aux">speed at which mispricing historically decays</div></div>
-        """, unsafe_allow_html=True)
+        st.markdown(theme.kpi("Model", f"{method} × {n_factors}",
+                              f"{lookback}d window · refit every {refit}d",
+                              accent="amber"), unsafe_allow_html=True)
 
-# ---------------- TAB 3 · DRIVERS ----------------
-with tab_drv:
-    st.markdown("<div class='sec-kick'>Explainability</div><div class='sec-title'>What Is Driving Fair Value Today?</div>"
-                "<div class='sec-desc'>The fair-value regression is linear, so attributions are exact: "
-                "βⱼ·xⱼ decomposes the model-implied return into factor and peer contributions (bp/day).</div>",
-                unsafe_allow_html=True)
-    c1, c2 = st.columns(2)
-    contrib_last = E["contrib"].iloc[-1].sort_values(key=abs, ascending=False)
-    with c1:
-        top = contrib_last.head(14)
-        fig = go.Figure(go.Bar(x=top.values, y=top.index, orientation="h",
-                               marker_color=["#2fd08c" if v < 0 else "#ff5d6c" for v in top.values]))
-        fig.update_layout(title=dict(text="TOP CONTRIBUTORS TO IMPLIED RETURN (bp/day) — green pulls FV down (cheap), red up",
-                                     font=dict(family="IBM Plex Mono", size=9, color="#7f93b8")), yaxis=dict(autorange="reversed", **AX))
-        st.plotly_chart(fig_base(fig, 380), width="stretch")
-    with c2:
-        cls_agg = E["contrib"].iloc[-1].groupby(
-            [CLASS_OF.get(c, "Latent Factor") for c in E["contrib"].columns]).sum()
-        cls_agg = cls_agg.reindex(cls_agg.abs().sort_values(ascending=False).index)
-        fig = go.Figure(go.Bar(x=cls_agg.values, y=cls_agg.index, orientation="h",
-                               marker_color=[CLASS_COLORS.get(i, "#3fd8c9") for i in cls_agg.index]))
-        fig.update_layout(title=dict(text="CONTRIBUTION BY ASSET CLASS (bp/day)",
-                                     font=dict(family="IBM Plex Mono", size=9, color="#7f93b8")), yaxis=dict(autorange="reversed", **AX))
-        st.plotly_chart(fig_base(fig, 200), width="stretch")
-        fe = E["factor_exp"]
-        fig = go.Figure(go.Bar(x=fe.index, y=fe.values,
-                               marker_color=["#f2b544" if v >= 0 else "#4f9cf9" for v in fe.values]))
-        fig.update_layout(title=dict(text="LATENT FACTOR EXPOSURES (bp/day per σ)",
-                                     font=dict(family="IBM Plex Mono", size=9, color="#7f93b8")), **{"xaxis": dict(**AX)})
-        st.plotly_chart(fig_base(fig, 168), width="stretch")
+    st.markdown(
+        "<div class='note'>Configure the target and model, then press "
+        "<b>RUN ANALYSIS</b>. Nothing is fetched or calibrated until you do. The "
+        "first live download of a few hundred instruments takes several minutes; "
+        "it is cached to disk, so later runs start immediately and only a changed "
+        "universe or history length triggers a refetch. Switch on <b>Demo mode</b> "
+        "for an instant offline run against a synthetic market.</div>",
+        unsafe_allow_html=True)
+    st.stop()
 
-    heat_cols = contrib_last.abs().head(14).index.tolist()
-    fig = go.Figure(go.Heatmap(
-        z=E["contrib"][heat_cols].T.values, x=D[-40:], y=heat_cols,
-        colorscale=[[0, "#2fd08c"], [0.5, "#101a2c"], [1, "#ff5d6c"]], zmid=0,
-        colorbar=dict(title=dict(text="bp/d", font=dict(size=9, color="#8fa3c4")),
-                      tickfont=dict(size=9, color="#8fa3c4"), thickness=10)))
-    fig.update_layout(title=dict(text="CONTRIBUTION HEATMAP · LAST 40 SESSIONS",
-                                 font=dict(family="IBM Plex Mono", size=10, color="#7f93b8")),
-                      yaxis=dict(autorange="reversed", **AX))
-    st.plotly_chart(fig_base(fig, 380), width="stretch")
+# Everything below reads the COMMITTED configuration, never the live widgets.
+engine_cfg = active["engine"]
+bt_cfg = active["bt"]
+target = active["target"]
+target_label = active["label"]
+tier_key, years, synthetic = active["tier"], active["years"], active["synthetic"]
+smoothing = engine_cfg.smoothing
+threshold_q = engine_cfg.threshold_q
+robust_norm = engine_cfg.robust_norm
+auto_alpha = engine_cfg.auto_alpha
+halflife = engine_cfg.halflife_days
+regime_weighting = engine_cfg.regime_weighting
+allow_short = bt_cfg.allow_short
+exit_level = bt_cfg.exit_level
+max_hold = bt_cfg.max_hold
+cost_bps = bt_cfg.cost_bps
 
-    c1, c2 = st.columns(2)
-    with c1:
-        pi = E["perm_imp"].head(12)
-        fig = go.Figure(go.Bar(x=pi.values, y=pi.index, orientation="h",
-                               marker_color="rgba(242,181,68,.8)"))
-        fig.update_layout(title=dict(text="PERMUTATION IMPORTANCE (ΔR² on final window)",
-                                     font=dict(family="IBM Plex Mono", size=9, color="#7f93b8")), yaxis=dict(autorange="reversed", **AX))
-        st.plotly_chart(fig_base(fig, 300), width="stretch")
-    with c2:
-        ev = E["comp_var"]
-        fig = go.Figure(go.Bar(x=[f"PC{i+1}" for i in range(len(ev))], y=ev,
-                               marker_color="rgba(79,156,249,.8)"))
-        fig.update_layout(title=dict(text="VARIANCE CAPTURED PER LATENT FACTOR (%)",
-                                     font=dict(family="IBM Plex Mono", size=9, color="#7f93b8")))
-        st.plotly_chart(fig_base(fig, 300), width="stretch")
+settings_changed = active["sig"] != pending_sig
 
-# ---------------- TAB 4 · REGIME & STABILITY ----------------
-with tab_reg:
-    st.markdown("<div class='sec-kick'>Diagnostics</div><div class='sec-title'>Regime Timeline & Model Stability</div>"
-                "<div class='sec-desc'>Regimes are KMeans clusters over market momentum, volatility and dispersion. "
-                "CUSUM tracks structural breaks in the fair-value residual; rolling R² tracks explanatory power.</div>",
-                unsafe_allow_html=True)
-    fig = go.Figure()
-    for a, b, r in regime_spans:
-        fig.add_vrect(x0=a, x1=b, fillcolor=REGIME_META[r]["color"], opacity=0.75, line_width=0)
-    fig.update_layout(height=90, yaxis=dict(visible=False, range=[0, 1]), xaxis=dict(**AX), margin=dict(t=5, b=5))
-    st.plotly_chart(fig_base(fig, 90, legend=False), width="stretch")
+# ---------------------------------------------------------------------------
+# Load + calibrate
+# ---------------------------------------------------------------------------
+try:
+    bundle = load_data(tier_key, years, synthetic, 7, target)
+except Exception as exc:  # noqa: BLE001 — surface any provider failure to the user
+    st.error(f"**Data load failed.** {exc}")
+    st.info("Enable **Demo mode** in the sidebar to run the engine against a "
+            "synthetic market while the provider is unavailable.")
+    st.stop()
 
-    c1, c2 = st.columns(2)
-    with c1:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=D, y=E["r2"], name="rolling R²", line=dict(color="#2fd08c", width=1.6)))
-        fig.add_trace(go.Scatter(x=D, y=E["conf"] / 100, name="confidence /100", line=dict(color="#b7a4f3", width=1.2, dash="dot")))
-        fig.update_layout(title=dict(text="ROLLING EXPLANATORY POWER (63d)", font=dict(family="IBM Plex Mono", size=10, color="#7f93b8")))
-        st.plotly_chart(fig_base(fig, 300), width="stretch")
-    with c2:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=D, y=E["cusum"], name="CUSUM(|resid|)", line=dict(color="#f2b544", width=1.4)))
-        brk_idx = np.flatnonzero(np.isfinite(E["breaks"]))
-        for bi in brk_idx:
-            fig.add_vline(x=D[bi], line_color="#ff5d6c", line_width=1, opacity=.7)
-        fig.add_hline(y=6, line_dash="dash", line_color="rgba(255,93,108,.5)")
-        fig.update_layout(title=dict(text=f"STRUCTURAL BREAK DETECTOR · {len(brk_idx)} breaks flagged",
-                                     font=dict(family="IBM Plex Mono", size=10, color="#7f93b8")))
-        st.plotly_chart(fig_base(fig, 300), width="stretch")
+if target not in bundle.prices.columns:
+    st.error(f"**{target}** returned no usable history and was dropped "
+             f"({bundle.dropped.get(target, 'unknown reason')}). Choose another target.")
+    st.stop()
 
-    rdf = pd.DataFrame([
-        {"regime": r,
-         "target μ (bp/d)": 1e4 * E["rets"][target][E["regimes"] == r].mean(),
-         "target σ (bp/d)": 1e4 * E["rets"][target][E["regimes"] == r].std(),
-         "FVO mean": E["fvo"][E["regimes"] == r].mean(),
-         "days": int((E["regimes"] == r).sum()),
-         "share %": 100 * (E["regimes"] == r).mean()}
-        for r in REGIME_META])
-    st.dataframe(rdf.style.format({"target μ (bp/d)": "{:+.1f}", "target σ (bp/d)": "{:.1f}",
-                                   "FVO mean": "{:+.1f}", "share %": "{:.1f}"}),
-                 width="stretch", hide_index=True)
+try:
+    E = calibrate(bundle.prices, engine_cfg.key(), engine_cfg)
+except Exception as exc:  # noqa: BLE001
+    st.error(f"**Calibration failed.** {exc}")
+    st.stop()
 
-# ---------------- TAB 5 · BACKTEST ----------------
-with tab_bt:
-    st.markdown("<div class='sec-kick'>Historical Replay</div><div class='sec-title'>Oscillator Signal Backtest</div>"
-                "<div class='sec-desc'>Long when FVO crosses below its dynamic oversold quantile, short above overbought "
-                "(if enabled); exit near the centerline or at max hold. Walk-forward — signals use only past information.</div>",
-                unsafe_allow_html=True)
-    eq, bh, tr, stt = backtest(E, allow_short, exit_lvl, max_hold)
-    c = st.columns(6)
-    labels = ["TRADES", "WIN RATE", "AVG RET", "AVG HOLD", "SHARPE", "CAGR"]
-    vals = [f"{stt['n']:.0f}", f"{stt['winrate']:.0f}%", f"{stt['avg']:+.2f}%",
-            f"{stt['hold']:.0f}d", f"{stt['sharpe']:.2f}", f"{stt['cagr']:+.1f}%"]
-    cols = ["#eef3ff", "#2fd08c", "#3fd8c9", "#eef3ff", "#f2b544", "#b7a4f3"]
-    for k in range(6):
-        with c[k]:
-            st.markdown(f"<div class='kpi'><div class='lab'>{labels[k]}</div>"
-                        f"<div class='val' style='font-size:22px;color:{cols[k]}'>{vals[k]}</div></div>",
-                        unsafe_allow_html=True)
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
-    fig.add_trace(go.Scatter(x=D, y=eq, name="FVO strategy", line=dict(color="#3fd8c9", width=2)), 1, 1)
-    fig.add_trace(go.Scatter(x=D, y=bh, name="buy & hold", line=dict(color="rgba(232,238,252,.5)", width=1.2)), 1, 1)
-    dd = eq / eq.cummax() - 1
-    fig.add_trace(go.Scatter(x=D, y=dd * 100, name="drawdown %", fill="tozeroy",
-                             fillcolor="rgba(255,93,108,.18)", line=dict(color="#ff5d6c", width=1)), 2, 1)
-    st.plotly_chart(fig_base(fig, 460), width="stretch")
-    if len(tr):
-        st.dataframe(tr.tail(15).iloc[::-1].style.format({"ret": "{:+.2f}%"}),
-                     width="stretch", hide_index=True)
-    else:
-        st.info("No completed trades at current thresholds — loosen the entry quantile in the sidebar.")
+S = snapshot(E)
+D = E["dates"]
 
-# ---------------- TAB 6 · MULTI-TIMEFRAME ----------------
-with tab_mtf:
-    st.markdown("<div class='sec-kick'>Horizon Scan</div><div class='sec-title'>Multi-Timeframe Fair Value</div>"
-                "<div class='sec-desc'>One model, three normalization horizons — dislocations that align across "
-                "timeframes carry materially higher conviction.</div>", unsafe_allow_html=True)
-    cols = st.columns(3)
-    for k, (lab_, s_) in enumerate(E["mtf"].items()):
-        v_ = float(s_.iloc[-1]); pct = float((s_.dropna() < v_).mean() * 100)
-        sig = "OVERVALUED" if v_ > 45 else ("UNDERVALUED" if v_ < -45 else "NEUTRAL")
-        scol = "#ff5d6c" if v_ > 45 else ("#2fd08c" if v_ < -45 else "#8fa3c4")
-        with cols[k]:
-            st.markdown(f"""<div class="kpi accent-cyan"><div class="lab">{lab_}</div>
-            <div class="val" style="color:#3fd8c9">{v_:+.1f}</div>
-            <div class="aux"><b style="color:{scol}">{sig}</b> · {pct:.0f}th pctile</div></div>""",
-                        unsafe_allow_html=True)
-            fig = go.Figure()
-            fig.add_hrect(y0=45, y1=100, fillcolor="rgba(255,93,108,.07)", line_width=0)
-            fig.add_hrect(y0=-100, y1=-45, fillcolor="rgba(47,208,140,.07)", line_width=0)
-            fig.add_trace(go.Scatter(x=D, y=s_, line=dict(color="#3fd8c9", width=1.4), showlegend=False))
-            fig.add_hline(y=0, line_color="rgba(140,165,215,.3)")
-            fig.update_yaxes(range=[-105, 105], **AX)
-            st.plotly_chart(fig_base(fig, 190, legend=False), width="stretch")
-
-st.markdown("<div style='margin-top:26px;padding-top:12px;border-top:1px solid rgba(140,165,215,.14);"
-            "font-family:IBM Plex Mono;font-size:10px;letter-spacing:.12em;color:#5f7396'>"
-            f"FVE v2.4 · {E['n_assets']} INSTRUMENTS · {E['method']}×{E['ncomp']} FACTORS · "
-            f"REFIT {refit}D · FEED: {feed} · RESEARCH TOOL — NOT INVESTMENT ADVICE</div>",
+# ---------------------------------------------------------------------------
+# Header + tape
+# ---------------------------------------------------------------------------
+st.markdown(theme.header(bundle.n_assets, len(class_breakdown(list(bundle.prices.columns))),
+                         bundle.source, bundle.asof, __version__),
             unsafe_allow_html=True)
+
+if settings_changed:
+    st.warning("Sidebar settings have changed. The results below are from the "
+               "last completed run — press **RUN ANALYSIS** to apply them.",
+               icon="⚠️")
+
+for _note in bundle.notes:
+    st.caption(f"· {_note}")
+
+tape_items = []
+for sym, label in TAPE.items():
+    if sym in bundle.prices.columns:
+        s = bundle.prices[sym].dropna()
+        if len(s) > 2:
+            tape_items.append((label, 100.0 * (s.iloc[-1] / s.iloc[-2] - 1.0)))
+st.markdown(theme.tape(tape_items), unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# KPI console
+# ---------------------------------------------------------------------------
+reg_meta = REGIME_META.get(S["regime"], {"color": "#8fa3c4", "icon": "◇", "desc": ""})
+gap_colour = viz.RED if S["gap"] > 0 else viz.GREEN
+
+st.markdown(theme.kpi_row([
+    theme.kpi(f"{target} · market price · {CLASS_OF.get(target, '')}",
+              viz.fmt_price(S["price"]),
+              f"<span class='{'up' if S['day_change'] >= 0 else 'dn'}'>"
+              f"{'▲' if S['day_change'] >= 0 else '▼'} {100 * S['day_change']:+.2f}%</span>"
+              f" 1D · feed {bundle.source}", accent="blue"),
+    theme.kpi("Model fair value", viz.fmt_price(S["fv"]),
+              f"implied by {len(E['others'])} instruments · "
+              f"{E['config'].method}×{E['config'].n_factors}F · H={E['config'].fv_horizon}d",
+              accent="amber", value_color=viz.AMBER),
+    theme.kpi("Fair value gap",
+              ("+" if S["gap"] > 0 else "") + viz.fmt_price(S["gap"]),
+              f"<span class='am'>{S['mis_pct']:+.2f}%</span> mispricing · "
+              f"<b style='color:{S['verdict_color']}'>{S['verdict']}</b>",
+              accent="red" if S["gap"] > 0 else "green", value_color=gap_colour),
+    theme.kpi("Fair value oscillator", f"{S['fvo']:+.1f}",
+              f"z = {S['z']:+.2f}σ · {S['percentile']:.0f}th percentile of history",
+              accent="cyan", value_color=viz.CYAN,
+              meter=(S["fvo"] + 100) / 2,
+              meter_color="linear-gradient(90deg,#2fd08c,#f2b544,#ff5d6c)"),
+]), unsafe_allow_html=True)
+
+st.markdown(theme.kpi_row([
+    theme.kpi("Market regime",
+              f"<span class='pill' style='color:{reg_meta['color']};"
+              f"border:1px solid {reg_meta['color']}66;background:{reg_meta['color']}1a'>"
+              f"{reg_meta['icon']} {S['regime']}</span>",
+              reg_meta.get("desc", ""), accent=""),
+    theme.kpi("Confidence", f"{S['confidence']:.0f}<span style='font-size:14px;"
+                            f"color:#7f93b8'>/100</span>",
+              f"out-of-sample R² {S['oos_r2']:.2f} · stability & coverage weighted",
+              accent="green", meter=S["confidence"], meter_color=viz.GREEN),
+    theme.kpi(f"Mean reversion P({E['config'].mr_horizon}d)", f"{S['p_mr']:.0f}%",
+              f"OU half-life ≈ {S['half_life']:.0f} sessions",
+              accent="violet", meter=S["p_mr"], meter_color=viz.VIOLET),
+    theme.kpi("Residual risk", f"{S['sigma_e']:.2f}<span style='font-size:14px;"
+                               f"color:#7f93b8'>%/day</span>",
+              "idiosyncratic volatility the market cannot explain · 42d",
+              accent="red"),
+]), unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# Tabs
+# ---------------------------------------------------------------------------
+tabs = st.tabs(["◈ Valuation", "◈ Oscillator Lab", "◈ Drivers", "◈ Regime & Stability",
+                "◈ Signal Evidence", "◈ Universe & Data"])
+
+# ---------------------------------------------------------- 1 · VALUATION ---
+with tabs[0]:
+    st.markdown(theme.section(
+        "Core output", "Price versus model-implied fair value",
+        f"Fair value is anchored {E['config'].fv_horizon} sessions back and rolled "
+        f"forward on the return the market state implies, so the gap reads as "
+        f"{target}'s cumulative excess move against the rest of the world. The band "
+        f"is ±1σ of unexplained residual risk over that horizon; markers flag "
+        f"oscillator crossings back inside the dynamic thresholds and price / "
+        f"oscillator divergences."), unsafe_allow_html=True)
+
+    c1, c2 = st.columns([1, 1])
+    show_raw = c1.checkbox("Show unsmoothed oscillator", True)
+    show_reg = c2.checkbox("Shade market regimes", True)
+    st.plotly_chart(viz.price_and_oscillator(E, show_raw, show_reg), width="stretch")
+
+    c1, c2 = st.columns([3, 2])
+    c1.plotly_chart(viz.gap_bars(E), width="stretch")
+    c2.plotly_chart(viz.mispricing_histogram(E, S["mis_pct"]), width="stretch")
+
+    hist = E["mis_pct"].dropna()
+    if len(hist):
+        wider = float((hist.abs() > abs(S["mis_pct"])).mean() * 100)
+        st.markdown(
+            f"<div class='note'>The current gap of <b>{S['mis_pct']:+.2f}%</b> has been "
+            f"exceeded in absolute terms on <b>{wider:.1f}%</b> of sessions in this "
+            f"sample. Mean absolute gap: {hist.abs().mean():.2f}% · "
+            f"95th percentile: {hist.abs().quantile(0.95):.2f}%.</div>",
+            unsafe_allow_html=True)
+
+# ------------------------------------------------------ 2 · OSCILLATOR LAB ---
+with tabs[1]:
+    st.markdown(theme.section(
+        "Signal anatomy", "Oscillator laboratory",
+        "Adaptive normalisation keeps a reading comparable across volatility "
+        "regimes; thresholds are trailing empirical quantiles rather than fixed "
+        "levels, and are lagged one session so they never contain the observation "
+        "they are judging."), unsafe_allow_html=True)
+
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=D, y=E["fvo_raw"], name="raw",
+                                 line=dict(color="rgba(63,216,201,.32)", width=1)))
+        fig.add_trace(go.Scatter(x=D, y=E["fvo"], name=f"smoothed · {smoothing}",
+                                 line=dict(color=viz.CYAN, width=2)))
+        fig.add_trace(go.Scatter(x=D, y=E["ob"], name="overbought",
+                                 line=dict(color="rgba(255,93,108,.6)", width=1, dash="dash")))
+        fig.add_trace(go.Scatter(x=D, y=E["os_"], name="oversold",
+                                 line=dict(color="rgba(47,208,140,.6)", width=1, dash="dash")))
+        fig.add_hline(y=0, line_color="rgba(140,165,215,.35)")
+        st.plotly_chart(viz.style(fig, 360, title="OSCILLATOR & DYNAMIC THRESHOLDS"),
+                        width="stretch")
+    with c2:
+        st.plotly_chart(viz.oscillator_distribution(E, S["fvo"], threshold_q),
+                        width="stretch")
+
+    c1, c2, c3 = st.columns([2, 2, 3])
+    with c1:
+        st.plotly_chart(viz.gauge(S["fvo"], S["os_"], S["ob"]), width="stretch")
+        st.caption(f"Reading sits at the **{S['percentile']:.0f}th percentile** of its "
+                   f"own history. Bands mark the current dynamic thresholds.")
+    with c2:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=D, y=E["z"], name="mispricing z",
+                                 line=dict(color=viz.AMBER, width=1.5)))
+        fig.add_hrect(y0=1, y1=5, fillcolor="rgba(255,93,108,.07)", line_width=0)
+        fig.add_hrect(y0=-5, y1=-1, fillcolor="rgba(47,208,140,.07)", line_width=0)
+        fig.add_hline(y=0, line_color="rgba(140,165,215,.3)")
+        st.plotly_chart(viz.style(fig, 260, legend=False,
+                                  title="PRE-SATURATION Z-SCORE OF log(P / FV)"),
+                        width="stretch")
+        st.caption("The signal before the tanh bound is applied — useful for judging "
+                   "how far into the tail a saturated reading really is.")
+    with c3:
+        n_bear, n_bull = int(E["div_bear"].sum()), int(E["div_bull"].sum())
+        st.markdown(
+            theme.kpi("Bearish divergences", f"{n_bear}",
+                      "price higher high, oscillator lower high", accent="red")
+            + "<div style='height:10px'></div>"
+            + theme.kpi("Bullish divergences", f"{n_bull}",
+                        "price lower low, oscillator higher low", accent="green")
+            + "<div style='height:10px'></div>"
+            + theme.kpi("OU half-life", f"{S['half_life']:.0f}d",
+                        f"P(revert to ±0.5σ within {E['config'].mr_horizon}d) = "
+                        f"<b>{S['p_mr']:.0f}%</b>", accent="violet"),
+            unsafe_allow_html=True)
+
+    st.markdown(theme.section(
+        "Horizon scan", "Multi-timeframe fair value",
+        "One calibration, several anchor horizons. A short-horizon dislocation is a "
+        "tactical stretch; when short and long horizons agree, the target is "
+        "dislocated against the market on every timescale the model can see."),
+        unsafe_allow_html=True)
+    cols = st.columns(len(E["mtf"]))
+    for col, (label, series) in zip(cols, E["mtf"].items()):
+        v = float(series.iloc[-1])
+        clean = series.dropna()
+        pct = float((clean < v).mean() * 100) if len(clean) else np.nan
+        if v > 45:
+            tag, colour = "RICH", viz.RED
+        elif v < -45:
+            tag, colour = "CHEAP", viz.GREEN
+        else:
+            tag, colour = "NEUTRAL", viz.MUTED
+        with col:
+            st.markdown(theme.kpi(f"anchor {label}", f"{v:+.1f}",
+                                  f"<b style='color:{colour}'>{tag}</b> · "
+                                  f"{pct:.0f}th percentile",
+                                  accent="cyan", value_color=viz.CYAN),
+                        unsafe_allow_html=True)
+            st.plotly_chart(viz.mtf_panel(series), width="stretch")
+
+# ------------------------------------------------------------ 3 · DRIVERS ---
+with tabs[2]:
+    st.markdown(theme.section(
+        "Explainability", "What is setting fair value right now?",
+        "The fair-value map is linear in its transformed features, so attribution is "
+        "exact rather than approximated: β·x decomposes the implied return into a "
+        "contribution per latent factor and per orthogonal peer, in basis points per "
+        "day. Positive contributions push fair value up, which makes the asset look "
+        "cheaper at an unchanged price."), unsafe_allow_html=True)
+
+    if E["contrib"].empty:
+        st.info("No attribution available for this configuration.")
+    else:
+        row = E["contrib"].iloc[-1].dropna()
+        row = row.reindex(row.abs().sort_values(ascending=False).index)
+        c1, c2 = st.columns([3, 2])
+        with c1:
+            st.plotly_chart(
+                viz.contribution_bars(row.head(16),
+                                      "TOP DRIVERS OF IMPLIED RETURN (bp/day)"),
+                width="stretch")
+        with c2:
+            st.plotly_chart(
+                viz.contribution_bars(ex.contribution_by_class(row).head(10),
+                                      "CONTRIBUTION BY ASSET CLASS (bp/day)",
+                                      height=380, by_class=True),
+                width="stretch")
+
+        st.plotly_chart(viz.contribution_heatmap(E["contrib"]), width="stretch")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            with st.spinner("Computing permutation importance…"):
+                imp = ex.permutation_importance(E).head(14)
+            fig = go.Figure(go.Bar(x=imp.values[::-1], y=list(imp.index)[::-1],
+                                   orientation="h", marker_color="rgba(242,181,68,.85)",
+                                   marker_line=dict(width=0)))
+            st.plotly_chart(viz.style(fig, 380, legend=False,
+                                      title="PERMUTATION IMPORTANCE · ΔR² WHEN SCRAMBLED"),
+                            width="stretch")
+        with c2:
+            with st.spinner("Computing SHAP attributions…"):
+                sv, backend = ex.shap_values(E)
+            mean_abs = sv.abs().mean().sort_values(ascending=False).head(14)
+            fig = go.Figure(go.Bar(x=mean_abs.values[::-1], y=list(mean_abs.index)[::-1],
+                                   orientation="h", marker_color="rgba(79,156,249,.85)",
+                                   marker_line=dict(width=0)))
+            st.plotly_chart(viz.style(fig, 380, legend=False,
+                                      title="MEAN |SHAP| · bp/day"), width="stretch")
+            st.caption(f"Computed via `{backend}`. For a linear model the "
+                       f"interventional SHAP value is exactly β·(x − E[x]), so this "
+                       f"agrees with the contribution decomposition by construction.")
+
+        st.markdown(theme.section(
+            "Latent structure", "What the factors actually are",
+            "Principal components arrive unnamed. Mapping the loadings back onto "
+            "instruments and asset classes is what turns 'F3' into an economic "
+            "statement."), unsafe_allow_html=True)
+        st.dataframe(ex.factor_interpretation(E).style.format(
+            {"variance %": "{:.2f}", "β (bp/day per σ)": "{:+.1f}"}),
+            width="stretch", hide_index=True)
+
+        c1, c2 = st.columns([2, 3])
+        with c1:
+            k = E["last"].factors.loadings.shape[0]
+            which = st.selectbox("Inspect factor", [f"F{i + 1}" for i in range(k)])
+            idx = int(which[1:]) - 1
+            st.plotly_chart(
+                viz.factor_loadings_chart(ex.factor_loadings_frame(E, idx, 18),
+                                          f"{which} — LARGEST LOADINGS"),
+                width="stretch")
+        with c2:
+            hist_coef = ex.coefficient_history(E)
+            fig = go.Figure()
+            palette = [viz.CYAN, viz.AMBER, viz.VIOLET, viz.GREEN, viz.BLUE,
+                       viz.RED, "#7fb3ff", "#d08cf0"]
+            for i, col in enumerate(hist_coef.columns):
+                fig.add_trace(go.Scatter(x=hist_coef.index, y=hist_coef[col], name=col,
+                                         line=dict(width=1.4,
+                                                   color=palette[i % len(palette)])))
+            fig.add_hline(y=0, line_color="rgba(140,165,215,.3)")
+            st.plotly_chart(
+                viz.style(fig, 360,
+                          title="FACTOR COEFFICIENT PATHS ACROSS RECALIBRATIONS (bp/day per σ)"),
+                width="stretch")
+            st.caption("Components are sign- and order-aligned between refits, so a "
+                       "line changing sign here is a genuine change in the "
+                       "relationship — not the arbitrary sign flip PCA would "
+                       "otherwise produce.")
+
+        st.markdown(theme.section("Peer stability", "Which instruments keep mattering", ""),
+                    unsafe_allow_html=True)
+        pp = ex.peer_persistence(E)
+        if len(pp):
+            st.dataframe(pp.head(25).style.format({"share %": "{:.1f}"}),
+                         width="stretch", hide_index=True)
+            churn = 100.0 - float(pp["share %"].head(E["config"].n_peers or 1).mean())
+            st.caption(f"A peer set that survives across refits reflects a stable "
+                       f"economic relationship. Mean turnover of the current peer "
+                       f"count: **{churn:.0f}%**.")
+
+# ------------------------------------------------- 4 · REGIME & STABILITY ---
+with tabs[3]:
+    st.markdown(theme.section(
+        "Diagnostics", "Regime timeline and model stability",
+        "Regimes are k-means clusters over the market's state vector, refit "
+        "walk-forward on trailing data only — a full-sample clustering would leak "
+        "the future into every regime-conditioned weight below. CUSUM accumulates "
+        "evidence that the residual relationship has shifted."), unsafe_allow_html=True)
+
+    st.plotly_chart(viz.regime_ribbon(E["regimes"]), width="stretch")
+    legend = " &nbsp;·&nbsp; ".join(
+        f"<span style='color:{m['color']}'>{m['icon']} {n}</span>"
+        for n, m in REGIME_META.items())
+    st.markdown(f"<div style='font-family:JetBrains Mono;font-size:10.5px;"
+                f"letter-spacing:.08em;margin:-8px 0 14px'>{legend}</div>",
+                unsafe_allow_html=True)
+
+    c1, c2 = st.columns(2)
+    c1.plotly_chart(viz.diagnostics_chart(E), width="stretch")
+    c2.plotly_chart(viz.cusum_chart(E), width="stretch")
+
+    c1, c2 = st.columns(2)
+    c1.plotly_chart(viz.stability_chart(E), width="stretch")
+    c2.plotly_chart(viz.market_state_chart(E["market_state"]), width="stretch")
+
+    st.markdown(theme.section("Regime behaviour", "How the target and oscillator behave "
+                              "in each state", ""), unsafe_allow_html=True)
+    summary = regime_summary(E["regimes"], E["rets"][target], E["fvo"])
+    st.dataframe(summary.style.format({
+        "share %": "{:.1f}", "target μ (bp/d)": "{:+.1f}", "target σ (bp/d)": "{:.1f}",
+        "FVO mean": "{:+.1f}", "FVO σ": "{:.1f}"}), width="stretch", hide_index=True)
+
+    if E["breaks"]:
+        recent = ", ".join(str(pd.Timestamp(b).date()) for b in E["breaks"][-6:])
+        st.markdown(f"<div class='note'><b>{len(E['breaks'])} structural breaks</b> "
+                    f"flagged in the fair-value residual. Most recent: {recent}. "
+                    f"A break means the relationship between the target and the market "
+                    f"state shifted faster than the recalibration schedule could track."
+                    f"</div>", unsafe_allow_html=True)
+
+# --------------------------------------------------- 5 · SIGNAL EVIDENCE ---
+with tabs[4]:
+    st.markdown(theme.section(
+        "Does the signal carry information?", "Evidence before strategy",
+        "The first two panels are parameter-free: no thresholds, no trading rule, "
+        "nothing to overfit. If the information coefficient is flat and the bucket "
+        "profile is unsloped, no strategy built on this oscillator will work, however "
+        "attractive the equity curve below happens to look."), unsafe_allow_html=True)
+
+    c1, c2 = st.columns([2, 3])
+    with c1:
+        ic = information_coefficients(E)
+        st.dataframe(ic.style.format({"IC": "{:+.3f}", "p-value": "{:.3f}"})
+                     .background_gradient(subset=["IC"], cmap="RdYlGn", vmin=-0.15, vmax=0.15),
+                     width="stretch", hide_index=True)
+        st.caption("Spearman rank correlation between the **negated** oscillator and "
+                   "subsequent returns, so positive means the signal works as "
+                   "intended. Daily observations overlap, so p-values are optimistic; "
+                   "treat |IC| < 0.03 as noise.")
+    with c2:
+        dec = decile_forward_returns(E, horizon=E["config"].mr_horizon)
+        if len(dec):
+            st.plotly_chart(viz.decile_chart(dec, E["config"].mr_horizon), width="stretch")
+        else:
+            st.info("Not enough history to form oscillator buckets.")
+
+    ev = signal_event_study(E, horizon=21)
+    if len(ev.columns):
+        st.plotly_chart(viz.event_study_chart(ev), width="stretch")
+
+    st.markdown(theme.section(
+        "Historical replay", "Trading rule backtest",
+        f"Long when the oscillator crosses back above its dynamic oversold "
+        f"threshold{', short on the mirror condition' if allow_short else ''}; exit "
+        f"when the dislocation closes to ±{exit_level} or after {max_hold} sessions. "
+        f"Signals use only trailing information, execution is at the next session, "
+        f"and {cost_bps:.1f}bp is charged per side."), unsafe_allow_html=True)
+
+    bt = run_backtest(E, bt_cfg)
+    stats = bt["stats"]
+    cards = [
+        theme.kpi("Trades", f"{stats['trades']:.0f}",
+                  f"exposure {stats['exposure %']:.0f}% of sessions"),
+        theme.kpi("Win rate", f"{stats['win rate %']:.0f}%"
+                  if np.isfinite(stats["win rate %"]) else "—",
+                  f"profit factor {stats['profit factor']:.2f}"
+                  if np.isfinite(stats["profit factor"]) else "", accent="green"),
+        theme.kpi("Sharpe", f"{stats['sharpe']:.2f}"
+                  if np.isfinite(stats["sharpe"]) else "—",
+                  f"buy &amp; hold {stats['bh sharpe']:.2f}", accent="cyan"),
+        theme.kpi("CAGR", f"{stats['cagr %']:+.1f}%",
+                  f"buy &amp; hold {stats['bh cagr %']:+.1f}%", accent="amber"),
+    ]
+    st.markdown(theme.kpi_row(cards), unsafe_allow_html=True)
+    st.markdown(theme.kpi_row([
+        theme.kpi("Max drawdown", f"{stats['max drawdown %']:.1f}%",
+                  f"buy &amp; hold {stats['bh max dd %']:.1f}%", accent="red"),
+        theme.kpi("Average trade", f"{stats['avg trade %']:+.2f}%"
+                  if np.isfinite(stats["avg trade %"]) else "—",
+                  f"held {stats['avg hold (d)']:.0f} sessions on average"
+                  if np.isfinite(stats["avg hold (d)"]) else ""),
+        theme.kpi("Best trade", f"{stats['best %']:+.1f}%"
+                  if np.isfinite(stats["best %"]) else "—", "", accent="green"),
+        theme.kpi("Worst trade", f"{stats['worst %']:+.1f}%"
+                  if np.isfinite(stats["worst %"]) else "—", "", accent="red"),
+    ]), unsafe_allow_html=True)
+
+    st.plotly_chart(viz.equity_chart(bt), width="stretch")
+
+    if len(bt["trades"]):
+        st.dataframe(bt["trades"].tail(20).iloc[::-1].style.format(
+            {"ret_pct": "{:+.2f}", "entry_fvo": "{:+.0f}", "exit_fvo": "{:+.0f}"}),
+            width="stretch", hide_index=True)
+    else:
+        st.info("No completed trades at these thresholds — widen the entry quantile "
+                "or lengthen the maximum holding period.")
+
+    st.markdown("<div class='note'>A single backtest path is one draw from a large "
+                "parameter space. The sidebar exposes enough degrees of freedom to "
+                "fit any curve you like; the parameter-free evidence above is the "
+                "part that resists that temptation.</div>", unsafe_allow_html=True)
+
+# ---------------------------------------------------- 6 · UNIVERSE & DATA ---
+with tabs[5]:
+    st.markdown(theme.section(
+        "Provenance", "Universe composition and data quality",
+        "Every instrument the model saw, what was discarded, and why. The panel is "
+        "aligned to a liquid equity trading calendar rather than the union of all "
+        "instrument calendars — otherwise crypto's weekend sessions would inject "
+        "rows that are empty for everything else."), unsafe_allow_html=True)
+
+    breakdown = class_breakdown(list(bundle.prices.columns))
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(theme.kpi("Instruments loaded", f"{bundle.n_assets}",
+                          f"of {bundle.requested} requested", accent="cyan"),
+                unsafe_allow_html=True)
+    c2.markdown(theme.kpi("Asset classes", f"{len(breakdown)}", "", accent="blue"),
+                unsafe_allow_html=True)
+    c3.markdown(theme.kpi("Sessions", f"{bundle.n_sessions:,}",
+                          f"{D[0]:%b %Y} → {D[-1]:%b %Y}", accent="amber"),
+                unsafe_allow_html=True)
+    c4.markdown(theme.kpi("Median coverage",
+                          f"{100 * bundle.coverage.median():.1f}%",
+                          f"{len(bundle.dropped)} instruments dropped", accent="green"),
+                unsafe_allow_html=True)
+
+    c1, c2 = st.columns([2, 3])
+    with c1:
+        bd = pd.Series(breakdown).sort_values(ascending=True)
+        fig = go.Figure(go.Bar(x=bd.values, y=bd.index, orientation="h",
+                               marker_color=[viz.color_of(i) for i in bd.index],
+                               marker_line=dict(width=0)))
+        st.plotly_chart(viz.style(fig, 420, legend=False,
+                                  title="INSTRUMENTS PER ASSET CLASS"), width="stretch")
+    with c2:
+        corr = E["rets"].corrwith(E["rets"][target]).drop(labels=[target], errors="ignore")
+        corr = corr.reindex(corr.abs().sort_values(ascending=False).index).head(24)
+        fig = go.Figure(go.Bar(x=corr.values[::-1], y=list(corr.index)[::-1],
+                               orientation="h",
+                               marker_color=[viz.color_of(str(i)) for i in corr.index][::-1],
+                               marker_line=dict(width=0)))
+        fig.add_vline(x=0, line_color="rgba(140,165,215,.3)")
+        st.plotly_chart(viz.style(fig, 420, legend=False,
+                                  title=f"RAW CORRELATION WITH {target} · FULL SAMPLE"),
+                        width="stretch")
+        st.caption("Raw correlation is what the engine deliberately moves beyond: "
+                   "peers are selected on correlation that survives removing the "
+                   "common factors, not on this ranking.")
+
+    st.markdown(theme.section(
+        "Provider health", "Fetch infrastructure",
+        "Every provider call runs through a retry-with-backoff, a circuit breaker "
+        "that stops hammering a failing service, and a two-tier cache whose expired "
+        "entries are retained as a last-good snapshot. A partial response — Yahoo "
+        "rate-limits a few tickers per batch — triggers a targeted re-fetch of just "
+        "the missing symbols, then a snapshot backfill, so the cross-section stays "
+        "whole instead of silently shrinking."), unsafe_allow_html=True)
+
+    status = provider_status()
+    circuit = status["circuit"]
+    circuit_colour = {"closed": viz.GREEN, "half_open": viz.AMBER,
+                      "open": viz.RED}.get(circuit["state"], viz.MUTED)
+    pc = status["panel_cache"]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(theme.kpi("Provider circuit", circuit["state"].upper().replace("_", "-"),
+                          f"{circuit['failures']} failures · {circuit['successes']} successes",
+                          value_color=circuit_colour), unsafe_allow_html=True)
+    c2.markdown(theme.kpi("Panel cache hit rate", f"{100 * pc['hit_rate']:.0f}%",
+                          f"{pc['hits']} hits · {pc['misses']} misses · "
+                          f"{pc['stale_hits']} stale", accent="cyan"),
+                unsafe_allow_html=True)
+    c3.markdown(theme.kpi("Fetch time", f"{bundle.fetch_seconds:.0f}s"
+                          if bundle.fetch_seconds else "cached",
+                          f"feed {bundle.source}", accent="blue"), unsafe_allow_html=True)
+    c4.markdown(theme.kpi("Snapshot backfills", f"{len(bundle.backfilled)}",
+                          "instruments carried from a prior snapshot",
+                          accent="amber" if bundle.backfilled else ""),
+                unsafe_allow_html=True)
+
+    if bundle.backfilled:
+        with st.expander(f"Backfilled instruments ({len(bundle.backfilled)})"):
+            st.dataframe(pd.DataFrame({
+                "instrument": list(bundle.backfilled.keys()),
+                "class": [CLASS_OF.get(s, "—") for s in bundle.backfilled],
+                "last native observation": list(bundle.backfilled.values()),
+            }), width="stretch", hide_index=True)
+            st.caption("These came back empty from the provider and were restored "
+                       "from the most recent good snapshot. Anything more than 10 "
+                       "sessions stale is dropped instead of filled — a flat line "
+                       "forward-filled across weeks would distort its factor loading.")
+
+    if bundle.dropped:
+        with st.expander(f"Dropped instruments ({len(bundle.dropped)})"):
+            st.dataframe(pd.DataFrame({
+                "instrument": list(bundle.dropped.keys()),
+                "class": [CLASS_OF.get(s, "—") for s in bundle.dropped],
+                "reason": list(bundle.dropped.values()),
+            }), width="stretch", hide_index=True)
+
+    with st.expander("Current model specification"):
+        spec = pd.DataFrame({
+            "setting": ["target", "universe tier", "instruments used", "factor method",
+                        "latent factors", "orthogonal peers", "calibration window",
+                        "recalibration interval", "ridge penalty", "sample half-life",
+                        "regime weighting", "fair value anchor H", "normalisation",
+                        "saturation κ", "smoothing", "threshold quantile",
+                        "calibrations run", "calibration time"],
+            # Cast uniformly to str: a mixed int/str column cannot be
+            # serialised to Arrow and Streamlit would have to coerce it.
+            "value": [str(v) for v in [
+                target, tier_key, len(E["others"]), E["config"].method,
+                E["config"].n_factors, len(E["last"].peers),
+                f"{E['lookback']} sessions", f"{E['config'].refit_every} sessions",
+                f"{E['last'].alpha:g}" + (" (auto)" if auto_alpha else ""),
+                "uniform" if not halflife else f"{halflife} sessions",
+                "on" if regime_weighting else "off",
+                f"{E['config'].fv_horizon} sessions",
+                f"{'robust median/MAD' if robust_norm else 'mean/std'} "
+                f"over {E['config'].norm_window}",
+                E["config"].saturation, E["config"].smoothing,
+                E["config"].threshold_q, len(E["calibrations"]),
+                f"{E['elapsed']:.1f}s"]],
+        })
+        st.dataframe(spec, width="stretch", hide_index=True)
+
+# ---------------------------------------------------------------------------
+st.markdown(
+    f"<div style='margin-top:26px;padding-top:12px;border-top:1px solid "
+    f"rgba(140,165,215,.14);font-family:JetBrains Mono;font-size:10px;"
+    f"letter-spacing:.11em;color:#5f7396'>FVE v{__version__} · {bundle.n_assets} "
+    f"INSTRUMENTS · {E['config'].method}×{E['config'].n_factors} FACTORS · "
+    f"{len(E['calibrations'])} WALK-FORWARD CALIBRATIONS · FEED {bundle.source} · "
+    f"RESEARCH TOOL — NOT INVESTMENT ADVICE</div>",
+    unsafe_allow_html=True)

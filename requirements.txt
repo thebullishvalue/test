@@ -1,7 +1,13 @@
-streamlit>=1.37
-numpy
-pandas
-scikit-learn
-scipy
-plotly>=5.22
-yfinance   # optional — only needed for the live feed
+# FVE — Fair Value Engine
+streamlit>=1.40
+pandas>=2.0
+numpy>=1.24,<2.0
+scipy>=1.11
+scikit-learn>=1.3
+plotly>=5.20
+yfinance>=0.2.50
+pyarrow>=14.0        # parquet price cache
+
+# Optional — the engine degrades gracefully without it: SHAP attributions
+# fall back to the exact closed form for linear models.
+shap>=0.44
