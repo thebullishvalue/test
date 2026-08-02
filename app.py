@@ -511,7 +511,7 @@ def run_engine(prices, target, method, ncomp, lookback, refit, peers_k, alpha,
     rets = np.log(prices_clean).diff().fillna(0)
     
     # Also replace any infinite values that might have crept in
-    rets = np.where(np.isinf(rets), 0, rets)
+    rets = rets.mask(np.isinf(rets), 0)
     rz = rolling_zscore(rets)
     others = [c for c in rets.columns if c != target]
 
