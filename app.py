@@ -416,7 +416,8 @@ def get_prices():
 def rolling_zscore(df, w=63, minp=30):
     mu = df.rolling(w, min_periods=minp).mean()
     sd = df.rolling(w, min_periods=minp).std().replace(0, np.nan)
-    return ((df - mu) / sd).fillna(0.0)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        return ((df - mu) / sd).fillna(0.0)
 
 def detect_regimes(rz, pc1):
     """KMeans on market features → labelled regimes (data-driven, not the DGP's labels)."""
@@ -459,7 +460,8 @@ def fit_factor_model(Xw, method, ncomp):
     Xw_clean = np.where(np.isinf(Xw), np.nan, Xw)
     
     # For each column, if all NaN, fill with zeros; otherwise fill column mean
-    col_means = np.nanmean(Xw_clean, axis=0)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        col_means = np.nanmean(Xw_clean, axis=0)
     inds = np.where(np.isnan(col_means))[0]
     col_means[inds] = 0
     inds = np.where(np.isnan(Xw_clean))
@@ -530,7 +532,8 @@ def run_engine(prices, target, method, ncomp, lookback, refit, peers_k, alpha,
         w = slice(t - lookback, t)
         Xw = rz[others].iloc[w].values
         m, S, _ = fit_factor_model(Xw, method, ncomp)
-        corr = rets[others].iloc[w].corrwith(rets[target].iloc[w]).abs()
+        with np.errstate(divide='ignore', invalid='ignore'):
+            corr = rets[others].iloc[w].corrwith(rets[target].iloc[w]).fillna(0.0).abs()
         peers = corr.sort_values(ascending=False).head(peers_k).index.tolist()
         X = np.hstack([S, rz[peers].iloc[w].values])
         y = rets[target].iloc[w].values
