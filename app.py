@@ -920,21 +920,21 @@ with tab_val:
     fig.update_yaxes(title_text="FVO", range=[-105, 105], row=2, col=1, **AX)
     fig.update_layout(annotations=[dict(text="FAIR VALUE OSCILLATOR · 0 = fairly valued", x=0, y=0.365,
         xref="paper", yref="paper", showarrow=False, font=dict(family="IBM Plex Mono", size=9, color="#7f93b8"))])
-    st.plotly_chart(fig_base(fig, 640), use_container_width=True)
+    st.plotly_chart(fig_base(fig, 640), width="stretch")
 
     c1, c2 = st.columns([3, 2])
     with c1:
         fig2 = go.Figure(go.Bar(x=D, y=E["mispct"], marker_color=np.where(E["mispct"] >= 0, "#ff5d6c", "#2fd08c"), opacity=.8))
         fig2.add_hline(y=0, line_color="rgba(140,165,215,.3)")
         fig2.update_layout(title=dict(text="FAIR VALUE GAP (% of price)", font=dict(family="IBM Plex Mono", size=10, color="#7f93b8")))
-        st.plotly_chart(fig_base(fig2, 240), use_container_width=True)
+        st.plotly_chart(fig_base(fig2, 240), width="stretch")
     with c2:
         fig3 = go.Figure(go.Histogram(x=E["mispct"].dropna(), nbinsx=60,
                                       marker_color="rgba(63,216,201,.55)"))
         fig3.add_vline(x=mis_v, line_color="#f2b544", line_width=2,
                        annotation_text=f"now {mis_v:+.2f}%", annotation_font_color="#f2b544")
         fig3.update_layout(title=dict(text="MISPRICING DISTRIBUTION", font=dict(family="IBM Plex Mono", size=10, color="#7f93b8")))
-        st.plotly_chart(fig_base(fig3, 240), use_container_width=True)
+        st.plotly_chart(fig_base(fig3, 240), width="stretch")
 
 # ---------------- TAB 2 · OSCILLATOR LAB ----------------
 with tab_osc:
@@ -950,7 +950,7 @@ with tab_osc:
         fig.add_trace(go.Scatter(x=D, y=E["ob"], name="OB quantile", line=dict(color="rgba(255,93,108,.6)", width=1, dash="dash")))
         fig.add_trace(go.Scatter(x=D, y=E["os_"], name="OS quantile", line=dict(color="rgba(47,208,140,.6)", width=1, dash="dash")))
         fig.add_hline(y=0, line_color="rgba(140,165,215,.35)")
-        st.plotly_chart(fig_base(fig, 360), use_container_width=True)
+        st.plotly_chart(fig_base(fig, 360), width="stretch")
     with c2:
         cur = E["fvo"].dropna()
         fig = go.Figure(go.Histogram(x=cur, nbinsx=55, marker_color="rgba(183,164,243,.6)"))
@@ -959,7 +959,7 @@ with tab_osc:
         fig.add_vline(x=fvo_v, line_color="#f2b544", line_width=2, annotation_text=f"now {fvo_v:+.0f}")
         fig.update_layout(title=dict(text="FVO EMPIRICAL DISTRIBUTION + DYNAMIC THRESHOLDS",
                                      font=dict(family="IBM Plex Mono", size=10, color="#7f93b8")))
-        st.plotly_chart(fig_base(fig, 360), use_container_width=True)
+        st.plotly_chart(fig_base(fig, 360), width="stretch")
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -967,7 +967,7 @@ with tab_osc:
         fig.add_trace(go.Scatter(x=D, y=E["z"], name="mispricing z", line=dict(color="#f2b544", width=1.6)))
         fig.add_hrect(y0=1, y1=3, fillcolor="rgba(255,93,108,.08)", line_width=0)
         fig.add_hrect(y0=-3, y1=-1, fillcolor="rgba(47,208,140,.08)", line_width=0)
-        st.plotly_chart(fig_base(fig, 260), use_container_width=True)
+        st.plotly_chart(fig_base(fig, 260), width="stretch")
         st.caption("**Adaptive z-score** of log(P/FV) — the pre-saturation signal.")
     with c2:
         pctl = float((cur < fvo_v).mean() * 100)
@@ -980,7 +980,7 @@ with tab_osc:
                                   dict(range=[float(cur.quantile(1-thr_q)), 100], color="rgba(255,93,108,.12)")],
                            threshold=dict(line=dict(color="#f2b544", width=2), thickness=.75, value=float(fvo_v)))))
         fig.update_layout(height=260, margin=dict(t=30, b=0), paper_bgcolor="rgba(0,0,0,0)")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         st.caption(f"Current reading sits at the **{pctl:.0f}th percentile** of history.")
     with c3:
         n_bear, n_bull = int(db.sum()), int(du.sum())
@@ -1007,7 +1007,7 @@ with tab_drv:
                                marker_color=["#2fd08c" if v < 0 else "#ff5d6c" for v in top.values]))
         fig.update_layout(title=dict(text="TOP CONTRIBUTORS TO IMPLIED RETURN (bp/day) — green pulls FV down (cheap), red up",
                                      font=dict(family="IBM Plex Mono", size=9, color="#7f93b8")), yaxis=dict(autorange="reversed", **AX))
-        st.plotly_chart(fig_base(fig, 380), use_container_width=True)
+        st.plotly_chart(fig_base(fig, 380), width="stretch")
     with c2:
         cls_agg = E["contrib"].iloc[-1].groupby(
             [CLASS_OF.get(c, "Latent Factor") for c in E["contrib"].columns]).sum()
@@ -1016,13 +1016,13 @@ with tab_drv:
                                marker_color=[CLASS_COLORS.get(i, "#3fd8c9") for i in cls_agg.index]))
         fig.update_layout(title=dict(text="CONTRIBUTION BY ASSET CLASS (bp/day)",
                                      font=dict(family="IBM Plex Mono", size=9, color="#7f93b8")), yaxis=dict(autorange="reversed", **AX))
-        st.plotly_chart(fig_base(fig, 200), use_container_width=True)
+        st.plotly_chart(fig_base(fig, 200), width="stretch")
         fe = E["factor_exp"]
         fig = go.Figure(go.Bar(x=fe.index, y=fe.values,
                                marker_color=["#f2b544" if v >= 0 else "#4f9cf9" for v in fe.values]))
         fig.update_layout(title=dict(text="LATENT FACTOR EXPOSURES (bp/day per σ)",
                                      font=dict(family="IBM Plex Mono", size=9, color="#7f93b8")), **{"xaxis": dict(**AX)})
-        st.plotly_chart(fig_base(fig, 168), use_container_width=True)
+        st.plotly_chart(fig_base(fig, 168), width="stretch")
 
     heat_cols = contrib_last.abs().head(14).index.tolist()
     fig = go.Figure(go.Heatmap(
@@ -1033,7 +1033,7 @@ with tab_drv:
     fig.update_layout(title=dict(text="CONTRIBUTION HEATMAP · LAST 40 SESSIONS",
                                  font=dict(family="IBM Plex Mono", size=10, color="#7f93b8")),
                       yaxis=dict(autorange="reversed", **AX))
-    st.plotly_chart(fig_base(fig, 380), use_container_width=True)
+    st.plotly_chart(fig_base(fig, 380), width="stretch")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -1042,14 +1042,14 @@ with tab_drv:
                                marker_color="rgba(242,181,68,.8)"))
         fig.update_layout(title=dict(text="PERMUTATION IMPORTANCE (ΔR² on final window)",
                                      font=dict(family="IBM Plex Mono", size=9, color="#7f93b8")), yaxis=dict(autorange="reversed", **AX))
-        st.plotly_chart(fig_base(fig, 300), use_container_width=True)
+        st.plotly_chart(fig_base(fig, 300), width="stretch")
     with c2:
         ev = E["comp_var"]
         fig = go.Figure(go.Bar(x=[f"PC{i+1}" for i in range(len(ev))], y=ev,
                                marker_color="rgba(79,156,249,.8)"))
         fig.update_layout(title=dict(text="VARIANCE CAPTURED PER LATENT FACTOR (%)",
                                      font=dict(family="IBM Plex Mono", size=9, color="#7f93b8")))
-        st.plotly_chart(fig_base(fig, 300), use_container_width=True)
+        st.plotly_chart(fig_base(fig, 300), width="stretch")
 
 # ---------------- TAB 4 · REGIME & STABILITY ----------------
 with tab_reg:
@@ -1061,7 +1061,7 @@ with tab_reg:
     for a, b, r in regime_spans:
         fig.add_vrect(x0=a, x1=b, fillcolor=REGIME_META[r]["color"], opacity=0.75, line_width=0)
     fig.update_layout(height=90, yaxis=dict(visible=False, range=[0, 1]), xaxis=dict(**AX), margin=dict(t=5, b=5))
-    st.plotly_chart(fig_base(fig, 90, legend=False), use_container_width=True)
+    st.plotly_chart(fig_base(fig, 90, legend=False), width="stretch")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -1069,7 +1069,7 @@ with tab_reg:
         fig.add_trace(go.Scatter(x=D, y=E["r2"], name="rolling R²", line=dict(color="#2fd08c", width=1.6)))
         fig.add_trace(go.Scatter(x=D, y=E["conf"] / 100, name="confidence /100", line=dict(color="#b7a4f3", width=1.2, dash="dot")))
         fig.update_layout(title=dict(text="ROLLING EXPLANATORY POWER (63d)", font=dict(family="IBM Plex Mono", size=10, color="#7f93b8")))
-        st.plotly_chart(fig_base(fig, 300), use_container_width=True)
+        st.plotly_chart(fig_base(fig, 300), width="stretch")
     with c2:
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=D, y=E["cusum"], name="CUSUM(|resid|)", line=dict(color="#f2b544", width=1.4)))
@@ -1079,7 +1079,7 @@ with tab_reg:
         fig.add_hline(y=6, line_dash="dash", line_color="rgba(255,93,108,.5)")
         fig.update_layout(title=dict(text=f"STRUCTURAL BREAK DETECTOR · {len(brk_idx)} breaks flagged",
                                      font=dict(family="IBM Plex Mono", size=10, color="#7f93b8")))
-        st.plotly_chart(fig_base(fig, 300), use_container_width=True)
+        st.plotly_chart(fig_base(fig, 300), width="stretch")
 
     rdf = pd.DataFrame([
         {"regime": r,
@@ -1091,7 +1091,7 @@ with tab_reg:
         for r in REGIME_META])
     st.dataframe(rdf.style.format({"target μ (bp/d)": "{:+.1f}", "target σ (bp/d)": "{:.1f}",
                                    "FVO mean": "{:+.1f}", "share %": "{:.1f}"}),
-                 use_container_width=True, hide_index=True)
+                 width="stretch", hide_index=True)
 
 # ---------------- TAB 5 · BACKTEST ----------------
 with tab_bt:
@@ -1116,10 +1116,10 @@ with tab_bt:
     dd = eq / eq.cummax() - 1
     fig.add_trace(go.Scatter(x=D, y=dd * 100, name="drawdown %", fill="tozeroy",
                              fillcolor="rgba(255,93,108,.18)", line=dict(color="#ff5d6c", width=1)), 2, 1)
-    st.plotly_chart(fig_base(fig, 460), use_container_width=True)
+    st.plotly_chart(fig_base(fig, 460), width="stretch")
     if len(tr):
         st.dataframe(tr.tail(15).iloc[::-1].style.format({"ret": "{:+.2f}%"}),
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
     else:
         st.info("No completed trades at current thresholds — loosen the entry quantile in the sidebar.")
 
@@ -1144,7 +1144,7 @@ with tab_mtf:
             fig.add_trace(go.Scatter(x=D, y=s_, line=dict(color="#3fd8c9", width=1.4), showlegend=False))
             fig.add_hline(y=0, line_color="rgba(140,165,215,.3)")
             fig.update_yaxes(range=[-105, 105], **AX)
-            st.plotly_chart(fig_base(fig, 190, legend=False), use_container_width=True)
+            st.plotly_chart(fig_base(fig, 190, legend=False), width="stretch")
 
 st.markdown("<div style='margin-top:26px;padding-top:12px;border-top:1px solid rgba(140,165,215,.14);"
             "font-family:IBM Plex Mono;font-size:10px;letter-spacing:.12em;color:#5f7396'>"
