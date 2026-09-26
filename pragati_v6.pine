@@ -39,7 +39,7 @@
 //  Add, Accumulate, Hold, Wait, Watch, Trim, Reduce, Exit - with the seed CVG's
 //  units. A state, not a signal: signals are events, the grid is where the
 //  name stands between them, and neither reads the other. One line on the
-//  price chart, under the OI line, in the same readout.
+//  price chart - a row of the readout, under OI.
 //
 //  WHAT CHANGED FROM v5
 //      · The pane draws one trace - conviction × value - and the histogram is
@@ -67,7 +67,7 @@
 //  θ tags, each tape's name, ladder and reading (↺ = fallback direction), and -
 //  only when the signals cannot judge - a gold SIGNALS PAUSED label naming why.
 //  Optional panel on the right. On the price chart: the divergence connectors
-//  (flow-failure evidence), the readout - the OI line, then the grid line -
+//  (flow-failure evidence), the readout table - an OI row and a CVG row -
 //  and the volume profile.
 //
 //  ═══ ONE CHANNEL, ONE QUESTION ════════════════════════════════════════════
@@ -145,7 +145,7 @@
 //                                   evidence, cooldown
 //      5 · Divergence evidence      the pivot engine behind a TURN's failure
 //                                   evidence, and its price connectors
-//      6 · Conviction-value grid    its line in the price-chart readout
+//      6 · Conviction-value grid    its row in the price-chart readout
 //      7 · Display                  markers, histogram, trace, zones, palette
 //      8 · Information panel
 //      9 · Volume profile           price chart, display only
@@ -491,6 +491,18 @@
 //  toward Accumulate and Buy. A ◆ RESUME needs control held and room left:
 //  Add · trend and Add · strong trend. The grid is unmeasured, like the seed.
 //
+//  THE READOUT. One table on the price chart, a row per layer and a column per
+//  question, so every column means the same thing on every row:
+//
+//              STATE            WHY              PUSH    CHART    SPAN
+//      OI      Short build-up   new shorts                        10d
+//      CVG     Trim             rolling over     ↑       ↓        1 bar
+//
+//  Each cell is coloured by its own meaning, as on the pane: the state by the
+//  side it works, the push and the chart by their direction, caution gold,
+//  the rest neutral. A Trim into a push ↑ therefore reads as a red Trim and a
+//  green ↑ - which is exactly the reading.
+//
 //  ═══ WHAT IT MEASURES ═════════════════════════════════════════════════════
 //  CONVICTION - how much of a bar's travel became net displacement:
 //
@@ -756,7 +768,7 @@ bool   inpGate = input.bool(true, "Zone gate on regular divergence", group=G_V, 
 bool   inpLine = input.bool(true, "Connectors on price", group=G_V, tooltip="Draws each piece of divergence evidence on the PRICE chart: a line joining the two swing extremes it compares - the higher high (or lower low) you can see, where conviction made the lower one.\n\nOnly divergences that qualify as TURN evidence are drawn: zone-gated, with the pivot at a price value called stretched (value on this chart above zero at a top, below at a bottom).\n\nCapped at sixty and recycled explicitly.", display=display.none)
 
 // ── 6 · the conviction-value grid: a state, read from the tapes ────────────
-bool   inpGrid    = input.bool(true, "Grid readout", group=G_G, tooltip="The second line of the price-chart readout, under the OI line: the conviction-value grid's state for this name - an action and its reason - with the push, how long it has been there, and whether the chart leads.\n\nThe grid is 4 × 4: the conviction tape (buyers firm · buyers edge · sellers edge · sellers firm) against the value tape (cheap · below fair · above fair · rich). Columns move freely; a row moves only with the histogram's push behind it - one step on a push, all the way on an impulse. The trace's own ingredients place a chart cell on the same grid; when it carries more units than the state the chart leads ↑, fewer ↓.\n\nA state, not a signal: nothing here reads ▲▼ or ◆, and they do not read it. Hover the line for what the state means, its units and how to read the push against it. The readout's position is set in 10 · Open interest.", display=display.none)
+bool   inpGrid    = input.bool(true, "Grid readout", group=G_G, tooltip="The CVG row of the price-chart readout, under the OI row: the conviction-value grid's state for this name - an action and its reason - with the push, how long it has been there, and whether the chart leads.\n\nThe grid is 4 × 4: the conviction tape (buyers firm · buyers edge · sellers edge · sellers firm) against the value tape (cheap · below fair · above fair · rich). Columns move freely; a row moves only with the histogram's push behind it - one step on a push, all the way on an impulse. The trace's own ingredients place a chart cell on the same grid; when it carries more units than the state the chart leads ↑, fewer ↓.\n\nA state, not a signal: nothing here reads ▲▼ or ◆, and they do not read it. Hover any cell for what it means; the state cell carries the state's meaning, units and how to read the push against it. The readout's position is set in 10 · Open interest.", display=display.none)
 
 // ── 6 · display ─────────────────────────────────────────────────────────────
 string inpPlace = input.string("Threshold rails", "Marker placement", options=["Threshold rails", "On the trace"], group=G_D, tooltip="THRESHOLD RAILS stamps ▲▼ and ◆ on the θ lines - bearish above, bullish below - so the markers form readable rows, and a ▲ sits on the very line whose crossing opened its window.\n\nON THE TRACE places each marker at the trace's reading when it fired.", display=display.none)
@@ -3431,9 +3443,9 @@ f_q(color c, int t) => color.new(c, quietReg ? math.min(100, t + 45) : t)
 //  Symbols without published OI draw nothing and cast nothing.
 // ══════════════════════════════════════════════════════════════════════════════
 var string G_OI = "10 · Open interest · price chart"
-bool   inpOi     = input.bool(true, "Open interest", group=G_OI, tooltip="The first line of the price-chart readout: Long build-up, Short build-up, Short covering or Long unwinding over the window, plus 'crowded' when open interest sits in the top tenth of its last year. The grid line sits under it.\n\nNeeds a symbol TradingView publishes open interest for (listed futures). Anything else leaves only the grid line.", display=display.none)
+bool   inpOi     = input.bool(true, "Open interest", group=G_OI, tooltip="The OI row of the price-chart readout: Long build-up, Short build-up, Short covering or Long unwinding over the window, plus 'crowded' when open interest sits in the top tenth of its last year. The grid's row sits under it.\n\nNeeds a symbol TradingView publishes open interest for (listed futures). Anything else leaves only the grid's row.", display=display.none)
 int    inpOiLen  = input.int(10, "    Window (days)", minval=3, maxval=100, group=G_OI, tooltip="How many OI periods the reading covers - days on an intraday or daily chart, the chart's own bars above daily.", display=display.none)
-string inpOiPos  = input.string("Bottom right", "Readout position", options=["Top right", "Bottom right", "Bottom left", "Top left"], group=G_OI, tooltip="Where the price-chart readout sits. It is one table: the OI line first, the grid line second - each shown by its own switch ('Open interest' here, 'Grid readout' in 6 · Conviction-value grid).", display=display.none)
+string inpOiPos  = input.string("Bottom right", "Readout position", options=["Top right", "Bottom right", "Bottom left", "Top left"], group=G_OI, tooltip="Where the price-chart readout sits. It is one table - a row per layer (OI, then CVG), a column per question: state, why, push, chart, span - each row shown by its own switch ('Open interest' here, 'Grid readout' in 6 · Conviction-value grid).", display=display.none)
 bool   inpOiCast = input.bool(true, "    Gold cast on the histogram", group=G_OI, tooltip="Casts the histogram's columns toward gold while the push they show is made mostly by exits: an up-push that is mostly short covering, a down-push that is mostly long unwinding. The hue is kept - the direction is still the direction; the caution is added.", display=display.none)
 
 float OI_JUMP  = 4.0        // σ of |ΔOI| beyond which a change is a roll, not trade
@@ -3635,26 +3647,85 @@ string gTip  = gCell == 16 ? array.get(G_MEAN, 16) :
      "\n\nREAD THE PUSH AGAINST THE ACTION. Buy, Add and Accumulate are best done on a push ↑; with no push, wait for one; against a push ↓, not yet. Trim, Reduce and Exit can be done now, or into a push ↑. Hold, Wait and Watch change nothing - the push says which way the row may move next." +
      (gHeld ? "\n\nHELD: the conviction tape has moved to another row, but the push has not confirmed it, so the state stands." : "")
 
-// ── the readout, on the price chart: the OI line, then the grid line ─────────
+// ── THE READOUT · on the price chart ─────────────────────────────────────────
+// One table: a row per layer, a column per question. Every column means the
+// same thing on every row, and every colour means what it means on the pane -
+// direction green or red, caution gold, neutral grey. Nothing is packed into a
+// string that a column could hold.
+//
+//              STATE            WHY              PUSH    CHART    SPAN
+//      OI      Short build-up   new shorts                        10d
+//      CVG     Trim             rolling over     ↑       ↓        1 bar
+//
+//  STATE  the verdict - OI's character, the grid's action - coloured by the
+//         side it works (build green, cut red, exits gold, neutral grey)
+//  WHY    the reason, in neutral ink; gold when OI is crowded
+//  PUSH   the histogram in five levels, ↑↑ ↑ · ↓ ↓↓, coloured by its own
+//         direction - so a Trim into a push ↑ reads as exactly that. 'held'
+//         in gold when the row stands against its tape for want of a push
+//  CHART  where the trace's own chart cell stands against the state: ↑ better,
+//         ↓ weaker, = the same
+//  SPAN   the time the reading covers - OI's window, the grid state's age
 bool showOiRow = oiHas
 bool showGRow  = inpGrid
+
+string oiState = oiTot <= 0.0 ? "Flat" : oiChar
+string oiWhy   = oiTot <= 0.0 ? "no change" : oiChar == "Long build-up" ? "new longs" :
+     oiChar == "Short build-up" ? "new shorts" : oiChar == "Short covering" ? "shorts exiting" : "longs exiting"
+oiWhy := oiCrowd ? oiWhy + " · crowded" : oiWhy
+string oiSpan  = str.tostring(inpOiLen) + (oiTf == "D" ? "d" : " bars")
+
+array<string> gParts = str.split(array.get(G_NAME, gCell), " · ")
+string gAct    = array.get(gParts, 0)
+string gWhy    = array.size(gParts) > 1 ? array.get(gParts, 1) : "needs both tapes"
+string gPushG  = gPush == 2 ? "↑↑" : gPush == 1 ? "↑" : gPush == -1 ? "↓" : gPush == -2 ? "↓↓" : "·"
+color  gPushC  = gHeld ? C_GOLD : gPush > 0 ? C_BULL : gPush < 0 ? C_BEAR : color.new(C_NEUT, 30)
+string gLeadG  = gChart == 16 or gCell == 16 ? "" : gLead > 0 ? "↑" : gLead < 0 ? "↓" : "="
+color  gLeadC  = gLead > 0 ? C_BULL : gLead < 0 ? C_BEAR : color.new(C_NEUT, 30)
+color  gActC   = gCell == 16 ? C_NEUT : gSide > 0 ? C_BULL : gSide < 0 ? C_BEAR : C_SOFT
+string gSpan   = gCell == 16 ? "" : str.tostring(gBars) + (gBars == 1 ? " bar" : " bars")
+
+f_rdHead(table t, int c, string tx, string al) =>
+    table.cell(t, c, 0, tx, text_color = color.new(C_NEUT, 25), bgcolor = color.new(C_NEUT, 88),
+         text_halign = al, text_size = size.tiny)
+f_rdCell(table t, int c, int r, string tx, color col, string al, string tip) =>
+    table.cell(t, c, r, tx, text_color = col, text_halign = al, text_size = size.small, tooltip = tip)
+
 var table rdTb = na
 if (showOiRow or showGRow) and barstate.islast
     if na(rdTb)
         string rp = inpOiPos
         rdTb := table.new(rp == "Top right" ? position.top_right : rp == "Top left" ? position.top_left :
-             rp == "Bottom left" ? position.bottom_left : position.bottom_right, 2,
-             (showOiRow ? 1 : 0) + (showGRow ? 1 : 0), bgcolor = C_PANEL,
+             rp == "Bottom left" ? position.bottom_left : position.bottom_right, 6,
+             1 + (showOiRow ? 1 : 0) + (showGRow ? 1 : 0), bgcolor = C_PANEL,
              frame_color = C_GRID, frame_width = 1, border_width = 0, force_overlay = true)
-    int r = 0
+    f_rdHead(rdTb, 0, "",        text.align_left)
+    f_rdHead(rdTb, 1, "STATE",   text.align_left)
+    f_rdHead(rdTb, 2, "WHY",     text.align_left)
+    f_rdHead(rdTb, 3, "PUSH",    text.align_center)
+    f_rdHead(rdTb, 4, "CHART",   text.align_center)
+    f_rdHead(rdTb, 5, "SPAN",    text.align_right)
+    int r = 1
     if showOiRow
-        table.cell(rdTb, 0, r, oiLeft, text_color = C_NEUT, text_halign = text.align_left, text_size = size.small)
-        table.cell(rdTb, 1, r, oiLine, text_color = oiCol, text_halign = text.align_right, text_size = size.small, tooltip = oiTip)
+        f_rdCell(rdTb, 0, r, "OI",    C_NEUT, text.align_left, "Open interest - what kind of participation the window carried.")
+        f_rdCell(rdTb, 1, r, oiState, oiCol,  text.align_left, oiTip)
+        f_rdCell(rdTb, 2, r, oiWhy,   oiCrowd ? C_GOLD : C_SOFT, text.align_left, oiTip)
+        f_rdCell(rdTb, 3, r, "",      C_NEUT, text.align_center, "")
+        f_rdCell(rdTb, 4, r, "",      C_NEUT, text.align_center, "")
+        f_rdCell(rdTb, 5, r, oiSpan,  C_NEUT, text.align_right, "The window the OI reading covers, in OI periods.")
         r += 1
     if showGRow
-        table.cell(rdTb, 0, r, gCell == 16 ? "CVG" : "CVG · " + str.tostring(gBars) + (gBars == 1 ? " bar" : " bars"),
-             text_color = C_NEUT, text_halign = text.align_left, text_size = size.small)
-        table.cell(rdTb, 1, r, gLine, text_color = gCol, text_halign = text.align_right, text_size = size.small, tooltip = gTip)
+        f_rdCell(rdTb, 0, r, "CVG",   C_NEUT, text.align_left, "Conviction-value grid - the 4 × 4 state the two tapes place this name in.")
+        f_rdCell(rdTb, 1, r, gAct,    gActC,  text.align_left, gTip)
+        f_rdCell(rdTb, 2, r, gWhy,    C_SOFT, text.align_left, gTip)
+        f_rdCell(rdTb, 3, r, gCell == 16 ? "" : gPushG + (gHeld ? " held" : ""), gPushC, text.align_center,
+             "The histogram's push, in five levels: ↑↑ impulse (growing past its gate) · ↑ push · · no push (pale, grey or gold column) · ↓ push · ↓↓ impulse. A push moves the grid's row one step toward the tape, an impulse all the way.\n\nHELD (gold): the conviction tape has moved to another row, but the push has not confirmed it, so the state stands.\n\nRead against the action: Buy, Add and Accumulate on a push ↑; Trim, Reduce and Exit now or into a push ↑.")
+        f_rdCell(rdTb, 4, r, gLeadG,  gLeadC, text.align_center,
+             gChart == 16 ? "The chart cell is not yet available." :
+             "Where this chart alone - the trace's own conviction and value - would place the name: " + array.get(G_NAME, gChart) +
+             ". ↑ the chart is already in a better cell than the state, ↓ a weaker one, = the same.")
+        f_rdCell(rdTb, 5, r, gSpan,   C_NEUT, text.align_right,
+             "How long the grid has held this state" + (gFrom != 16 and gFrom != gCell ? ", having come from " + array.get(G_NAME, gFrom) : "") + ".")
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  INFORMATION PANEL
