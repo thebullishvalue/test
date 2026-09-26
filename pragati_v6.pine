@@ -271,8 +271,8 @@
 //  behind its σ, its last close - and from the chart comes the parent bar now
 //  FORMING, aggregated from the chart's own bars. The parent's arithmetic is
 //  finished every chart bar, lands on the parent's settled value at its close,
-//  and is identical in history and realtime. The Data Window's reconstruction-
-//  error row reports how closely it landed, in points.
+//  and is identical in history and realtime. The panel's 'rungs live' row
+//  reports how closely it landed, in points (REC).
 //
 //  ═══ HOW THE TAPES ARE BUILT ══════════════════════════════════════════════
 //      conviction  z = raw / 3σ per rung, σ over its own window
@@ -550,13 +550,17 @@
 //  ═══ DRAWING BUDGETS ══════════════════════════════════════════════════════
 //  Divergence connectors are drawn on the price chart (force_overlay), capped
 //  at sixty and recycled explicitly, so the profile's level lines cannot evict
-//  them. The naked-POC ledger is capped by input. Plot series: 64 allowed, and
-//  a series colour costs two - which is why both continuation markers share one
-//  plot, the arm marks and the rotation tick carry fixed colours, and the signal
-//  line reaches the Data Window only through the histogram (signal = conviction
-//  − histogram). alertcondition() counts too. v6 sits at 57 by this count: 44
-//  calls, 13 of them with a series colour. The compiler's count is the one that
-//  binds.
+//  them. The naked-POC ledger is capped by input.
+//
+//  PLOT COUNT: 64 allowed, and the compiler charges TWO for any colour that is
+//  not a literal constant - the theme-aware palette included, not only colours
+//  that change bar to bar. So the θ rails and the value action zones are
+//  DRAWINGS (lines and boxes extended both ways, redrawn on the last bar), not
+//  plots; the ±70 rails and the zero line are hlines; both continuation markers
+//  share one plot; the impulse band uses a literal colour; the Data Window
+//  carries only the engine's own numbers (the panel carries the rest); and the
+//  lean's alerts use alert(), which does not count. The eight signal alerts are
+//  alertcondition(), which does. About 55 of 64.
 // ═══════════════════════════════════════════════════════════════════════════
 // NAMING. The line runs Siddhi → Nishchaya → Dhṛti → Pragati. Siddhi claimed
 // attainment, a result. Nishchaya named what one window measures: resolve.
@@ -621,7 +625,7 @@ float  inpK    = input.float(0.5, "Impulse threshold (σ of histogram)", minval=
 int    inpPull = input.int(6, "Pullback window", minval=2, maxval=50, group=G_T, tooltip="For continuation signals: how recently the histogram must have crossed to the wrong side for the move to count as a genuine pullback rather than an uninterrupted drift.", display=display.none)
 bool   inpEff = input.bool(true, "Effort → result in signals", group=G_T, tooltip="The indicator's own thesis - is the move paid for - as a signal layer.\n\n▲▼ require that participation was ABSORBED (effort → result in the bottom fifth of its history) at some point in the dislocation window: heavy effort that stopped producing result, the exhaustion a turn comes out of.\n◆ requires that participation is NOT absorbed on the signal bar: the resuming push is producing result.\n\nA HYPOTHESIS, not a measured result. Switch it off to see the stack without it; comparing the two is how it should be judged.", display=display.none)
 int    inpCool = input.int(10, "Cooldown (bars)", minval=0, maxval=200, group=G_T, tooltip="Minimum bars between signals in the same direction - ▲ and long ◆ share one clock, ▼ and short ◆ the other.\n\nWithout this, one choppy stretch produces a cluster of markers that all describe the same event. Raise it if the rails still look busy on your timeframe.", display=display.none)
-bool   inpLean = input.bool(false, "Lean  ○ · signal line × trace", group=G_T, tooltip="OFF BY DEFAULT. Samanvaya's diamond, carried as a lean: conviction's signal line crossing the value trace. A ○ on the trace at the crossing - red when the signal line crosses ABOVE the trace (the short lean), green when it crosses below (the long lean).\n\nAt the defaults Samanvaya's embedded Siddhi line IS this script's signal line, so it is computed from that rather than from a second engine; change the conviction engine's inputs and it is no longer the line that was measured.\n\nMeasured in Samanvaya: +0.0273R against a matched random-entry baseline, positive on 8 of 10 instruments and all three primary futures, holding its sign out of sample - and smaller than a daily round-trip cost, overlap-adjusted t 0.93.\n\nWHY IT IS OFF. Its timing depends on two unrelated scalings - conviction's tanh/3σ against value's softbound · 0.5 - so it is a crossing of two different quantities on an axis they happen to share. And the signal line is no longer drawn, so the event refers to a line you cannot see. Read it as a lean, never as an entry. Its alerts work whether or not it is drawn.", display=display.none)
+bool   inpLean = input.bool(false, "Lean  ○ · signal line × trace", group=G_T, tooltip="OFF BY DEFAULT. Samanvaya's diamond, carried as a lean: conviction's signal line crossing the value trace. A ○ on the trace at the crossing - red when the signal line crosses ABOVE the trace (the short lean), green when it crosses below (the long lean).\n\nAt the defaults Samanvaya's embedded Siddhi line IS this script's signal line, so it is computed from that rather than from a second engine; change the conviction engine's inputs and it is no longer the line that was measured.\n\nMeasured in Samanvaya: +0.0273R against a matched random-entry baseline, positive on 8 of 10 instruments and all three primary futures, holding its sign out of sample - and smaller than a daily round-trip cost, overlap-adjusted t 0.93.\n\nWHY IT IS OFF. Its timing depends on two unrelated scalings - conviction's tanh/3σ against value's softbound · 0.5 - so it is a crossing of two different quantities on an axis they happen to share. And the signal line is no longer drawn, so the event refers to a line you cannot see. Read it as a lean, never as an entry. Its alerts fire only while it is on, through an 'Any alert() function call' alert - the eight signal alerts keep their own named conditions.", display=display.none)
 
 // ── 5 · divergence ──────────────────────────────────────────────────────────
 bool   inpDiv  = input.bool(true,  "Regular divergence  R", group=G_V, tooltip="DIVERGENCE FAMILY · REGULAR - the move is not confirmed by the chart OR by the ladder, at a price every horizon calls stretched.\n\nR BEARISH (bullish mirrors), judged at the confirming pivot:\n  CHART        price made a higher high while conviction - the engine behind the histogram, not drawn - made a lower high; with the zone gate on, the earlier conviction high was above the inner zone.\n  CONVICTION   the ladder also made a lower high - its reading at this pivot is below its reading at the previous one. The whole ladder is failing to confirm, not one frame.\n  VALUE        the ladder is on the RICH side (> 0) at the pivot - the high was made above fair value across horizons.\n\nThe connector is drawn on the PRICE chart, joining the two swing highs being compared.\n\nChart-only regular divergence was the one element positive almost everywhere it was measured; the tape conditions are unmeasured.", display=display.none)
@@ -3604,20 +3608,33 @@ float hDisp = inpHScale == "σ-pinned · 3σ = θ" and ready and nz(histSd) > 1e
 bgcolor(tintLong ? color.new(C_BULL, 94) : tintShort ? color.new(C_BEAR, 94) : na, title = "Declaration")
 
 // ── value action zones and rails: the pane's scale belongs to the trace ───────
-pThU  = plot( osc_entry, "θ rail · sells",  color.new(C_BEAR, 40), 1, display = display.pane)
-pThD  = plot(-osc_entry, "θ rail · buys",   color.new(C_BULL, 40), 1, display = display.pane)
-pOutU = plot( RAIL_OUT,  "Zone edge · upper", color.new(C_NEUT, 100), 1, display = display.pane, editable = false)
-pOutD = plot(-RAIL_OUT,  "Zone edge · lower", color.new(C_NEUT, 100), 1, display = display.pane, editable = false)
-fill(pThU, pOutU, inpFill ? color.new(C_BEAR, 94) : na, title = "Sell zone · θ → +70")
-fill(pOutD, pThD, inpFill ? color.new(C_BULL, 94) : na, title = "Buy zone · −θ → −70")
+// θ is constant for a run, so its rails and zones are DRAWINGS extended both
+// ways, redrawn on the last bar - they cost nothing from the 64-plot budget,
+// where four plots and two fills would have cost up to twelve. The ±70 rails
+// and zero are hlines, which cost nothing either and hold the pane's scale.
+var line thLnU = na
+var line thLnD = na
+var box  zoneU = na
+var box  zoneD = na
+if barstate.islast
+    line.delete(thLnU)
+    line.delete(thLnD)
+    box.delete(zoneU)
+    box.delete(zoneD)
+    thLnU := line.new(bar_index - 1,  osc_entry, bar_index,  osc_entry, extend = extend.both, color = color.new(C_BEAR, 40), width = 1)
+    thLnD := line.new(bar_index - 1, -osc_entry, bar_index, -osc_entry, extend = extend.both, color = color.new(C_BULL, 40), width = 1)
+    if inpFill
+        zoneU := box.new(bar_index - 1,  RAIL_OUT, bar_index,  osc_entry, border_color = na, extend = extend.both, bgcolor = color.new(C_BEAR, 94))
+        zoneD := box.new(bar_index - 1, -osc_entry, bar_index, -RAIL_OUT, border_color = na, extend = extend.both, bgcolor = color.new(C_BULL, 94))
 hline( RAIL_OUT, "Outer rail · bearish R H", color.new(C_BEAR, 55), hline.style_dashed, 1)
 hline(-RAIL_OUT, "Outer rail · bullish R H", color.new(C_BULL, 55), hline.style_dashed, 1)
 hline(0.0, "Zero · fair value", color.new(C_NEUT, 55), hline.style_solid, 1)
 
 // ── the histogram, behind ────────────────────────────────────────────────────
 plot(inpHist ? hist * hDisp : na, "Histogram", histCol, 1, plot.style_columns, histbase = 0.0, display = display.pane)
-plot(inpThr and inpHist ?  thr * hDisp : na, "Impulse threshold +", color.new(C_NEUT, 50), 1, display = display.pane)
-plot(inpThr and inpHist ? -thr * hDisp : na, "Impulse threshold −", color.new(C_NEUT, 50), 1, display = display.pane)
+// A literal colour on purpose: a theme-aware one would cost two plots each.
+plot(inpThr and inpHist ?  thr * hDisp : na, "Impulse threshold +", color.new(#7D8A93, 45), 1, display = display.pane)
+plot(inpThr and inpHist ? -thr * hDisp : na, "Impulse threshold −", color.new(#7D8A93, 45), 1, display = display.pane)
 
 // ── the trace, in front ──────────────────────────────────────────────────────
 // Not drawn until the value model is built: a flat line at zero would read as
@@ -3625,11 +3642,10 @@ plot(inpThr and inpHist ? -thr * hDisp : na, "Impulse threshold −", color.new(
 plot(modelBuilt ? unified_osc : na, "Value trace (Samanvaya)", valCol, 2)
 
 // ── Data Window: the engine's own numbers ────────────────────────────────────
-// The signal line is conviction − the native histogram.
+// The signal line is conviction − the native histogram. Effort → result and the
+// reconstruction error are in the panel's DETAIL rows.
 plot(hist, "Histogram (native)", display = display.data_window)
 plot(ready ? osc : na, "Conviction (engine)", display = display.data_window)
-plot(na(effShare) ? na : 100.0 * effShare, "Effort → result %", display = display.data_window)
-plot(multiUp ? recErr : na, "Ladder reconstruction error (pts)", display = display.data_window)
 plot(multi and ladReady ? ladAgree : na, "MTF conviction", display = display.data_window)
 plot(tpReady ? tpBias : na, "MTF value (+ rich / − cheap)", display = display.data_window)
 
@@ -3734,5 +3750,10 @@ alertcondition(divBear, "Pragati R bearish divergence", "Pragati R bearish on {{
 alertcondition(divBull, "Pragati R bullish divergence", "Pragati R bullish on {{ticker}} {{interval}} - price made a lower low, conviction and the ladder a higher one, at a price cheap across horizons.")
 alertcondition(hidBear, "Pragati H hidden bearish", "Pragati H bearish on {{ticker}} {{interval}} - price made a lower high while conviction made a higher one, with sellers in control across the ladder. Unmeasured edge.")
 alertcondition(hidBull, "Pragati H hidden bullish", "Pragati H bullish on {{ticker}} {{interval}} - price made a higher low while conviction made a lower one, with buyers in control across the ladder. Unmeasured edge.")
-alertcondition(leanShort, "Pragati ○ short lean", "Pragati ○ on {{ticker}} {{interval}} - the signal line crossed ABOVE the trace: SHORT lean. Measured +0.0273R in Samanvaya, smaller than a daily round-trip cost - a lean, not an entry.")
-alertcondition(leanLong,  "Pragati ○ long lean",  "Pragati ○ on {{ticker}} {{interval}} - the signal line crossed BELOW the trace: LONG lean. Measured +0.0273R in Samanvaya, smaller than a daily round-trip cost - a lean, not an entry.")
+// The lean's alerts use alert(), which does not count toward the plot budget.
+// They fire only while the lean is on, through an 'Any alert() function call'
+// alert; leanShort and leanLong are already committed on closed bars.
+if inpLean and leanShort
+    alert("Pragati ○ on " + syminfo.ticker + " " + timeframe.period + " - the signal line crossed ABOVE the trace: SHORT lean. Measured +0.0273R in Samanvaya, smaller than a daily round-trip cost - a lean, not an entry.", alert.freq_once_per_bar_close)
+if inpLean and leanLong
+    alert("Pragati ○ on " + syminfo.ticker + " " + timeframe.period + " - the signal line crossed BELOW the trace: LONG lean. Measured +0.0273R in Samanvaya, smaller than a daily round-trip cost - a lean, not an entry.", alert.freq_once_per_bar_close)
