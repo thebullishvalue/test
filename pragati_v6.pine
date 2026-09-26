@@ -33,12 +33,13 @@
 //                    returns past its impulse gate with control held on the
 //                    conviction tape and room left on the value tape.
 //
-//  AND ONE STATE - THE CONVICTION-VALUE GRID. Where the two tapes place the name
-//  on a 5 × 5 grid, named as an ACTION - Buy, Add, Hold, Accumulate, Wait,
-//  Watch, Trim, Reduce, Exit - with the seed CVG's units; the trace's push, in
-//  five levels, decides when it may change row. A state, not a signal: signals
-//  are events, the grid is where the name stands between them, and neither
-//  reads the other. One line on the price chart, like the OI line.
+//  AND ONE STATE - THE CONVICTION-VALUE GRID, 4 × 4. The two tapes place the
+//  name, the histogram decides when it may change row, the trace says whether
+//  the chart already stands elsewhere. Each cell is named as an ACTION - Buy,
+//  Add, Accumulate, Hold, Wait, Watch, Trim, Reduce, Exit - with the seed CVG's
+//  units. A state, not a signal: signals are events, the grid is where the
+//  name stands between them, and neither reads the other. One line on the
+//  price chart, under the OI line, in the same readout.
 //
 //  WHAT CHANGED FROM v5
 //      · The pane draws one trace - conviction × value - and the histogram is
@@ -66,8 +67,8 @@
 //  θ tags, each tape's name, ladder and reading (↺ = fallback direction), and -
 //  only when the signals cannot judge - a gold SIGNALS PAUSED label naming why.
 //  Optional panel on the right. On the price chart: the divergence connectors
-//  (flow-failure evidence), the one-line grid and OI readouts, and the volume
-//  profile.
+//  (flow-failure evidence), the readout - the OI line, then the grid line -
+//  and the volume profile.
 //
 //  ═══ ONE CHANNEL, ONE QUESTION ════════════════════════════════════════════
 //      trace hue          which way the move is stretched: GREEN up, RED down
@@ -144,11 +145,12 @@
 //                                   evidence, cooldown
 //      5 · Divergence evidence      the pivot engine behind a TURN's failure
 //                                   evidence, and its price connectors
-//      6 · Conviction-value grid    its one-line readout on the price chart
+//      6 · Conviction-value grid    its line in the price-chart readout
 //      7 · Display                  markers, histogram, trace, zones, palette
 //      8 · Information panel
 //      9 · Volume profile           price chart, display only
-//     10 · Open interest            price chart, display only
+//     10 · Open interest            price chart, display only; where the
+//                                   readout sits
 //  Every knob moves something. A few only move something in a mode - the fixed
 //  bin size only in Fixed ticks - and their tooltips say so.
 //
@@ -416,19 +418,20 @@
 //  A ▲ sits on the very line whose crossing opened its window. Nothing is drawn
 //  before its bar closes, and nothing is revised afterwards.
 //
-//  ═══ THE CONVICTION-VALUE GRID · 5 × 5 ══════════════════════════════════════
+//  ═══ THE CONVICTION-VALUE GRID · 4 × 4 ══════════════════════════════════════
 //  Pragyam's CVG, grown from its 3 × 3 seed. Where the name stands between
-//  signals, as something to DO about it.
+//  signals, as something to DO about it. Four readings, four jobs:
 //
-//  THE AXES are the tapes, cut where the tapes themselves change how they are
-//  drawn - faint, bright past the knee, solid at the outer level - so the grid
-//  reads exactly what the eye reads. No threshold is new.
-//      rows     conviction tape   sellers extreme ≤ −60 · sellers ≤ −30 ·
-//                                 undecided · buyers ≥ +30 · buyers extreme ≥ +60
-//      columns  value tape        deep value ≤ −2θ · cheap ≤ −θ · fair ·
-//                                 rich ≥ +θ · stretched ≥ +2θ
-//  2θ is value's outer level as the outer zone is conviction's - twice the
-//  knee; a 3σ dislocation at the default θ, where the value tape is near solid.
+//      CONVICTION TAPE   the ROW      who controls
+//      VALUE TAPE        the COLUMN   where price stands
+//      HISTOGRAM         the PUSH     whether the row may change
+//      TRACE             the CHART    whether the chart already stands elsewhere
+//
+//  THE AXES are the tapes, split at their knee and at zero - their step and
+//  their hue - so every cell is a pair of colours actually drawn on the pane:
+//      rows     buyers firm ≥ +30 · buyers edge · sellers edge · sellers firm ≤ −30
+//      columns  cheap ≤ −θ · below fair · above fair · rich ≥ +θ
+//  No threshold is new.
 //
 //  THE PUSH, in five levels - the histogram read as it is drawn:
 //      impulse ↑   growing past its impulse gate
@@ -437,54 +440,56 @@
 //      push ↓ · impulse ↓
 //
 //  HOW A NAME MOVES. Columns move freely - price is where it is. Rows are a
-//  claim about control, so the push has to stand behind the claim, in
-//  proportion to its size: a push moves the row ONE step toward the tape, an
-//  impulse moves it all the way, no push holds it. A row the tape has left is
-//  HELD - gold. Before the histogram is calibrated the row follows the tape.
+//  claim about control, so the push must stand behind the claim in proportion
+//  to its size: a push moves the row ONE step toward the tape, an impulse all
+//  the way, no push holds it. A row the tape has left is HELD - gold. Before
+//  the histogram is calibrated the row follows the tape.
 //
-//  WHAT EACH STATE SAYS TO DO. The seed's nine states become nine actions, and
-//  each keeps its seed units:
+//  WHAT EACH CELL SAYS TO DO. The seed's nine states become nine ACTIONS, and
+//  each keeps its seed units, so the word is the weight:
 //      Buy 3 · Add 3 · Hold 1.5 · Accumulate 1.5 · Wait 1 · Watch 1 ·
 //      Trim 0.75 · Reduce 0.5 · Exit 0.25
 //  Each cell takes the action of the seed cell it lies inside, plus the reason
-//  that separates it from its neighbours:
+//  that separates it from its neighbour:
 //
-//                   DEEP VALUE     CHEAP          FAIR          RICH          STRETCHED
-//      buyers ext.  Buy·thrust     Buy·strong     Add·strong    Hold·running  TRIM·climax
-//                                  turn           trend         hot
-//      buyers       Buy·early      Buy·turn       Add·trend     Hold·don't    Hold·
-//                   turn                                        add           stretched
-//      undecided    Accumulate·    Accumulate·    Wait·no edge  Trim·         Trim·topping
-//                   deep value     basing                       stalling
-//      sellers      Watch·washout  Watch·still    Reduce·       Exit·         Exit·rolling
-//                                  falling        downtrend     distribution  over
-//      sellers ext. Watch·         Watch·falling  Reduce·       Exit·heavy    Exit·top
-//                   capitulation   knife          breakdown     selling       collapsing
+//                   CHEAP              BELOW FAIR         ABOVE FAIR         RICH
+//      buyers firm  Buy·turn           Add·trend          Add·strong trend   Hold·don't add
+//      buyers edge  Accumulate·basing  Accumulate·        Wait·drifting      Trim·stalling
+//                                      early turn
+//      sellers edge Accumulate·        Wait·no edge       Trim·rolling over  Trim·topping
+//                   deep value
+//      sellers firm Watch·still        Reduce·downtrend   Reduce·breakdown   Exit·distribution
+//                   falling
 //
-//  ONE CELL DEPARTS FROM ITS SEED CELL. Buyers extreme at a stretched price -
-//  both tapes at their outer level on the stretch diagonal - is a climax: it
-//  trims instead of holding. Its mirror, sellers extreme at deep value, stays
-//  Watch. The asymmetry is deliberate: a long book can sell into a climax on
-//  sight, but buying a capitulation needs control to turn first - and when it
-//  does, the row moves and the grid says so.
+//  ONE REFINEMENT, AND WHY. The seed's Wait - undecided at a fair price - is the
+//  only seed cell that says nothing, so it is the only one the hue refines.
+//  Where conviction and value lean OPPOSITE ways - the split diagonal, where a
+//  turn or a top begins - the cell takes the mildest action they lean toward:
+//  buyers edging in below fair Accumulate (early turn), sellers edging in above
+//  fair Trim (rolling over). Where they lean the same way it stays Wait.
+//  Weight never falls as buyers firm up and never rises as price gets richer.
+//  Every name is held: the state sets how much, never whether. Chosen by
+//  meaning in the seed, not fitted - do not tune them.
 //
 //  READ THE PUSH AGAINST THE ACTION. Buy, Add and Accumulate are best done on
 //  a push ↑; with no push, wait for one; against a push ↓, not yet. Trim,
 //  Reduce and Exit can be done now, or into a push ↑. Hold, Wait and Watch
 //  change nothing - the push says which way the row may move next.
 //
-//  THE TRACE enters through its push, which runs the rows. It is not an axis:
-//  it is the tapes' chart rungs blended, so as an axis it would count each tape
-//  twice. Its geometry is in the grid anyway: the Buy-turn and Exit-distribution
-//  corners are its split diagonal, where it dims; the climax and capitulation
-//  corners its stretch diagonal, where it is brightest.
+//  THE TRACE AS THE CHART CELL. The trace is not an axis - it is the tapes'
+//  chart rungs blended, so as an axis it would count each tape twice. Its two
+//  ingredients, chart conviction and chart value, placed on the same cuts, give
+//  the CHART CELL: where this chart alone would put the name. The trace is
+//  where that cell sits along the grid's stretch diagonal. When the chart cell
+//  carries more units than the state, the chart LEADS ↑ - it has moved into a
+//  better cell before the ladder; fewer, it LEADS ↓. A Watch with the chart
+//  leading ↑ and a push ↑ is the earliest a turn shows here. Display only.
 //
 //  THE GRID AND THE SIGNALS meet by construction, not by wiring. A ▲ TURN
 //  needs the value tape to have been cheap and the push up - the push that
-//  lifts a row - so it tends to carry a name from the Watch cells up through
-//  Accumulate toward Buy. A ◆ RESUME needs control held and room left: Add ·
-//  trend and Buy · turn. Units chosen by meaning in the seed, not fitted; the
-//  grid is unmeasured, like the seed.
+//  lifts a row - so it tends to carry a name up the cheap column, from Watch
+//  toward Accumulate and Buy. A ◆ RESUME needs control held and room left:
+//  Add · trend and Add · strong trend. The grid is unmeasured, like the seed.
 //
 //  ═══ WHAT IT MEASURES ═════════════════════════════════════════════════════
 //  CONVICTION - how much of a bar's travel became net displacement:
@@ -667,7 +672,7 @@
 //  Thirty spare. Everything else is a DRAWING, which costs nothing here: the
 //  θ rails and value zones (lines and boxes extended both ways, redrawn on the
 //  last bar), the right-edge labels, the divergence connectors, the profile's
-//  boxes, lines and tags, and the three tables - panel, grid line, OI line.
+//  boxes, lines and tags, and the two tables - the panel, and the readout.
 //
 //  NO ALERTS. alertcondition() is charged one each and was the first thing
 //  cut. If alerts are wanted back, alert() costs nothing from this budget: one
@@ -751,8 +756,7 @@ bool   inpGate = input.bool(true, "Zone gate on regular divergence", group=G_V, 
 bool   inpLine = input.bool(true, "Connectors on price", group=G_V, tooltip="Draws each piece of divergence evidence on the PRICE chart: a line joining the two swing extremes it compares - the higher high (or lower low) you can see, where conviction made the lower one.\n\nOnly divergences that qualify as TURN evidence are drawn: zone-gated, with the pivot at a price value called stretched (value on this chart above zero at a top, below at a bottom).\n\nCapped at sixty and recycled explicitly.", display=display.none)
 
 // ── 6 · the conviction-value grid: a state, read from the tapes ────────────
-bool   inpGrid    = input.bool(true, "Grid readout", group=G_G, tooltip="One line on the PRICE chart, beside the OI line: the conviction-value grid's state for this name - an action and its reason - with the push, and how long it has been there.\n\nThe grid is 5 × 5: the conviction tape (sellers extreme · sellers · undecided · buyers · buyers extreme) against the value tape (deep value · cheap · fair · rich · stretched). Columns move freely; a row moves only with the push behind it - one step on a push, all the way on an impulse.\n\nA state, not a signal: nothing here reads ▲▼ or ◆, and they do not read it. Hover the line for what the state means, its units and how to read the push against it.", display=display.none)
-string inpGridPos = input.string("Bottom left", "    Position", options=["Top right", "Bottom right", "Bottom left", "Top left"], group=G_G, display=display.none)
+bool   inpGrid    = input.bool(true, "Grid readout", group=G_G, tooltip="The second line of the price-chart readout, under the OI line: the conviction-value grid's state for this name - an action and its reason - with the push, how long it has been there, and whether the chart leads.\n\nThe grid is 4 × 4: the conviction tape (buyers firm · buyers edge · sellers edge · sellers firm) against the value tape (cheap · below fair · above fair · rich). Columns move freely; a row moves only with the histogram's push behind it - one step on a push, all the way on an impulse. The trace's own ingredients place a chart cell on the same grid; when it carries more units than the state the chart leads ↑, fewer ↓.\n\nA state, not a signal: nothing here reads ▲▼ or ◆, and they do not read it. Hover the line for what the state means, its units and how to read the push against it. The readout's position is set in 10 · Open interest.", display=display.none)
 
 // ── 6 · display ─────────────────────────────────────────────────────────────
 string inpPlace = input.string("Threshold rails", "Marker placement", options=["Threshold rails", "On the trace"], group=G_D, tooltip="THRESHOLD RAILS stamps ▲▼ and ◆ on the θ lines - bearish above, bullish below - so the markers form readable rows, and a ▲ sits on the very line whose crossing opened its window.\n\nON THE TRACE places each marker at the trace's reading when it fired.", display=display.none)
@@ -3427,9 +3431,9 @@ f_q(color c, int t) => color.new(c, quietReg ? math.min(100, t + 45) : t)
 //  Symbols without published OI draw nothing and cast nothing.
 // ══════════════════════════════════════════════════════════════════════════════
 var string G_OI = "10 · Open interest · price chart"
-bool   inpOi     = input.bool(true, "Open interest", group=G_OI, tooltip="One line on the PRICE chart: Long build-up, Short build-up, Short covering or Long unwinding over the window, plus 'crowded' when open interest sits in the top tenth of its last year.\n\nNeeds a symbol TradingView publishes open interest for (listed futures). Anything else draws nothing.", display=display.none)
+bool   inpOi     = input.bool(true, "Open interest", group=G_OI, tooltip="The first line of the price-chart readout: Long build-up, Short build-up, Short covering or Long unwinding over the window, plus 'crowded' when open interest sits in the top tenth of its last year. The grid line sits under it.\n\nNeeds a symbol TradingView publishes open interest for (listed futures). Anything else leaves only the grid line.", display=display.none)
 int    inpOiLen  = input.int(10, "    Window (days)", minval=3, maxval=100, group=G_OI, tooltip="How many OI periods the reading covers - days on an intraday or daily chart, the chart's own bars above daily.", display=display.none)
-string inpOiPos  = input.string("Bottom right", "    Position", options=["Top right", "Bottom right", "Bottom left", "Top left"], group=G_OI, display=display.none)
+string inpOiPos  = input.string("Bottom right", "Readout position", options=["Top right", "Bottom right", "Bottom left", "Top left"], group=G_OI, tooltip="Where the price-chart readout sits. It is one table: the OI line first, the grid line second - each shown by its own switch ('Open interest' here, 'Grid readout' in 6 · Conviction-value grid).", display=display.none)
 bool   inpOiCast = input.bool(true, "    Gold cast on the histogram", group=G_OI, tooltip="Casts the histogram's columns toward gold while the push they show is made mostly by exits: an up-push that is mostly short covering, a down-push that is mostly long unwinding. The hue is kept - the direction is still the direction; the caution is added.", display=display.none)
 
 float OI_JUMP  = 4.0        // σ of |ΔOI| beyond which a change is a roll, not trade
@@ -3484,18 +3488,11 @@ string oiChar   = oiTot <= 0.0 ? "OI flat" :
      oiSC >= math.max(oiLB, oiSB, oiLU) ? "Short covering" : "Long unwinding"
 color  oiCol    = oiTot <= 0.0 ? C_SOFT : oiChar == "Long build-up" ? C_BULL : oiChar == "Short build-up" ? C_BEAR : C_GOLD
 
-var table oiTb = na
-if oiHas and barstate.islast
-    if na(oiTb)
-        string p = inpOiPos
-        oiTb := table.new(p == "Top right" ? position.top_right : p == "Bottom left" ? position.bottom_left :
-             p == "Top left" ? position.top_left : position.bottom_right, 2, 1, bgcolor = C_PANEL,
-             frame_color = C_GRID, frame_width = 1, border_width = 0, force_overlay = true)
-    table.cell(oiTb, 0, 0, "OI · " + str.tostring(inpOiLen) + (oiTf == "D" ? "d" : " bars"), text_color = C_NEUT,
-         text_halign = text.align_left, text_size = size.small)
-    table.cell(oiTb, 1, 0, oiChar + (oiCrowd ? " · crowded" : ""), text_color = oiCol,
-         text_halign = text.align_right, text_size = size.small,
-         tooltip = "Long build-up: new longs funding the rise. Short build-up: new shorts funding the fall. Short covering: a rally made of exits. Long unwinding: a fall made of exits. The last two are gold - self-limiting flow.\n\nCrowded: open interest in the top tenth of its last year - many positions that may have to be closed.")
+// The OI line is drawn in the readout table with the grid line, after the grid
+// is read (section 10): OI first, the grid second.
+string oiLeft = "OI · " + str.tostring(inpOiLen) + (oiTf == "D" ? "d" : " bars")
+string oiLine = oiChar + (oiCrowd ? " · crowded" : "")
+string oiTip  = "Long build-up: new longs funding the rise. Short build-up: new shorts funding the fall. Short covering: a rally made of exits. Long unwinding: a fall made of exits. The last two are gold - self-limiting flow.\n\nCrowded: open interest in the top tenth of its last year - many positions that may have to be closed."
 
 // ── the gold cast: the histogram's push is being made by exits ────────────────
 // Read here, ahead of the grid and the pane, because both use it: the columns
@@ -3503,105 +3500,103 @@ if oiHas and barstate.islast
 bool  oiCast  = inpOiCast and oiSelf and ready and (hAbove ? oiSC > oiLU : oiLU > oiSC)
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  10 · THE CONVICTION-VALUE GRID · 5 × 5 · PUSH × 5      a state, not a signal
+//  10 · THE CONVICTION-VALUE GRID · 4 × 4                  a state, not a signal
 //
-//  ANALYSIS - where the name stands, and when it may move.
-//    ROWS    the conviction tape in its five drawn intensities: solid, bright
-//            and faint - sellers extreme ≤ −60 · sellers ≤ −30 · undecided ·
-//            buyers ≥ +30 · buyers extreme ≥ +60 (the inner and outer zones).
-//    COLUMNS the value tape, the same way: deep value ≤ −2θ · cheap ≤ −θ ·
-//            fair · rich ≥ +θ · stretched ≥ +2θ. 2θ is the value tape's outer
-//            level as the outer zone is conviction's: twice the knee - a 3σ
-//            dislocation at the default θ, where the tape is near solid.
-//    PUSH    the histogram, read as drawn, in five levels: impulse ↑ (growing
-//            past its gate) · push ↑ · no push · push ↓ · impulse ↓. 'No push'
-//            is a pale (turning), grey (quiet) or gold (exits) column.
-//    COLUMNS MOVE FREELY - price is where it is. ROWS are a claim about
-//            control, so the push must stand behind a move: a push moves the
-//            row ONE step toward the tape, an impulse moves it all the way,
-//            and no push holds it. A row the tape has left is HELD.
+//  FOUR READINGS, FOUR JOBS.
+//    CONVICTION TAPE   the ROW - who controls: buyers firm ≥ +30 · buyers edge ·
+//                      sellers edge · sellers firm ≤ −30
+//    VALUE TAPE        the COLUMN - where price stands: cheap ≤ −θ · below fair ·
+//                      above fair · rich ≥ +θ
+//    HISTOGRAM         the PUSH - whether a row may change, in five levels:
+//                      impulse ↑ · push ↑ · no push · push ↓ · impulse ↓
+//    TRACE             the CHART CELL - its two ingredients placed on the same
+//                      grid, to say whether the chart already stands elsewhere
 //
-//  INFERENCE - what to do there. The seed's nine states become nine ACTIONS,
-//  each keeping its seed units: Buy 3 (Turned) · Add 3 (Building) · Hold 1.5
-//  (Paid) · Accumulate 1.5 (Basing) · Wait 1 (Idle) · Watch 1 (Dislocated) ·
-//  Trim 0.75 (Stalling) · Reduce 0.5 (Fading) · Exit 0.25 (Distribution). Each
-//  of the 25 cells takes the action of the seed cell it lies inside, plus a
-//  reason; no new number is introduced. One cell departs: buyers extreme at a
-//  stretched price - both tapes at their outer level on the stretch diagonal -
-//  is a CLIMAX, and trims instead of holding. Its mirror, sellers extreme at
-//  deep value, stays Watch: a long book can sell into a climax on sight, but
-//  buying a capitulation needs control to turn first - and the grid will show
-//  that when the row moves.
+//  Each tape splits at its knee and at zero - its step and its hue - so every
+//  cell is a pair of colours actually drawn on the pane. No threshold is new.
+//
+//  HOW A NAME MOVES. Columns move freely - price is where it is. Rows are a
+//  claim about control, and the push must stand behind it in proportion: a
+//  push moves the row one step toward the tape, an impulse all the way, no
+//  push holds it - a HELD row. 'No push' is a pale (turning), grey (quiet) or
+//  gold (exits) column. Before the histogram is calibrated the row follows the
+//  tape.
+//
+//  WHAT EACH CELL SAYS TO DO. The seed's nine states become nine ACTIONS, each
+//  keeping its seed units - Buy 3 · Add 3 · Hold 1.5 · Accumulate 1.5 · Wait 1
+//  · Watch 1 · Trim 0.75 · Reduce 0.5 · Exit 0.25 - so the word is the weight.
+//  Each cell takes the action of the seed cell it lies inside, plus the reason
+//  that separates it from its neighbour. One refinement: the seed's Wait -
+//  undecided at a fair price - is the only seed cell that says nothing, so it
+//  is the only one the hue refines. Where conviction and value lean OPPOSITE
+//  ways it takes the mildest action they lean toward - buyers edging in below
+//  fair Accumulate (early turn), sellers edging in above fair Trim (rolling
+//  over); where they lean the same way it stays Wait.
+//
+//  THE CHART CELL. The ladder places the state; the chart - the trace's own
+//  conviction and value, on the same cuts - may already stand in another cell.
+//  When the chart cell carries more units than the state, the chart LEADS ↑;
+//  fewer, it LEADS ↓. Display only: the state and its units are the tapes'.
 // ═══════════════════════════════════════════════════════════════════════════
-// Cell = row · 5 + column. Rows: 0 sellers extreme … 4 buyers extreme.
-// Columns: 0 deep value … 4 stretched. Cell 25 is UNREAD.
+// Cell = row · 4 + column. Rows: 0 sellers firm, 1 sellers edge, 2 buyers edge,
+// 3 buyers firm. Columns: 0 cheap, 1 below fair, 2 above fair, 3 rich. 16 UNREAD.
 var array<string> G_NAME = array.from(
-     "Watch · capitulation",    "Watch · falling knife", "Reduce · breakdown", "Exit · heavy selling", "Exit · top collapsing",
-     "Watch · washout",         "Watch · still falling", "Reduce · downtrend", "Exit · distribution",  "Exit · rolling over",
-     "Accumulate · deep value", "Accumulate · basing",   "Wait · no edge",     "Trim · stalling",      "Trim · topping",
-     "Buy · early turn",        "Buy · turn",            "Add · trend",        "Hold · don't add",     "Hold · stretched",
-     "Buy · thrust",            "Buy · strong turn",     "Add · strong trend", "Hold · running hot",   "Trim · climax",
+     "Watch · still falling",   "Reduce · downtrend",    "Reduce · breakdown",  "Exit · distribution",
+     "Accumulate · deep value", "Wait · no edge",        "Trim · rolling over", "Trim · topping",
+     "Accumulate · basing",     "Accumulate · early turn", "Wait · drifting",   "Trim · stalling",
+     "Buy · turn",              "Add · trend",           "Add · strong trend",  "Hold · don't add",
      "Unread")
+// Units are the action's, and each action's are its seed state's:
+// Buy 3 · Add 3 · Hold 1.5 · Accumulate 1.5 · Wait 1 · Watch 1 · Trim 0.75 ·
+// Reduce 0.5 · Exit 0.25.
 var array<float> G_UNITS = array.from(
-     1.0, 1.0, 0.5, 0.25, 0.25,
-     1.0, 1.0, 0.5, 0.25, 0.25,
-     1.5, 1.5, 1.0, 0.75, 0.75,
-     3.0, 3.0, 3.0, 1.5,  1.5,
-     3.0, 3.0, 3.0, 1.5,  0.75,
-     1.0)
+     1.00, 0.50, 0.50, 0.25,
+     1.50, 1.00, 0.75, 0.75,
+     1.50, 1.50, 1.00, 0.75,
+     3.00, 3.00, 3.00, 1.50,
+     1.00)
 // the side each action works: +1 builds the position, −1 cuts it, 0 neither
 var array<int> G_SIDE = array.from(
-      0,  0, -1, -1, -1,
-      0,  0, -1, -1, -1,
-      1,  1,  0, -1, -1,
-      1,  1,  1,  0,  0,
-      1,  1,  1,  0, -1,
+      0, -1, -1, -1,
+      1,  0, -1, -1,
+      1,  1,  0, -1,
+      1,  1,  1,  0,
       0)
 var array<string> G_MEAN = array.from(
-     "sellers at their most one-sided at the deepest value - a selling climax; wait for control to turn before buying it",
-     "sellers at their most one-sided into a cheap price - do not catch it",
-     "sellers at their most one-sided at a fair price - the market is breaking down",
-     "sellers at their most one-sided at a rich price - heavy distribution",
-     "sellers at their most one-sided while price is still stretched - the top is collapsing",
-     "sellers firm into deep value - a washout in progress; watch for the turn",
-     "sellers firm at a cheap price - still falling; the watchlist",
-     "sellers firm at a fair price - the downtrend is running",
-     "sellers firm at a rich price - distribution",
-     "sellers firm while price is still stretched - the top rolling over",
-     "no side in control at deep value - build slowly while it bases",
-     "no side in control at a cheap price - the base before a turn",
-     "no side in control at a fair price - nothing to do",
-     "no side in control at a rich price - the move has stalled",
-     "no side in control at a stretched price - a top forming",
-     "buyers firm at deep value - the turn has begun early",
-     "buyers firm at a cheap price - a dislocation that turned",
-     "buyers firm at a fair price - the core trend, room to run",
-     "buyers firm at a rich price - hold it, do not add",
-     "buyers firm at a stretched price - hold, but it is stretched",
-     "buyers at their most one-sided out of deep value - a thrust",
-     "buyers at their most one-sided at a cheap price - a strong turn",
-     "buyers at their most one-sided at a fair price - a strong trend with room",
-     "buyers at their most one-sided at a rich price - running hot",
-     "buyers at their most one-sided at a stretched price - a climax; take some off",
+     "sellers firmly in control at a cheap price - still falling; the watchlist, do not catch it",
+     "sellers firmly in control below fair - the downtrend is running",
+     "sellers firmly in control while price is still above fair - the market is breaking down",
+     "sellers firmly in control at a rich price - distribution; the floor",
+     "cheap, and the sellers are down to an edge - build slowly on value",
+     "sellers edging, price below fair - nothing decided; no edge either way",
+     "sellers edging in while price is above fair - the move is rolling over; take some off",
+     "rich, and the sellers are edging in - a top forming",
+     "cheap, and buyers edging in - the base is forming",
+     "buyers edging in below fair - the earliest turn; start building",
+     "buyers edging, price above fair - drifting without conviction",
+     "rich, and control has faded to an edge - the move has stalled",
+     "cheap, buyers now firmly in control - a dislocation that turned",
+     "buyers firmly in control below fair - the trend, with room to run",
+     "buyers firmly in control and price already above fair - a strong trend",
+     "buyers firmly in control of a rich price - hold it, do not add",
      "a tape not yet calibrated, or switched off")
 
-float gV2 = f_softBound(2.0 * entryThresh * gain) * 100.0          // 2θ on the value scale
-f_gRow(float c) => c >= inpZ2 ? 4 : c >= inpZ1 ? 3 : c > -inpZ1 ? 2 : c > -inpZ2 ? 1 : 0
-f_gCol(float v) => v <= -gV2 ? 0 : v <= -osc_entry ? 1 : v < osc_entry ? 2 : v < gV2 ? 3 : 4
+f_gRow(float c) => c >= inpZ1 ? 3 : c >= 0.0 ? 2 : c > -inpZ1 ? 1 : 0
+f_gCol(float v) => v <= -osc_entry ? 0 : v < 0.0 ? 1 : v < osc_entry ? 2 : 3
 
-// ── the push, in five levels, read from the column as it is drawn ────────────
+// ── HISTOGRAM · the push, in five levels, read from the column as drawn ─────
 bool gLive = ready and (hExpand or (useSlope and trWith)) and not quietReg and not oiCast
 int  gPush = not gLive ? 0 : hAbove ? (hExpand and hImp ? 2 : 1) : (hExpand and hImp ? -2 : -1)
 string gPushTxt = gPush == 2 ? "impulse ↑" : gPush == 1 ? "push ↑" : gPush == -1 ? "push ↓" : gPush == -2 ? "impulse ↓" : "no push"
 
-// ── the state ────────────────────────────────────────────────────────────────
+// ── TAPES · the state ────────────────────────────────────────────────────────
 bool gRead = mtfCOk and mtfVOk
 var int gRow   = na
-var int gCell  = 25
-var int gFrom  = 25
+var int gCell  = 16
+var int gFrom  = 16
 var int gSince = 0
 bool gHeld = false
-int  gNow  = 25
+int  gNow  = 16
 if gRead
     int tgt = f_gRow(ladAgree)
     if na(gRow) or not ready
@@ -3611,7 +3606,7 @@ if gRead
     else if tgt < gRow and gPush <= -1
         gRow := gPush == -2 ? tgt : gRow - 1
     gHeld := gRow != tgt
-    gNow  := gRow * 5 + f_gCol(tpBias)
+    gNow  := gRow * 4 + f_gCol(tpBias)
 else
     gRow := na
 if gNow != gCell
@@ -3621,34 +3616,52 @@ if gNow != gCell
 int   gBars  = bar_index - gSince + 1
 float gUnits = array.get(G_UNITS, gCell)
 int   gSide  = array.get(G_SIDE, gCell)
-color gCol   = gCell == 25 ? C_NEUT : gHeld ? C_GOLD : gSide > 0 ? C_BULL : gSide < 0 ? C_BEAR : C_SOFT
-string gLine = gCell == 25 ? "Unread · needs both tapes" :
-     array.get(G_NAME, gCell) + " · " + gPushTxt + (gHeld ? " · held" : "")
-string gTip  = gCell == 25 ? array.get(G_MEAN, 25) :
+
+// ── TRACE · the chart cell, and which way it leads ───────────────────────────
+int    gChart  = convReady and modelBuilt ? f_gRow(osc) * 4 + f_gCol(unified_osc) : 16
+int    gLead   = gCell == 16 or gChart == 16 ? 0 : array.get(G_UNITS, gChart) > gUnits ? 1 : array.get(G_UNITS, gChart) < gUnits ? -1 : 0
+string gLeadTx = gLead > 0 ? "chart leads ↑" : gLead < 0 ? "chart leads ↓" : ""
+
+color  gCol  = gCell == 16 ? C_NEUT : gHeld ? C_GOLD : gSide > 0 ? C_BULL : gSide < 0 ? C_BEAR : C_SOFT
+string gLine = gCell == 16 ? "Unread · needs both tapes" :
+     array.get(G_NAME, gCell) + " · " + gPushTxt + (gHeld ? " · held" : "") + (gLead != 0 ? " · " + gLeadTx : "")
+string gTip  = gCell == 16 ? array.get(G_MEAN, 16) :
      array.get(G_NAME, gCell) + " - " + array.get(G_MEAN, gCell) + ".\n\n" +
      str.tostring(gUnits, "0.##") + " units · " + str.tostring(gBars) + " bars here" +
-     (gFrom != 25 and gFrom != gCell ? " · came from " + array.get(G_NAME, gFrom) : "") +
-     "\n\nREAD THE PUSH AGAINST THE ACTION. Buy, Add and Accumulate are best done on a push ↑; with no push, wait for one; against a push ↓, not yet. Trim, Reduce and Exit can be done now, or into a push ↑. Hold, Wait and Watch change nothing - watch the push for the row's next move." +
+     (gFrom != 16 and gFrom != gCell ? " · came from " + array.get(G_NAME, gFrom) : "") +
+     (gChart == 16 ? "" : "\n\nCHART CELL: " + array.get(G_NAME, gChart) + " - where the trace's own conviction and value place it" +
+      (gLead > 0 ? ". The chart is already in a better cell than the ladder: it LEADS ↑." :
+       gLead < 0 ? ". The chart is already in a weaker cell than the ladder: it LEADS ↓." : ".")) +
+     "\n\nREAD THE PUSH AGAINST THE ACTION. Buy, Add and Accumulate are best done on a push ↑; with no push, wait for one; against a push ↓, not yet. Trim, Reduce and Exit can be done now, or into a push ↑. Hold, Wait and Watch change nothing - the push says which way the row may move next." +
      (gHeld ? "\n\nHELD: the conviction tape has moved to another row, but the push has not confirmed it, so the state stands." : "")
 
-// ── the readout, on the price chart - one line, as the OI line ───────────────
-var table gTb = na
-if inpGrid and barstate.islast
-    if na(gTb)
-        string gp = inpGridPos
-        gTb := table.new(gp == "Top right" ? position.top_right : gp == "Top left" ? position.top_left :
-             gp == "Bottom right" ? position.bottom_right : position.bottom_left, 2, 1, bgcolor = C_PANEL,
+// ── the readout, on the price chart: the OI line, then the grid line ─────────
+bool showOiRow = oiHas
+bool showGRow  = inpGrid
+var table rdTb = na
+if (showOiRow or showGRow) and barstate.islast
+    if na(rdTb)
+        string rp = inpOiPos
+        rdTb := table.new(rp == "Top right" ? position.top_right : rp == "Top left" ? position.top_left :
+             rp == "Bottom left" ? position.bottom_left : position.bottom_right, 2,
+             (showOiRow ? 1 : 0) + (showGRow ? 1 : 0), bgcolor = C_PANEL,
              frame_color = C_GRID, frame_width = 1, border_width = 0, force_overlay = true)
-    table.cell(gTb, 0, 0, gCell == 25 ? "CVG" : "CVG · " + str.tostring(gBars) + (gBars == 1 ? " bar" : " bars"), text_color = C_NEUT,
-         text_halign = text.align_left, text_size = size.small)
-    table.cell(gTb, 1, 0, gLine, text_color = gCol, text_halign = text.align_right, text_size = size.small, tooltip = gTip)
+    int r = 0
+    if showOiRow
+        table.cell(rdTb, 0, r, oiLeft, text_color = C_NEUT, text_halign = text.align_left, text_size = size.small)
+        table.cell(rdTb, 1, r, oiLine, text_color = oiCol, text_halign = text.align_right, text_size = size.small, tooltip = oiTip)
+        r += 1
+    if showGRow
+        table.cell(rdTb, 0, r, gCell == 16 ? "CVG" : "CVG · " + str.tostring(gBars) + (gBars == 1 ? " bar" : " bars"),
+             text_color = C_NEUT, text_halign = text.align_left, text_size = size.small)
+        table.cell(rdTb, 1, r, gLine, text_color = gCol, text_halign = text.align_right, text_size = size.small, tooltip = gTip)
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  INFORMATION PANEL
 //
-//  Headline: where price stands · what the push is doing - the pane's two
-//  questions in one line, coloured by the value side. Then the signal stack,
-//  the value model behind the trace, and conviction's own detail. Panel text
+//  Headline: where the trace stands · what its push is doing, coloured by the
+//  trace's side. Then the signal set, the grid state, the value engine behind
+//  the trace's value ingredient, and conviction's own detail. Panel text
 //  is C_SOFT: C_INK is glyph ink on filled labels, the panel's own background.
 // ═══════════════════════════════════════════════════════════════════════════
 f_num(float v, string fmt) => na(v) ? "—" : str.tostring(v, fmt)
@@ -3737,8 +3750,9 @@ if inpPanel and barstate.islast
 
     // ── GRID · the state the tapes place this name in ─────────────────────────
     f_sep(tb, 8, "GRID · conviction × value")
-    f_row(tb, 9, " state", gCell == 25 ? "unread · needs both tapes" :
-         array.get(G_NAME, gCell) + " · " + str.tostring(gUnits, "0.##") + "u · " + gPushTxt + " · " + str.tostring(gBars) + " bars" + (gHeld ? " · held" : ""),
+    f_row(tb, 9, " state", gCell == 16 ? "unread · needs both tapes" :
+         array.get(G_NAME, gCell) + " · " + str.tostring(gUnits, "0.##") + "u · " + gPushTxt + " · " + str.tostring(gBars) + " bars" +
+         (gHeld ? " · held" : "") + (gLead != 0 ? " · " + gLeadTx : ""),
          gCol, gTip)
 
     if tblFull
