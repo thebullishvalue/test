@@ -33,6 +33,11 @@
 //                    returns past its impulse gate with control held on the
 //                    conviction tape and room left on the value tape.
 //
+//  AND ONE STATE - THE CONVICTION-VALUE GRID. Where the two tapes place the name
+//  on a 4 × 4 map, with the seed CVG's units; the trace's push decides when it
+//  may change row. A state, not a signal: signals are events, the grid is where
+//  the name stands between them, and neither reads the other.
+//
 //  WHAT CHANGED FROM v5
 //      · The pane draws one trace - conviction × value - and the histogram is
 //        that trace's own push. Conviction and value are each still computed
@@ -59,7 +64,8 @@
 //  θ tags, each tape's name, ladder and reading (↺ = fallback direction), and -
 //  only when the signals cannot judge - a gold SIGNALS PAUSED label naming why.
 //  Optional panel on the right. On the price chart: the divergence connectors
-//  (flow-failure evidence), the volume profile and a one-line OI readout.
+//  (flow-failure evidence), the grid map, the volume profile and a one-line OI
+//  readout.
 //
 //  ═══ ONE CHANNEL, ONE QUESTION ════════════════════════════════════════════
 //      trace hue          which way the move is stretched: GREEN up, RED down
@@ -87,7 +93,7 @@
 //
 //  GOLD, everywhere in this script, means one thing: READ WITH CAUTION. It is a
 //  qualifier - warming up, a TURN window open but unconfirmed, split
-//  ingredients, a capped participation weight, a quiet regime, a settling
+//  ingredients, a grid row held against its tape, a capped participation weight, a quiet regime, a settling
 //  basket, split value legs, an idle hedge, a self-limiting flow, a crowded
 //  book, an unaccepted price. It never means up or down. The tapes use no gold:
 //  a tape that is still warming is drawn in neutral grey.
@@ -136,10 +142,11 @@
 //                                   evidence, cooldown
 //      5 · Divergence evidence      the pivot engine behind a TURN's failure
 //                                   evidence, and its price connectors
-//      6 · Display                  markers, histogram, trace, zones, palette
-//      7 · Information panel
-//      8 · Volume profile           price chart, display only
-//      9 · Open interest            price chart, display only
+//      6 · Conviction-value grid    the map on the price chart
+//      7 · Display                  markers, histogram, trace, zones, palette
+//      8 · Information panel
+//      9 · Volume profile           price chart, display only
+//     10 · Open interest            price chart, display only
 //  Every knob moves something. A few only move something in a mode - the fixed
 //  bin size only in Fixed ticks - and their tooltips say so.
 //
@@ -407,6 +414,56 @@
 //  A ▲ sits on the very line whose crossing opened its window. Nothing is drawn
 //  before its bar closes, and nothing is revised afterwards.
 //
+//  ═══ THE CONVICTION-VALUE GRID ═════════════════════════════════════════════
+//  Pragyam's CVG, seeded as a 3 × 3 and grown to 4 × 4 by one observation: the
+//  tapes never draw a 'neither'. A faint tape is still green or red, so the
+//  seed's middle row and middle column split by hue, and every cell is a pair
+//  of colours actually drawn on the pane. The knees are the tapes' own shading
+//  steps and zero is their hue - no new threshold. Units in each cell:
+//
+//                   CHEAP          BELOW FAIR     ABOVE FAIR     RICH
+//      ↑ firm       TURNED   3     BUILDING 3     RUNNING  2.25  PAID     1.5
+//      ↑ edge       BASING   2.25  LIFTING  2.13  DRIFTING 1.56  STALLING 1.13
+//      ↓ edge       EASING   1.25  SAGGING  1     SOFTENING .63  TOPPING  0.5
+//      ↓ firm       DISLOCATED 1   FADING   0.75  BREAKING .38   DISTRIBUTION .25
+//
+//  Rows are the conviction tape (firm past ±30, edge inside), columns the value
+//  tape (cheap or rich past θ, below or above fair inside). Rotating the map
+//  half a turn swaps each state with its mirror - TURNED with DISTRIBUTION,
+//  BASING with TOPPING, BUILDING with BREAKING.
+//
+//  UNITS ARE THE SEED'S, WITH NO NEW NUMBER. The seed's nine units define a
+//  surface at −1, 0, +1 on each axis; the 4 × 4 samples it at −1, −½, +½, +1.
+//  The corners are the seed's corners; every split cell sits halfway toward the
+//  neighbour its hue leans to. Weight never falls as buyers firm up, and never
+//  rises as price gets richer. Every name is held: the state sets how much,
+//  never whether. Chosen by meaning in the seed, not fitted - do not tune them.
+//
+//  COLUMNS MOVE FREELY - price is where it is. ROWS are a claim about control:
+//  a name moves to a row with more buyers only while the histogram confirms a
+//  push up, and to one with more sellers only while it confirms a push down.
+//  Otherwise it keeps its row and is HELD - gold on the map and in the panel.
+//  A push confirms when its column is drawn in full: on the side of the move,
+//  not pale (turning), not grey (quiet), not gold (made by exits). Before the
+//  histogram is calibrated the row follows the tape.
+//
+//  THE TRACE IS NOT AN AXIS. It is the tapes' chart rungs blended, so as an axis
+//  it would count each tape twice. It enters in the two forms that add
+//  something: its PUSH runs the rows, and its two INGREDIENTS place a CHART
+//  CELL (◌) on the map on the same thresholds. The trace is where the chart
+//  cell sits along the map's stretch diagonal - TURNED and DISTRIBUTION sit on
+//  the split diagonal where it dims, PAID and DISLOCATED on the stretch
+//  diagonal where it is brightest. A chart cell ahead of the state is the
+//  chart moving first. Display only: the state and its units come from the
+//  tapes.
+//
+//  THE GRID AND THE SIGNALS. Neither reads the other. They meet by
+//  construction: a ▲ TURN needs the value tape to have been cheap and the push
+//  up - the same push that lifts a row - so a TURN tends to carry a name up the
+//  cheap columns, from DISLOCATED or EASING toward BASING and TURNED. A ◆
+//  RESUME needs control held and room left, which is BUILDING, RUNNING and
+//  LIFTING. Unmeasured, like the seed.
+//
 //  ═══ WHAT IT MEASURES ═════════════════════════════════════════════════════
 //  CONVICTION - how much of a bar's travel became net displacement:
 //
@@ -537,7 +594,8 @@
 //  their last CLOSED bar plus chart bars that exist; lower frames only as
 //  intrabars that exist. History and realtime compute the same numbers. The
 //  divergence evidence and its connectors, the TURN windows, every ▲▼ and ◆,
-//  and the declaration background are committed on closed bars only. The
+//  and the declaration background are committed on closed bars only. The grid
+//  state is a live reading like the tapes it is read from, final at the close. The
 //  volume profile's developing session is the one disclosed exception. The
 //  value ingredient and the value tape inherit Samanvaya's posture: its macro drivers use
 //  lookahead_off with a confirmed-bar fallback, and its anchor samples come
@@ -587,7 +645,7 @@
 //  Thirty spare. Everything else is a DRAWING, which costs nothing here: the
 //  θ rails and value zones (lines and boxes extended both ways, redrawn on the
 //  last bar), the right-edge labels, the divergence connectors, the profile's
-//  boxes, lines and tags, and both tables.
+//  boxes, lines and tags, and the three tables - panel, grid map, OI.
 //
 //  NO ALERTS. alertcondition() is charged one each and was the first thing
 //  cut. If alerts are wanted back, alert() costs nothing from this budget: one
@@ -616,8 +674,9 @@ var string G_S  = "2 · Value engine · Samanvaya"
 var string G_M  = "3 · Trace and tapes"
 var string G_T  = "4 · Signals · ▲ ▼ ◆"
 var string G_V  = "5 · Divergence evidence"
-var string G_D  = "6 · Display"
-var string G_P  = "7 · Information panel"
+var string G_G  = "6 · Conviction-value grid"
+var string G_D  = "7 · Display"
+var string G_P  = "8 · Information panel"
 
 // ── 1 · conviction engine: the measurement behind the histogram ─────────────
 int    inpLen  = input.int(20, "Lookback", minval=3, maxval=200, group=G_E, tooltip="How many bars of effort the conviction engine accounts for. This is the horizon of the histogram and of every conviction signal.\n\nShorter turns faster and produces more signals, most of them noise. Longer produces fewer and better ones but sits at extremes for long stretches during trends.\n\nMatch it to your holding period.", display=display.none)
@@ -669,6 +728,10 @@ int    inpGapX = input.int(60, "Max pivot separation", minval=10, maxval=400, gr
 bool   inpGate = input.bool(true, "Zone gate on regular divergence", group=G_V, tooltip="Only accept a regular bearish divergence whose earlier conviction pivot formed above the inner zone, and a regular bullish one whose earlier pivot formed below it.\n\nThe measurement is equivocal: the gate improves divergence quality on gold, silver and crude, and slightly REDUCES it on the eight held-out instruments, where ungated divergence scored better. It is kept on by default because the primary futures are what this indicator is tuned for.", display=display.none)
 bool   inpLine = input.bool(true, "Connectors on price", group=G_V, tooltip="Draws each piece of divergence evidence on the PRICE chart: a line joining the two swing extremes it compares - the higher high (or lower low) you can see, where conviction made the lower one.\n\nOnly divergences that qualify as TURN evidence are drawn: zone-gated, with the pivot at a price value called stretched (value on this chart above zero at a top, below at a bottom).\n\nCapped at sixty and recycled explicitly.", display=display.none)
 
+// ── 6 · the conviction-value grid: a state, read from the tapes ────────────
+bool   inpGrid    = input.bool(true, "Grid map", group=G_G, tooltip="A 4 × 4 map on the PRICE chart: where the two tapes place this name - who controls (conviction tape, rows) against where price stands (value tape, columns) - with its state's units, how long it has been there, and whether its row is being HELD against its tape.\n\nThe trace's histogram runs the rows: a name moves to a row with more buyers only while the push confirms up, and to one with more sellers only while it confirms down. Columns move freely.\n\nA state, not a signal: nothing here reads ▲▼ or ◆, and they do not read it. The panel carries the same state in one line.", display=display.none)
+string inpGridPos = input.string("Bottom left", "    Position", options=["Top right", "Bottom right", "Bottom left", "Top left"], group=G_G, display=display.none)
+
 // ── 6 · display ─────────────────────────────────────────────────────────────
 string inpPlace = input.string("Threshold rails", "Marker placement", options=["Threshold rails", "On the trace"], group=G_D, tooltip="THRESHOLD RAILS stamps ▲▼ and ◆ on the θ lines - bearish above, bullish below - so the markers form readable rows, and a ▲ sits on the very line whose crossing opened its window.\n\nON THE TRACE places each marker at the trace's reading when it fired.", display=display.none)
 bool   inpHist = input.bool(true, "Histogram", group=G_D, display=display.none)
@@ -681,8 +744,8 @@ bool   inpStateBg = input.bool(false, "Declaration background", group=G_D, toolt
 string inpTheme = input.string("Auto", "Palette", options=["Auto", "Light", "Dark"], group=G_D, display=display.none)
 
 // ── 7 · information panel ───────────────────────────────────────────────────
-bool   inpPanel = input.bool(false, "Information panel", group=G_P, tooltip="The oscillator's own panel, in the indicator pane. Off removes it entirely.\n\nThe open-interest readout is separate, with its own switch in '9 · Open interest' - it sits on the PRICE chart, so the two never collide.", display=display.none)
-string inpTbl  = input.string("Detailed", "    Detail", options=["Compact", "Detailed"], group=G_P, tooltip="COMPACT is the headline, the signal state, value and its legs, whether the push is failing, both tapes and the impulse. DETAILED adds the value engine - hedge strength, the driver basket, driver timing - then conviction's own reading, the raw share and its σ, this bar's conviction, the participation weight, effort → result, layer overlap and live rungs, and - when the profile is on - its data mode and where price sits in it.", display=display.none)
+bool   inpPanel = input.bool(false, "Information panel", group=G_P, tooltip="The oscillator's own panel, in the indicator pane. Off removes it entirely.\n\nThe open-interest readout is separate, with its own switch in '10 · Open interest' - it sits on the PRICE chart, so the two never collide.", display=display.none)
+string inpTbl  = input.string("Detailed", "    Detail", options=["Compact", "Detailed"], group=G_P, tooltip="COMPACT is the headline, the signal state, the trace and its ingredients, whether the push is failing, both tapes, the impulse, and the grid state. DETAILED adds the value engine - hedge strength, the driver basket, driver timing - then conviction's own reading, the raw share and its σ, this bar's conviction, the participation weight, effort → result, layer overlap and live rungs, and - when the profile is on - its data mode and where price sits in it.", display=display.none)
 
 int         DIV_LINES = 60      // divergence connectors retained, recycled explicitly
 const float RAIL_OUT  = 70.0    // the trace's outer rail - Samanvaya's ±70
@@ -2758,7 +2821,7 @@ if sellSig
 //  W on daily, M above. request.security_lower_tf history depth is plan-dependent;
 //  the profile falls back to a uniform bar-range spread when it is unavailable.
 // ══════════════════════════════════════════════════════════════════════════════
-var string G_VP = "8 · Volume profile · price chart"
+var string G_VP = "9 · Volume profile · price chart"
 bool   inpVpMaster    = input.bool(true,  "Volume profile", group=G_VP, tooltip="ON by default. Off removes every chart-overlay element below AND stops the profile being computed — the accumulation loop, the row inserts, the value-area walk and the naked-POC ledger all stand down, so this is a real off switch rather than a curtain over work that keeps running.\n\nThe oscillator pane is unaffected either way; nothing in the engine reads the profile.\n\nONE COST CANNOT BE SWITCHED OFF: Pine requires request.security_lower_tf() at global scope, so the lower-timeframe fetch happens whether or not the profile uses it. Nothing else does.", display=display.none)
 bool   inpVpProfile   = input.bool(true,  "    Session profile · POC and value area", group=G_VP, tooltip="Builds the session volume profile. Off: histogram, value area, nodes, naked POCs and prior-session levels go dark (VWAP and Initial Balance are independent of it).", display=display.none)
 bool   inpVpUseVol    = input.bool(true,  "        Volume-weighted (off = time at price)", group=G_VP, tooltip="Off degrades the profile to a time-at-price (TPO) distribution — for spot FX / synthetic volume.", display=display.none)
@@ -3316,180 +3379,6 @@ bool  tintShort = inpStateBg and stackOk and decl == -1
 // faded, as the columns are.
 f_q(color c, int t) => color.new(c, quietReg ? math.min(100, t + 45) : t)
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  INFORMATION PANEL
-//
-//  Headline: where price stands · what the push is doing - the pane's two
-//  questions in one line, coloured by the value side. Then the signal stack,
-//  the value model behind the trace, and conviction's own detail. Panel text
-//  is C_SOFT: C_INK is glyph ink on filled labels, the panel's own background.
-// ═══════════════════════════════════════════════════════════════════════════
-f_num(float v, string fmt) => na(v) ? "—" : str.tostring(v, fmt)
-
-f_row(table t, int rw, string k, string v, color col, string tip) =>
-    table.cell(t, 0, rw, k, text_color = C_SOFT, text_halign = text.align_left,  text_size = size.small, tooltip = tip)
-    table.cell(t, 1, rw, v, text_color = col,    text_halign = text.align_right, text_size = size.small, tooltip = tip)
-
-f_sep(table t, int rw, string k) =>
-    table.cell(t, 0, rw, k, text_color = C_NEUT, text_halign = text.align_left, text_size = size.tiny)
-    table.cell(t, 1, rw, "", text_size = size.tiny)
-
-bool tblFull = inpTbl == "Detailed"
-bool pfRows  = tblFull and vpCtxOn
-var table tb = na
-if inpPanel and barstate.islast
-    if na(tb)
-        tb := table.new(position.middle_right, 2, tblFull ? (pfRows ? 26 : 23) : 8, bgcolor = C_PANEL,
-             frame_color = C_GRID, frame_width = 1, border_width = 0)
-
-    // ── 0 · headline: where the trace stands · what its push is doing ─────────
-    string trTxt = trace >=  osc_entry ? "STRETCHED ↑ past θ" :
-         trace >   0.0       ? "leaning ↑" :
-         trace <= -osc_entry ? "STRETCHED ↓ past θ" :
-         trace <   0.0       ? "leaning ↓" : "balanced"
-    string pushTxt = ((trace >= 0.0) == hAbove ? "building · " : "releasing · ") +
-         (not useSlope ? (hExpand ? "pressing" : "fading") :
-          hExpand ? (hImp ? "impulse" : "pressing") : trWith ? "decelerating" : "turning")
-    string head = not traceOk ? (wV > 0.0 and not modelBuilt ? "VALUE MODEL BUILDING" : "WARMING UP") :
-         not ready ? "WARMING UP" : trTxt + " · " + pushTxt
-    color  hc   = not ready ? C_GOLD : trace >= 0.0 ? C_BULL : C_BEAR
-    table.cell(tb, 0, 0, head, text_color = hc, text_halign = text.align_left, text_size = size.small,
-         tooltip = "WHERE THE TRACE STANDS · WHAT ITS PUSH IS DOING.\n\nThe trace is conviction × value on this chart: how far the move is stretched, in one-sided effort and in price against fair value. STRETCHED past θ, leaning inside it.\n\nThe push is the histogram - the trace's own gap from its signal line. BUILDING when it points the same way as the trace (the stretch growing), RELEASING when it points back toward zero; then its phase - impulse (past the ±k·σ gate), pressing, decelerating, turning.\n\nGold while warming up or while the value model builds.")
-    table.cell(tb, 1, 0, traceOk ? f_num(trace, "+#;-#") : "", text_color = hc, text_halign = text.align_right, text_size = size.small)
-
-    // ── SIGNALS ───────────────────────────────────────────────────────────────
-    f_sep(tb, 1, "SIGNALS")
-    string dTxt = not stackOk ? "paused · " + stackWhy :
-         armedBuy   ? "trace turned ▲ · " + str.tostring(bar_index - armBuyBar + 1) + "/" + str.tostring(inpConfirm) :
-         armedSell  ? "trace turned ▼ · " + str.tostring(bar_index - armSellBar + 1) + "/" + str.tostring(inpConfirm) :
-         decl ==  1 ? "▲ BUY · " + str.tostring(bar_index - declBar) + " bars" :
-         decl == -1 ? "▼ SELL · " + str.tostring(bar_index - declBar) + " bars" : "none yet"
-    color dCol = not stackOk or armedBuy or armedSell ? C_GOLD : decl == 1 ? C_BULL : decl == -1 ? C_BEAR : C_SOFT
-    f_row(tb, 2, " declaration", dTxt, dCol,
-         "The standing ▲▼ TURN declaration and how many bars it has stood - a statement about the market at that bar, with no exit.\n\nTRACE TURNED (gold): the trace has crossed back through θ, opening the TURN window - n of its bars used - while each ingredient's tape and the push-failing evidence are still to confirm. Gold because it is half a signal.\n\nPAUSED names the layer that cannot judge; nothing pauses silently.")
-
-    string tcTxt = not traceOk ? "building · " + str.tostring(math.min(anchN, svNeed)) + "/" + str.tostring(svNeed) :
-         f_num(trace, "+#;-#") + " vs ±" + f_num(osc_entry, "#") + (svTradable ? "" : " · basket settling")
-    color tcCol = not traceOk or not svTradable ? C_GOLD :
-         trace >= osc_entry ? C_BULL : trace <= -osc_entry ? C_BEAR : C_SOFT
-    f_row(tb, 3, " trace · chart", tcTxt, tcCol,
-         "The TRACE against θ: conviction × value on this chart, on Samanvaya's ±100 scale. Past θ it is coloured by side - green stretched up, red stretched down; inside θ it is neutral ink.\n\nBASKET SETTLING (gold): the value ingredient's macro basket rotated in the last 21 bars. The trace is drawn dimmed, and no TURN window can open until it settles.")
-
-    string igTxt = "conviction " + (convReady ? f_num(zConv, "+0.0;-0.0") : "—") + " · value " +
-         (modelBuilt ? f_num(unified_z, "+0.0;-0.0") : "—") + (ingSplit ? " · split" : "")
-    f_row(tb, 4, " ingredients · σ", igTxt, ingSplit ? C_GOLD : C_SOFT,
-         "The trace's two ingredients on this chart, each in σ: CONVICTION - the participation-weighted raw share over its σ, the flow half - and VALUE - Samanvaya's unified z, the position half.\n\nBlended " +
-         f_num(wC * 100.0, "#") + "% conviction / " + f_num(wV * 100.0, "#") + "% value with their measured correlation, ρ " + f_num(rhoCVc, "+0.00;-0.00") + ", restored.\n\nSPLIT (gold): they point opposite ways, each past half a σ - rich with sellers pushing (distribution) or cheap with buyers pushing (accumulation). They cancel in the trace, which dims; the two tapes show the same split across horizons.")
-
-    string pfTxt = ""
-    if not inpEff
-        pfTxt := "not required"
-    else
-        if absSeen
-            pfTxt := "effort absorbed"
-        if bullDivSeen
-            pfTxt := (pfTxt == "" ? "" : pfTxt + " · ") + "bullish divergence"
-        if bearDivSeen
-            pfTxt := (pfTxt == "" ? "" : pfTxt + " · ") + "bearish divergence"
-        if pfTxt == ""
-            pfTxt := "none yet"
-    color pfCol = bullDivSeen and not bearDivSeen ? C_BULL : bearDivSeen and not bullDivSeen ? C_BEAR : C_SOFT
-    f_row(tb, 5, " push failing", pfTxt, pfCol,
-         "What a TURN needs from flow besides the turn itself: evidence, inside the last " + str.tostring(inpDisloc) + " bars, that the push which made the dislocation has FAILED.\n\nEFFORT ABSORBED - heavy participation, little result. Counts toward ▲ or ▼.\nBULLISH / BEARISH DIVERGENCE - conviction made a weaker extreme than price, at a price value called stretched. Bullish counts only toward ▲, bearish toward ▼. Its connector is on the price chart.")
-    f_row(tb, 6, " MTF · conv · value",
-         (mtfCOk ? f_num(ladAgree, "+#;-#") : "—") + " · " + (mtfVOk ? f_num(tpBias, "+#;-#") : "—"), C_SOFT,
-         "The two tapes as numbers: MTF conviction (+90 tape) and MTF value (−90 tape).\n\nConviction: who controls across its ladder - with Ladder down (default) FASTER than the chart's own conviction, the inside of each bar. Value: rich (+) or cheap (−) across its ladder - with Ladder up (default) SLOWER, the frames that contain the chart.\n\n— while a tape warms, is off, or has no frames here.")
-
-    string impWord = not ready ? "warming" : not useSlope ? (hExpand ? "pressing" : "fading") :
-         hExpand ? (hImp ? "IMPULSE" : "pressing") : trWith ? "decelerating" : "turning"
-    f_row(tb, 7, " impulse",
-         f_num(hist, "+0.0;-0.0") + " vs ±" + f_num(thr, "0.0") + " · " + impWord,
-         hHi ? (hAbove ? C_BULL : C_BEAR) : C_SOFT,
-         "The native histogram - the trace minus its signal line, in trace units - against the ± k·σ impulse gate the ◆ must cross, and its phase. IMPULSE is past the gate; the same column is drawn near-solid.\n\nNative units. The pane draws the columns magnified so a 3σ column reaches θ; this row is the native number.")
-
-    if tblFull
-        // ── VALUE · the model behind the trace ────────────────────────────────
-        f_sep(tb, 8, "VALUE · " + (anchorTF == "W" ? "weekly" : "daily") + " clock")
-        int    agN    = agreeRich >= agreeCheap ? agreeRich : agreeCheap
-        string agSide = agN == 0 ? "past θ" : agreeRich >= agreeCheap ? "rich" : "cheap"
-        string lgTxt  = not modelBuilt ? "—" :
-             "RV " + f_num(rv_z, "+0.0;-0.0") + " · br " + f_num(breadth_z, "+0.0;-0.0") + " · " +
-             str.tostring(agN) + "/5 " + agSide + (legsSplit ? " · split" : "")
-        f_row(tb, 9, " value · legs", lgTxt, legsSplit ? C_GOLD : C_SOFT,
-             "The two halves of the value ingredient, in z:\n  RV  the macro-hedged relative-value spread, scored over five timescales\n  br  breadth - seven price-only views of the chart's own momentum and flow\n\nn/5 is how many of the RV leg's five timescales independently sit past θ, and on which side. Five of five and three of five can share an average and mean very different things.\n\nSPLIT (gold): the legs point opposite ways, each by more than half a σ. The legs correlate about 0.7, so a split is uncommon and informative - a caution on the value ingredient.")
-
-        string hsTxt = not modelBuilt ? "building · " + str.tostring(math.min(anchN, svNeed)) + "/" + str.tostring(svNeed) :
-             hedgeMode == "Off"  ? "off · price only" :
-             hedgeMode == "Full" ? "100% · forced" :
-             f_num(hedgeW * 100.0, "#") + "% · " + (hedgeW < 0.10 ? "idle" : hedgeW < 0.35 ? "partial" : "engaged")
-        f_row(tb, 10, " hedge strength", hsTxt, not modelBuilt or hedgeW < 0.10 ? C_GOLD : C_SOFT,
-             "How much of the macro hedge the RV leg applies - its measured out-of-sample R² over the last 104 anchor periods, clipped to 0…1 (Auto), or forced.\n\nIDLE (gold, under 10%): the hedge has not been earning its keep, so the RV leg is close to the chart's own cumulative return - the value ingredient is then mostly a price-only reading, and value restates momentum more than it adds to it.\n\nPARTIAL under 35%, ENGAGED above.")
-
-        string o1 = "(marginal)"
-        string o2 = "(partial, given ①)"
-        string o3 = "(partial, given ① and ②)"
-        for k = 0 to 2
-            int    ix   = k == 0 ? idx1 : k == 1 ? idx2 : idx3
-            float  rho  = array.get(S1, ix)
-            float  wt   = k == 0 ? w1 : k == 1 ? w2 : w3
-            bool   live = kEff >= k + 1
-            float  qq   = k == 0 ? q1 : k == 1 ? q2 : q3
-            float  fl   = k == 0 ? floor1 : k == 1 ? floor2 : floor3
-            bool   weak = live and qq < fl
-            string gl   = k == 0 ? "①" : k == 1 ? "②" : "③"
-            string od   = k == 0 ? o1 : k == 1 ? o2 : o3
-            string vTx  = "ρ " + f_num(rho, "+0.00;-0.00") + (live ? " · β* " + f_num(wt, "+0.00;-0.00") : " · out")
-            color  vCl  = not live ? color.new(C_SOFT, 55) : weak ? C_GOLD : C_SOFT
-            string tip  = "Selection score |ρ| " + f_num(qq, "0.000") + " " + od + " against an admission floor of " +
-                 f_num(fl, "0.000") + " on " + str.tostring(nObs) + " anchor observations. " +
-                 (not live ? "EXCLUDED - its weight is held at zero." :
-                  weak ? "RETAINED BELOW THE FLOOR (gold): a spread needs an anchor driver, so ① is always kept, but this |ρ| is not distinguishable from noise on this sample." :
-                  "APPLIED.") +
-                 "\n\nρ is its plain correlation with the target, in neutral ink: a negative ρ means it moves inversely, not that anything is bearish. β* is its weight per 1σ of the factor, applied at " +
-                 f_num(hedgeW * 100.0, "#") + "% of full strength."
-            f_row(tb, 11 + k, " " + gl + " " + array.get(DRV_NAMES, ix), vTx, vCl, tip)
-
-        string dtTxt = str.tostring(drvLagged) + " read a bar late · kept ≤" + f_num(drvKeptH, "0.0") + "h"
-        f_row(tb, 14, " driver timing", dtTxt, drvKeptH > 0.0 ? C_GOLD : C_SOFT,
-             "DRIVER TIMING. A driver whose bar closes more than a third of a chart bar after the chart's is read at its previous close - the value known when the chart closed. This row counts how many were read late on this bar, and the largest lateness KEPT, in hours: the most the last bar can still revise by.\n\nGold while any kept lateness is above zero: the live bar's value reading can still move after the chart has closed.")
-
-        // ── DETAIL · conviction's own reading ─────────────────────────────────
-        f_sep(tb, 15, "DETAIL")
-        string ctrl = osc >=  inpZ2 ? "buyers · extreme" : osc >=  inpZ1 ? "buyers · stretched" : osc >= 0.0 ? "buyers in control" :
-                      osc <= -inpZ2 ? "sellers · extreme" : osc <= -inpZ1 ? "sellers · stretched" : "sellers in control"
-        f_row(tb, 16, " conviction · control", convReady ? f_num(osc, "+#;-#") + " · " + ctrl : "warming",
-             not convReady ? C_GOLD : osc >= 0.0 ? C_BULL : C_BEAR,
-             "Chart conviction - the trace's flow ingredient, not drawn on its own - and who controls this chart: its side of zero, stretched past the inner zone, extreme past the outer. The conviction tape is the same question across the ladder.\n\nNishchaya v3 draws this line, bit-identical.")
-        f_row(tb, 17, " raw share · σ", f_num(raw, "+0.0;-0.0") + " · σ " + f_num(rawSd, "0.0") + (quietReg ? " · QUIET" : ""),
-             quietReg ? C_GOLD : C_SOFT,
-             "The share before scaling, and the σ it is scaled by. QUIET (gold): that σ is in the bottom fifth of its own long history, so a small imbalance is being amplified - the columns desaturate while it lasts.")
-        f_row(tb, 18, " this bar · conviction", f_num(conv * 100.0, "+#;-#") + "% of range",
-             conv >= 0.0 ? C_BULL : C_BEAR,
-             "c = ΔC / TR for this bar alone: how much of its travel became net progress.")
-        f_row(tb, 19, " participation", f_num(w, "0.00") + "× · " + wSrc, w >= inpCap ? C_GOLD : C_SOFT,
-             "This bar's participation weight and the branch that ACTUALLY produced it. Gold when it is capped.")
-        f_row(tb, 20, " effort → result",
-             (na(effShare) ? "—" : f_num(100.0 * effShare, "#") + "%") + " · pct " + f_num(effPct, "#") + (effAbs ? " · ABSORBED" : ""),
-             effAbs ? C_GOLD : C_SOFT,
-             "The share of the window's participation that became directional displacement, and where it sits in its own history. ABSORBED (gold, bottom fifth): heavy effort, little result - one of the two kinds of evidence a TURN accepts that the push failed.")
-        f_row(tb, 21, " layer overlap", "C " + f_num(rhoC, "+0.00;-0.00") + " · V " + f_num(rhoV, "+0.00;-0.00"), C_SOFT,
-             "Correlation of each tape with the trace over the normalization window. Each tape's chart rung is one of the trace's ingredients, so some overlap is built in. Near 1, the tape restates the trace; near 0, it is independent evidence. Shown, not used.")
-        f_row(tb, 22, " rungs live", str.tostring(zCnt) + " conv · " + str.tostring(tpCnt) + " value" +
-             (multiUp and not na(recErr) ? " · rec " + f_num(recErr, "0.0") + "pt" : ""), C_SOFT,
-             "How many rungs each tape is averaging on this bar, the chart included. REC is the reconstruction error of the higher frames, in points, at their last close.")
-
-        if pfRows
-            f_sep(tb, 23, "PROFILE")
-            f_row(tb, 24, " profile mode",
-                 (vpVolOk ? "volume" : vpTpoAuto ? "TPO · no volume" : "TPO") + " · " + (vpIntraOk ? "intrabar " + vpLtf : "bar range"),
-                 vpTpoAuto ? C_GOLD : C_SOFT,
-                 "What the profile is ACTUALLY built from. TPO · NO VOLUME (gold): this symbol reports no usable volume, so the profile fell back to time at price.")
-            string locTxt = na(poc) ? "—" : (close > nz(vah, close) ? "above value" : close < nz(vaLow, close) ? "below value" : "inside value") +
-                 " · POC " + f_num(poc, format.mintick)
-            bool outVal = not na(vah) and not na(vaLow) and (close > vah or close < vaLow)
-            f_row(tb, 25, " location", locTxt, outVal ? C_GOLD : C_SOFT,
-                 "Where price sits against this session's value area. Outside it (gold) is a price the market has not yet accepted.")
-
 // ══════════════════════════════════════════════════════════════════════════════
 //  OPEN INTEREST · WHAT KIND OF PARTICIPATION         (price chart, display only)
 //
@@ -3515,7 +3404,7 @@ if inpPanel and barstate.islast
 //
 //  Symbols without published OI draw nothing and cast nothing.
 // ══════════════════════════════════════════════════════════════════════════════
-var string G_OI = "9 · Open interest · price chart"
+var string G_OI = "10 · Open interest · price chart"
 bool   inpOi     = input.bool(true, "Open interest", group=G_OI, tooltip="One line on the PRICE chart: Long build-up, Short build-up, Short covering or Long unwinding over the window, plus 'crowded' when open interest sits in the top tenth of its last year.\n\nNeeds a symbol TradingView publishes open interest for (listed futures). Anything else draws nothing.", display=display.none)
 int    inpOiLen  = input.int(10, "    Window (days)", minval=3, maxval=100, group=G_OI, tooltip="How many OI periods the reading covers - days on an intraday or daily chart, the chart's own bars above daily.", display=display.none)
 string inpOiPos  = input.string("Bottom right", "    Position", options=["Top right", "Bottom right", "Bottom left", "Top left"], group=G_OI, display=display.none)
@@ -3586,6 +3475,342 @@ if oiHas and barstate.islast
          text_halign = text.align_right, text_size = size.small,
          tooltip = "Long build-up: new longs funding the rise. Short build-up: new shorts funding the fall. Short covering: a rally made of exits. Long unwinding: a fall made of exits. The last two are gold - self-limiting flow.\n\nCrowded: open interest in the top tenth of its last year - many positions that may have to be closed.")
 
+// ── the gold cast: the histogram's push is being made by exits ────────────────
+// Read here, ahead of the grid and the pane, because both use it: the columns
+// are cast gold, and a gold push cannot confirm a grid row change.
+bool  oiCast  = inpOiCast and oiSelf and ready and (hAbove ? oiSC > oiLU : oiLU > oiSC)
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  10 · THE CONVICTION-VALUE GRID                        a state, not a signal
+//
+//  Pragyam's CVG, seeded as a 3 × 3 and grown to 4 × 4 by one observation: the
+//  tapes never draw a 'neither'. A faint tape is still green or red, so the
+//  seed's middle row and middle column split by the tape's hue - and every
+//  cell becomes a pair of colours actually drawn on the pane.
+//
+//      ROWS · conviction tape   ↑ firm ≥ +30 · ↑ edge 0…+30 · ↓ edge −30…0 · ↓ firm ≤ −30
+//      COLS · value tape        cheap ≤ −θ · below fair · above fair · rich ≥ +θ
+//
+//  The knees are the tapes' own shading steps; zero is their hue. No new
+//  threshold.
+//
+//  COLUMNS MOVE FREELY - price is where it is. ROWS are a claim about control,
+//  so a name moves to a row with more buyers only while the histogram confirms
+//  a push up, and to one with more sellers only while it confirms a push down;
+//  otherwise it keeps its row and is HELD. A push confirms when its column is
+//  drawn in full: on the side of the move, not pale (turning), not grey
+//  (quiet), not gold (made by exits). Before the histogram is calibrated the
+//  row follows the tape - a guessed confirmation is not a neutral one.
+//
+//  THE TRACE IS NOT AN AXIS. It is the two tapes' chart rungs blended, so as an
+//  axis it would count each tape twice. It enters in the two forms that add
+//  something: its PUSH runs the rows, and its two INGREDIENTS - chart
+//  conviction and chart value, on the same thresholds - place a CHART CELL (◌)
+//  beside the ladder's. The trace is where that chart cell sits along the map's
+//  stretch diagonal; a chart cell ahead of the ladder's is the chart moving
+//  first. Display only: the state and its units come from the ladder cell.
+//
+//  UNITS - the seed's, with no new number. The seed defines weight on a 3 × 3
+//  surface at −1, 0, +1 on each axis; the 4 × 4 samples that surface at −1, −½,
+//  +½, +1. The four corners are the seed's corners; every split cell sits
+//  halfway toward the neighbour its hue leans to. Chosen by meaning in the
+//  seed, not fitted - and not re-chosen here.
+// ═══════════════════════════════════════════════════════════════════════════
+// Cell = row · 4 + column. Rows: 0 ↓ firm, 1 ↓ edge, 2 ↑ edge, 3 ↑ firm - a
+// higher row has more buyers. Columns: 0 cheap, 1 below fair, 2 above fair,
+// 3 rich. Cell 16 is UNREAD.
+var array<string> G_NAME = array.from(
+     "DISLOCATED", "FADING",   "BREAKING",  "DISTRIBUTION",
+     "EASING",     "SAGGING",  "SOFTENING", "TOPPING",
+     "BASING",     "LIFTING",  "DRIFTING",  "STALLING",
+     "TURNED",     "BUILDING", "RUNNING",   "PAID",
+     "UNREAD")
+var array<float> G_UNITS = array.from(
+     1.00, 0.75,  0.375,  0.25,
+     1.25, 1.00,  0.625,  0.50,
+     2.25, 2.125, 1.5625, 1.125,
+     3.00, 3.00,  2.25,   1.50,
+     1.00)
+var array<string> G_MEAN = array.from(
+     "cheap, sellers still firmly in control - the watchlist",
+     "sellers firm, price below fair - the downtrend running",
+     "sellers firm while price is still above fair - the top breaking",
+     "sellers firm at a rich price - the floor",
+     "cheap, and the sellers' grip has eased to an edge",
+     "sellers edging, price below fair",
+     "sellers edging in above fair",
+     "rich, sellers edging in - the top forming",
+     "cheap, buyers edging in - the setup before a turn",
+     "buyers edging in below fair",
+     "buyers edging, price above fair - drift without conviction",
+     "rich, and the control that made it rich has faded to an edge",
+     "cheap, buyers now firmly in control - a dislocation that turned",
+     "buyers firm, price still below fair - the core",
+     "buyers firm, price above fair - the trend running, room shrinking",
+     "buyers firm, price already rich - held, not added to",
+     "a tape not yet calibrated, or switched off")
+
+f_gRow(float c) => c >= inpZ1 ? 3 : c >= 0.0 ? 2 : c > -inpZ1 ? 1 : 0
+f_gCol(float v) => v <= -osc_entry ? 0 : v < 0.0 ? 1 : v < osc_entry ? 2 : 3
+
+// ── the push that may move a row: the column as it is drawn ──────────────────
+bool gPushLive = hExpand or (useSlope and trWith)          // not pale
+bool gPushUp   = ready and hAbove     and gPushLive and not quietReg and not oiCast
+bool gPushDn   = ready and not hAbove and gPushLive and not quietReg and not oiCast
+
+// ── the ladder cell: the state ───────────────────────────────────────────────
+bool gRead = mtfCOk and mtfVOk
+var int gRow   = na
+var int gCell  = 16
+var int gFrom  = 16
+var int gSince = 0
+bool gHeld = false
+int  gNow  = 16
+if gRead
+    int tgt = f_gRow(ladAgree)
+    if na(gRow) or not ready
+        gRow := tgt
+    else if tgt > gRow and gPushUp
+        gRow := tgt
+    else if tgt < gRow and gPushDn
+        gRow := tgt
+    gHeld := gRow != tgt
+    gNow  := gRow * 4 + f_gCol(tpBias)
+else
+    gRow := na
+if gNow != gCell
+    gFrom  := gCell
+    gCell  := gNow
+    gSince := bar_index
+int   gBars  = bar_index - gSince + 1
+float gUnits = array.get(G_UNITS, gCell)
+
+// ── the chart cell: the trace's two ingredients, on the same thresholds ──────
+int gChart = convReady and modelBuilt ? f_gRow(osc) * 4 + f_gCol(unified_osc) : 16
+
+// ── the map, on the price chart ──────────────────────────────────────────────
+var table gTb = na
+if inpGrid and barstate.islast
+    if na(gTb)
+        string gp = inpGridPos
+        gTb := table.new(gp == "Top right" ? position.top_right : gp == "Top left" ? position.top_left :
+             gp == "Bottom right" ? position.bottom_right : position.bottom_left, 5, 6, bgcolor = C_PANEL,
+             frame_color = C_GRID, frame_width = 1, border_color = C_GRID, border_width = 1, force_overlay = true)
+        table.merge_cells(gTb, 0, 5, 4, 5)
+    table.cell(gTb, 0, 0, "CVG", text_color = C_NEUT, text_halign = text.align_left, text_size = size.tiny,
+         tooltip = "Conviction-value grid. Rows: the conviction tape - who controls, firmly or at the edge. Columns: the value tape - cheap, below fair, above fair, rich. Each cell shows its state and units.\n\nHighlighted: this name's state. Gold: its row is HELD against its tape - the tape has moved, the push has not confirmed. ◌: the chart cell - where the trace's own two ingredients would place it.")
+    table.cell(gTb, 1, 0, "cheap",      text_color = C_BEAR,                text_size = size.tiny)
+    table.cell(gTb, 2, 0, "below fair", text_color = color.new(C_BEAR, 45), text_size = size.tiny)
+    table.cell(gTb, 3, 0, "above fair", text_color = color.new(C_BULL, 45), text_size = size.tiny)
+    table.cell(gTb, 4, 0, "rich",       text_color = C_BULL,                text_size = size.tiny)
+    for dr = 1 to 4
+        int gr = 4 - dr
+        string rh = gr == 3 ? "buyers · firm" : gr == 2 ? "buyers · edge" : gr == 1 ? "sellers · edge" : "sellers · firm"
+        color  rc = gr == 3 ? C_BULL : gr == 2 ? color.new(C_BULL, 45) : gr == 1 ? color.new(C_BEAR, 45) : C_BEAR
+        table.cell(gTb, 0, dr, rh, text_color = rc, text_halign = text.align_left, text_size = size.tiny)
+        for gc = 0 to 3
+            int   ix  = gr * 4 + gc
+            bool  isNow = ix == gCell
+            bool  chc = ix == gChart
+            string tx = (chc ? "◌ " : "") + array.get(G_NAME, ix) + " " + str.tostring(array.get(G_UNITS, ix), "0.###")
+            color bg  = isNow ? (gHeld ? color.new(C_GOLD, 15) : color.new(C_SOFT, 15)) : na
+            color tc  = isNow ? C_INK : chc ? C_SOFT : color.new(C_SOFT, 50)
+            table.cell(gTb, gc + 1, dr, tx, text_color = tc, bgcolor = bg, text_size = size.tiny,
+                 tooltip = array.get(G_NAME, ix) + " · " + str.tostring(array.get(G_UNITS, ix), "0.###") + " units\n" + array.get(G_MEAN, ix))
+    string ft = gCell == 16 ? "UNREAD · the grid needs both tapes" :
+         array.get(G_NAME, gCell) + " · " + str.tostring(gUnits, "0.###") + "u · " + str.tostring(gBars) + " bars" +
+         (gHeld ? " · row held" : "") + (gChart != 16 and gChart != gCell ? " · chart ◌ " + array.get(G_NAME, gChart) : "")
+    table.cell(gTb, 0, 5, ft, text_color = gCell == 16 ? C_NEUT : gHeld ? C_GOLD : C_SOFT, text_halign = text.align_left, text_size = size.tiny)
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  INFORMATION PANEL
+//
+//  Headline: where price stands · what the push is doing - the pane's two
+//  questions in one line, coloured by the value side. Then the signal stack,
+//  the value model behind the trace, and conviction's own detail. Panel text
+//  is C_SOFT: C_INK is glyph ink on filled labels, the panel's own background.
+// ═══════════════════════════════════════════════════════════════════════════
+f_num(float v, string fmt) => na(v) ? "—" : str.tostring(v, fmt)
+
+f_row(table t, int rw, string k, string v, color col, string tip) =>
+    table.cell(t, 0, rw, k, text_color = C_SOFT, text_halign = text.align_left,  text_size = size.small, tooltip = tip)
+    table.cell(t, 1, rw, v, text_color = col,    text_halign = text.align_right, text_size = size.small, tooltip = tip)
+
+f_sep(table t, int rw, string k) =>
+    table.cell(t, 0, rw, k, text_color = C_NEUT, text_halign = text.align_left, text_size = size.tiny)
+    table.cell(t, 1, rw, "", text_size = size.tiny)
+
+bool tblFull = inpTbl == "Detailed"
+bool pfRows  = tblFull and vpCtxOn
+var table tb = na
+if inpPanel and barstate.islast
+    if na(tb)
+        tb := table.new(position.middle_right, 2, tblFull ? (pfRows ? 29 : 26) : 10, bgcolor = C_PANEL,
+             frame_color = C_GRID, frame_width = 1, border_width = 0)
+
+    // ── 0 · headline: where the trace stands · what its push is doing ─────────
+    string trTxt = trace >=  osc_entry ? "STRETCHED ↑ past θ" :
+         trace >   0.0       ? "leaning ↑" :
+         trace <= -osc_entry ? "STRETCHED ↓ past θ" :
+         trace <   0.0       ? "leaning ↓" : "balanced"
+    string pushTxt = ((trace >= 0.0) == hAbove ? "building · " : "releasing · ") +
+         (not useSlope ? (hExpand ? "pressing" : "fading") :
+          hExpand ? (hImp ? "impulse" : "pressing") : trWith ? "decelerating" : "turning")
+    string head = not traceOk ? (wV > 0.0 and not modelBuilt ? "VALUE MODEL BUILDING" : "WARMING UP") :
+         not ready ? "WARMING UP" : trTxt + " · " + pushTxt
+    color  hc   = not ready ? C_GOLD : trace >= 0.0 ? C_BULL : C_BEAR
+    table.cell(tb, 0, 0, head, text_color = hc, text_halign = text.align_left, text_size = size.small,
+         tooltip = "WHERE THE TRACE STANDS · WHAT ITS PUSH IS DOING.\n\nThe trace is conviction × value on this chart: how far the move is stretched, in one-sided effort and in price against fair value. STRETCHED past θ, leaning inside it.\n\nThe push is the histogram - the trace's own gap from its signal line. BUILDING when it points the same way as the trace (the stretch growing), RELEASING when it points back toward zero; then its phase - impulse (past the ±k·σ gate), pressing, decelerating, turning.\n\nGold while warming up or while the value model builds.")
+    table.cell(tb, 1, 0, traceOk ? f_num(trace, "+#;-#") : "", text_color = hc, text_halign = text.align_right, text_size = size.small)
+
+    // ── SIGNALS ───────────────────────────────────────────────────────────────
+    f_sep(tb, 1, "SIGNALS")
+    string dTxt = not stackOk ? "paused · " + stackWhy :
+         armedBuy   ? "trace turned ▲ · " + str.tostring(bar_index - armBuyBar + 1) + "/" + str.tostring(inpConfirm) :
+         armedSell  ? "trace turned ▼ · " + str.tostring(bar_index - armSellBar + 1) + "/" + str.tostring(inpConfirm) :
+         decl ==  1 ? "▲ BUY · " + str.tostring(bar_index - declBar) + " bars" :
+         decl == -1 ? "▼ SELL · " + str.tostring(bar_index - declBar) + " bars" : "none yet"
+    color dCol = not stackOk or armedBuy or armedSell ? C_GOLD : decl == 1 ? C_BULL : decl == -1 ? C_BEAR : C_SOFT
+    f_row(tb, 2, " declaration", dTxt, dCol,
+         "The standing ▲▼ TURN declaration and how many bars it has stood - a statement about the market at that bar, with no exit.\n\nTRACE TURNED (gold): the trace has crossed back through θ, opening the TURN window - n of its bars used - while each ingredient's tape and the push-failing evidence are still to confirm. Gold because it is half a signal.\n\nPAUSED names the layer that cannot judge; nothing pauses silently.")
+
+    string tcTxt = not traceOk ? "building · " + str.tostring(math.min(anchN, svNeed)) + "/" + str.tostring(svNeed) :
+         f_num(trace, "+#;-#") + " vs ±" + f_num(osc_entry, "#") + (svTradable ? "" : " · basket settling")
+    color tcCol = not traceOk or not svTradable ? C_GOLD :
+         trace >= osc_entry ? C_BULL : trace <= -osc_entry ? C_BEAR : C_SOFT
+    f_row(tb, 3, " trace · chart", tcTxt, tcCol,
+         "The TRACE against θ: conviction × value on this chart, on Samanvaya's ±100 scale. Past θ it is coloured by side - green stretched up, red stretched down; inside θ it is neutral ink.\n\nBASKET SETTLING (gold): the value ingredient's macro basket rotated in the last 21 bars. The trace is drawn dimmed, and no TURN window can open until it settles.")
+
+    string igTxt = "conviction " + (convReady ? f_num(zConv, "+0.0;-0.0") : "—") + " · value " +
+         (modelBuilt ? f_num(unified_z, "+0.0;-0.0") : "—") + (ingSplit ? " · split" : "")
+    f_row(tb, 4, " ingredients · σ", igTxt, ingSplit ? C_GOLD : C_SOFT,
+         "The trace's two ingredients on this chart, each in σ: CONVICTION - the participation-weighted raw share over its σ, the flow half - and VALUE - Samanvaya's unified z, the position half.\n\nBlended " +
+         f_num(wC * 100.0, "#") + "% conviction / " + f_num(wV * 100.0, "#") + "% value with their measured correlation, ρ " + f_num(rhoCVc, "+0.00;-0.00") + ", restored.\n\nSPLIT (gold): they point opposite ways, each past half a σ - rich with sellers pushing (distribution) or cheap with buyers pushing (accumulation). They cancel in the trace, which dims; the two tapes show the same split across horizons.")
+
+    string pfTxt = ""
+    if not inpEff
+        pfTxt := "not required"
+    else
+        if absSeen
+            pfTxt := "effort absorbed"
+        if bullDivSeen
+            pfTxt := (pfTxt == "" ? "" : pfTxt + " · ") + "bullish divergence"
+        if bearDivSeen
+            pfTxt := (pfTxt == "" ? "" : pfTxt + " · ") + "bearish divergence"
+        if pfTxt == ""
+            pfTxt := "none yet"
+    color pfCol = bullDivSeen and not bearDivSeen ? C_BULL : bearDivSeen and not bullDivSeen ? C_BEAR : C_SOFT
+    f_row(tb, 5, " push failing", pfTxt, pfCol,
+         "What a TURN needs from flow besides the turn itself: evidence, inside the last " + str.tostring(inpDisloc) + " bars, that the push which made the dislocation has FAILED.\n\nEFFORT ABSORBED - heavy participation, little result. Counts toward ▲ or ▼.\nBULLISH / BEARISH DIVERGENCE - conviction made a weaker extreme than price, at a price value called stretched. Bullish counts only toward ▲, bearish toward ▼. Its connector is on the price chart.")
+    f_row(tb, 6, " MTF · conv · value",
+         (mtfCOk ? f_num(ladAgree, "+#;-#") : "—") + " · " + (mtfVOk ? f_num(tpBias, "+#;-#") : "—"), C_SOFT,
+         "The two tapes as numbers: MTF conviction (+90 tape) and MTF value (−90 tape).\n\nConviction: who controls across its ladder - with Ladder down (default) FASTER than the chart's own conviction, the inside of each bar. Value: rich (+) or cheap (−) across its ladder - with Ladder up (default) SLOWER, the frames that contain the chart.\n\n— while a tape warms, is off, or has no frames here.")
+
+    string impWord = not ready ? "warming" : not useSlope ? (hExpand ? "pressing" : "fading") :
+         hExpand ? (hImp ? "IMPULSE" : "pressing") : trWith ? "decelerating" : "turning"
+    f_row(tb, 7, " impulse",
+         f_num(hist, "+0.0;-0.0") + " vs ±" + f_num(thr, "0.0") + " · " + impWord,
+         hHi ? (hAbove ? C_BULL : C_BEAR) : C_SOFT,
+         "The native histogram - the trace minus its signal line, in trace units - against the ± k·σ impulse gate the ◆ must cross, and its phase. IMPULSE is past the gate; the same column is drawn near-solid.\n\nNative units. The pane draws the columns magnified so a 3σ column reaches θ; this row is the native number.")
+
+
+    // ── GRID · the state the tapes place this name in ─────────────────────────
+    f_sep(tb, 8, "GRID · conviction × value")
+    string gsTxt = gCell == 16 ? "unread · needs both tapes" :
+         array.get(G_NAME, gCell) + " · " + str.tostring(gUnits, "0.###") + "u · " + str.tostring(gBars) + " bars" + (gHeld ? " · held" : "")
+    f_row(tb, 9, " state", gsTxt, gCell == 16 ? C_NEUT : gHeld ? C_GOLD : C_SOFT,
+         "Where the two tapes place this name on the 4 × 4 conviction-value grid, its units, and how many bars it has been there.\n\n" +
+         (gCell == 16 ? "" : array.get(G_NAME, gCell) + " - " + array.get(G_MEAN, gCell) + ".\n\n") +
+         "ROWS are who controls (conviction tape: firm past ±30, edge inside it). COLUMNS are where price stands (value tape: cheap or rich past θ, below or above fair inside it). Columns move freely; a row changes only while the histogram confirms a push that way.\n\nHELD (gold): the tape has moved to another row but the push has not confirmed it, so the row stands. A state, not a signal - nothing here reads ▲▼ or ◆.")
+
+    if tblFull
+        string gcTxt = (gChart == 16 ? "chart —" : "chart ◌ " + array.get(G_NAME, gChart)) +
+             (gCell == 16 or gFrom == gCell ? "" : " · from " + array.get(G_NAME, gFrom))
+        f_row(tb, 10, " grid · chart", gcTxt, C_SOFT,
+             "CHART ◌ - where the trace's own two ingredients would place this name: chart conviction on the same ±30, chart value on the same θ. The trace is where that cell sits along the map's stretch diagonal. When it differs from the state, the chart has moved and the ladder has not yet followed - or the ladder is holding what the chart has already let go.\n\nFROM - the state before this one. Display only: the state and its units come from the tapes.")
+
+        // ── VALUE · the model behind the trace ────────────────────────────────
+        f_sep(tb, 11, "VALUE · " + (anchorTF == "W" ? "weekly" : "daily") + " clock")
+        int    agN    = agreeRich >= agreeCheap ? agreeRich : agreeCheap
+        string agSide = agN == 0 ? "past θ" : agreeRich >= agreeCheap ? "rich" : "cheap"
+        string lgTxt  = not modelBuilt ? "—" :
+             "RV " + f_num(rv_z, "+0.0;-0.0") + " · br " + f_num(breadth_z, "+0.0;-0.0") + " · " +
+             str.tostring(agN) + "/5 " + agSide + (legsSplit ? " · split" : "")
+        f_row(tb, 12, " value · legs", lgTxt, legsSplit ? C_GOLD : C_SOFT,
+             "The two halves of the value ingredient, in z:\n  RV  the macro-hedged relative-value spread, scored over five timescales\n  br  breadth - seven price-only views of the chart's own momentum and flow\n\nn/5 is how many of the RV leg's five timescales independently sit past θ, and on which side. Five of five and three of five can share an average and mean very different things.\n\nSPLIT (gold): the legs point opposite ways, each by more than half a σ. The legs correlate about 0.7, so a split is uncommon and informative - a caution on the value ingredient.")
+
+        string hsTxt = not modelBuilt ? "building · " + str.tostring(math.min(anchN, svNeed)) + "/" + str.tostring(svNeed) :
+             hedgeMode == "Off"  ? "off · price only" :
+             hedgeMode == "Full" ? "100% · forced" :
+             f_num(hedgeW * 100.0, "#") + "% · " + (hedgeW < 0.10 ? "idle" : hedgeW < 0.35 ? "partial" : "engaged")
+        f_row(tb, 13, " hedge strength", hsTxt, not modelBuilt or hedgeW < 0.10 ? C_GOLD : C_SOFT,
+             "How much of the macro hedge the RV leg applies - its measured out-of-sample R² over the last 104 anchor periods, clipped to 0…1 (Auto), or forced.\n\nIDLE (gold, under 10%): the hedge has not been earning its keep, so the RV leg is close to the chart's own cumulative return - the value ingredient is then mostly a price-only reading, and value restates momentum more than it adds to it.\n\nPARTIAL under 35%, ENGAGED above.")
+
+        string o1 = "(marginal)"
+        string o2 = "(partial, given ①)"
+        string o3 = "(partial, given ① and ②)"
+        for k = 0 to 2
+            int    ix   = k == 0 ? idx1 : k == 1 ? idx2 : idx3
+            float  rho  = array.get(S1, ix)
+            float  wt   = k == 0 ? w1 : k == 1 ? w2 : w3
+            bool   live = kEff >= k + 1
+            float  qq   = k == 0 ? q1 : k == 1 ? q2 : q3
+            float  fl   = k == 0 ? floor1 : k == 1 ? floor2 : floor3
+            bool   weak = live and qq < fl
+            string gl   = k == 0 ? "①" : k == 1 ? "②" : "③"
+            string od   = k == 0 ? o1 : k == 1 ? o2 : o3
+            string vTx  = "ρ " + f_num(rho, "+0.00;-0.00") + (live ? " · β* " + f_num(wt, "+0.00;-0.00") : " · out")
+            color  vCl  = not live ? color.new(C_SOFT, 55) : weak ? C_GOLD : C_SOFT
+            string tip  = "Selection score |ρ| " + f_num(qq, "0.000") + " " + od + " against an admission floor of " +
+                 f_num(fl, "0.000") + " on " + str.tostring(nObs) + " anchor observations. " +
+                 (not live ? "EXCLUDED - its weight is held at zero." :
+                  weak ? "RETAINED BELOW THE FLOOR (gold): a spread needs an anchor driver, so ① is always kept, but this |ρ| is not distinguishable from noise on this sample." :
+                  "APPLIED.") +
+                 "\n\nρ is its plain correlation with the target, in neutral ink: a negative ρ means it moves inversely, not that anything is bearish. β* is its weight per 1σ of the factor, applied at " +
+                 f_num(hedgeW * 100.0, "#") + "% of full strength."
+            f_row(tb, 14 + k, " " + gl + " " + array.get(DRV_NAMES, ix), vTx, vCl, tip)
+
+        string dtTxt = str.tostring(drvLagged) + " read a bar late · kept ≤" + f_num(drvKeptH, "0.0") + "h"
+        f_row(tb, 17, " driver timing", dtTxt, drvKeptH > 0.0 ? C_GOLD : C_SOFT,
+             "DRIVER TIMING. A driver whose bar closes more than a third of a chart bar after the chart's is read at its previous close - the value known when the chart closed. This row counts how many were read late on this bar, and the largest lateness KEPT, in hours: the most the last bar can still revise by.\n\nGold while any kept lateness is above zero: the live bar's value reading can still move after the chart has closed.")
+
+        // ── DETAIL · conviction's own reading ─────────────────────────────────
+        f_sep(tb, 18, "DETAIL")
+        string ctrl = osc >=  inpZ2 ? "buyers · extreme" : osc >=  inpZ1 ? "buyers · stretched" : osc >= 0.0 ? "buyers in control" :
+                      osc <= -inpZ2 ? "sellers · extreme" : osc <= -inpZ1 ? "sellers · stretched" : "sellers in control"
+        f_row(tb, 19, " conviction · control", convReady ? f_num(osc, "+#;-#") + " · " + ctrl : "warming",
+             not convReady ? C_GOLD : osc >= 0.0 ? C_BULL : C_BEAR,
+             "Chart conviction - the trace's flow ingredient, not drawn on its own - and who controls this chart: its side of zero, stretched past the inner zone, extreme past the outer. The conviction tape is the same question across the ladder.\n\nNishchaya v3 draws this line, bit-identical.")
+        f_row(tb, 20, " raw share · σ", f_num(raw, "+0.0;-0.0") + " · σ " + f_num(rawSd, "0.0") + (quietReg ? " · QUIET" : ""),
+             quietReg ? C_GOLD : C_SOFT,
+             "The share before scaling, and the σ it is scaled by. QUIET (gold): that σ is in the bottom fifth of its own long history, so a small imbalance is being amplified - the columns desaturate while it lasts.")
+        f_row(tb, 21, " this bar · conviction", f_num(conv * 100.0, "+#;-#") + "% of range",
+             conv >= 0.0 ? C_BULL : C_BEAR,
+             "c = ΔC / TR for this bar alone: how much of its travel became net progress.")
+        f_row(tb, 22, " participation", f_num(w, "0.00") + "× · " + wSrc, w >= inpCap ? C_GOLD : C_SOFT,
+             "This bar's participation weight and the branch that ACTUALLY produced it. Gold when it is capped.")
+        f_row(tb, 23, " effort → result",
+             (na(effShare) ? "—" : f_num(100.0 * effShare, "#") + "%") + " · pct " + f_num(effPct, "#") + (effAbs ? " · ABSORBED" : ""),
+             effAbs ? C_GOLD : C_SOFT,
+             "The share of the window's participation that became directional displacement, and where it sits in its own history. ABSORBED (gold, bottom fifth): heavy effort, little result - one of the two kinds of evidence a TURN accepts that the push failed.")
+        f_row(tb, 24, " layer overlap", "C " + f_num(rhoC, "+0.00;-0.00") + " · V " + f_num(rhoV, "+0.00;-0.00"), C_SOFT,
+             "Correlation of each tape with the trace over the normalization window. Each tape's chart rung is one of the trace's ingredients, so some overlap is built in. Near 1, the tape restates the trace; near 0, it is independent evidence. Shown, not used.")
+        f_row(tb, 25, " rungs live", str.tostring(zCnt) + " conv · " + str.tostring(tpCnt) + " value" +
+             (multiUp and not na(recErr) ? " · rec " + f_num(recErr, "0.0") + "pt" : ""), C_SOFT,
+             "How many rungs each tape is averaging on this bar, the chart included. REC is the reconstruction error of the higher frames, in points, at their last close.")
+
+        if pfRows
+            f_sep(tb, 26, "PROFILE")
+            f_row(tb, 27, " profile mode",
+                 (vpVolOk ? "volume" : vpTpoAuto ? "TPO · no volume" : "TPO") + " · " + (vpIntraOk ? "intrabar " + vpLtf : "bar range"),
+                 vpTpoAuto ? C_GOLD : C_SOFT,
+                 "What the profile is ACTUALLY built from. TPO · NO VOLUME (gold): this symbol reports no usable volume, so the profile fell back to time at price.")
+            string locTxt = na(poc) ? "—" : (close > nz(vah, close) ? "above value" : close < nz(vaLow, close) ? "below value" : "inside value") +
+                 " · POC " + f_num(poc, format.mintick)
+            bool outVal = not na(vah) and not na(vaLow) and (close > vah or close < vaLow)
+            f_row(tb, 28, " location", locTxt, outVal ? C_GOLD : C_SOFT,
+                 "Where price sits against this session's value area. Outside it (gold) is a price the market has not yet accepted.")
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  PANE
 //
@@ -3596,8 +3821,6 @@ if oiHas and barstate.islast
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ── the histogram: hue = push, lightness = phase, saturation = real or quiet ──
-// Gold cast: the push is being made by exits (open interest), self-limiting.
-bool  oiCast  = inpOiCast and oiSelf and ready and (hAbove ? oiSC > oiLU : oiLU > oiSC)
 color hHue    = hAbove ? C_BULL : C_BEAR
 if quietReg
     hHue := f_mix(hHue, C_NEUT, 0.5)
