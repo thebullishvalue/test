@@ -649,6 +649,14 @@
 //  readings live in the right-edge labels and the panel, not in the Data
 //  Window. Anything new that plots must first free a count. The trace's
 //  choice costs none: one trace is drawn, whichever it is.
+//
+//  THE MAIN BODY IS CAPPED TOO. Pine limits how long the script's global
+//  scope may be, and code inside a function does not count against it. So
+//  the information panel, the readout, the profile's build and drawing, the
+//  pane's labels, Samanvaya's anchor insertion and the grid's graded position
+//  are written as functions. A function may read globals but not assign
+//  them, so each returns what it changes, or keeps its drawings in an array.
+//  New code belongs in a function wherever it can.
 // ═══════════════════════════════════════════════════════════════════════════
 // NAMING. The line runs Siddhi → Nishchaya → Dhṛti → Pragati. Siddhi claimed
 // attainment, a result. Nishchaya named what one window measures: resolve.
@@ -1629,15 +1637,18 @@ var int accBars  = 0      // chart bars in the open period
 var int anchN    = 0      // closed periods seen
 var int anchBars = 0      // chart bars across them
 
-if newAnchor
+// The closed period's insertion, as a function: its loops sit outside the
+// script's main body, whose length Pine caps. The buffers are references;
+// the two counters come back.
+f_anchorPush(int n0, int w0) =>
+    int kN = n0
+    int kW = w0
     // the period that just CLOSED ended on the previous chart bar - never the
     // forming one, so nothing here can repaint
     array.set(CUR, 0, accYn > 0 ? array.get(ACC, 0) : na)
     for i = 1 to 8
         array.set(CUR, i, array.get(ACC, i))
     array.set(CUR, 9, customOk ? array.get(ACC, 9) : na)
-    anchN    += 1
-    anchBars += accBars
 
     // MISSING DATA IS PER-COLUMN, NEVER PER-ROW. Discarding a whole observation
     // because one factor is absent would empty the sample entirely whenever a
@@ -1669,24 +1680,32 @@ if newAnchor
                 float bb = array.get(BASE, i)
                 array.set(INS, i, na(vv) or na(bb) ? 0.0 : vv - bb)
 
-            if nObs >= corrLen
+            if kN >= corrLen
                 for i = 0 to 9
-                    float oi = matrix.get(BUF, wptr, i)
+                    float oi = matrix.get(BUF, kW, i)
                     array.set(VS, i, array.get(VS, i) - oi)
                     for j = 0 to 9
-                        matrix.set(MS, i, j, matrix.get(MS, i, j) - oi * matrix.get(BUF, wptr, j))
-                nObs := nObs - 1
+                        matrix.set(MS, i, j, matrix.get(MS, i, j) - oi * matrix.get(BUF, kW, j))
+                kN := kN - 1
 
             for i = 0 to 9
                 float ci = array.get(INS, i)
-                matrix.set(BUF, wptr, i, ci)
+                matrix.set(BUF, kW, i, ci)
                 array.set(VS, i, array.get(VS, i) + ci)
             for i = 0 to 9
                 for j = 0 to 9
-                    matrix.set(MS, i, j, matrix.get(MS, i, j) + matrix.get(BUF, wptr, i) * matrix.get(BUF, wptr, j))
+                    matrix.set(MS, i, j, matrix.get(MS, i, j) + matrix.get(BUF, kW, i) * matrix.get(BUF, kW, j))
 
-            nObs := nObs + 1
-            wptr := (wptr + 1) % corrLen
+            kN := kN + 1
+            kW := (kW + 1) % corrLen
+    [kN, kW]
+
+if newAnchor
+    anchN    += 1
+    anchBars += accBars
+    [pushN, pushW] = f_anchorPush(nObs, wptr)
+    nObs := pushN
+    wptr := pushW
 
 // open a new period on its first bar, then add THIS bar to the open period
 if newAnchor
@@ -2983,27 +3002,25 @@ float vpBarV  = vpVolOff ? 1.0 : math.max(nz(volume), 0.0)
 float vpBarB  = vpBarV * vpShare
 float vpBarS  = vpBarV - vpBarB
 
-if vpCtxOn
-    if vpNewSess
-        prevPoc := poc
-        prevVah := vah
-        prevVal := vaLow
-        array.clear(vpKey)
-        array.clear(vpVol)
-        array.clear(vpBuy)
-        array.clear(vpSell)
-        vpTotal := 0.0
-        pocKey  := na
-        pocVol  := 0.0
-        vpBin   := inpVpBinMode == "Fixed ticks" ? math.max(syminfo.mintick, inpVpBinTicks * syminfo.mintick) : math.max(syminfo.mintick, vpATR / inpVpBinsPerAtr)
-
+// The profile's accumulation and value-area walk, as a function: its loops
+// sit outside the script's main body, whose length Pine caps. The four bin
+// arrays are references; the state it changes comes back.
+float vpC1 = close[1]
+f_vpBuild(float tot0, int key0, float vol0, bool used0, float poc0, float vah0, float val0) =>
+    float sTot  = tot0
+    int   sKey  = key0
+    float sVol  = vol0
+    bool  sUsed = used0
+    float sPoc  = poc0
+    float sVah  = vah0
+    float sVal  = val0
     if not na(vpBin) and vpBin > 0
         bool usedIntrabar = false
         if vpIntraUse and not na(vpIbHi) and not na(vpIbLo) and not na(vpIbVol) and not na(vpIbClose)
             int m = array.size(vpIbHi)
             if m > 0 and m == array.size(vpIbLo) and m == array.size(vpIbVol) and m == array.size(vpIbClose)
                 usedIntrabar := true
-                float prevC = nz(close[1], na)
+                float prevC = vpC1
                 for j = 0 to m - 1
                     float ih = array.get(vpIbHi, j)
                     float il = array.get(vpIbLo,  j)
@@ -3032,10 +3049,10 @@ if vpCtxOn
                         float perS = svn / nb
                         for k = kl to kl + nb - 1
                             float tot = f_vpAdd(vpKey, vpVol, vpBuy, vpSell, k, per, perB, perS)
-                            vpTotal += per
-                            if tot > pocVol
-                                pocVol := tot
-                                pocKey := k
+                            sTot += per
+                            if tot > sVol
+                                sVol := tot
+                                sKey := k
         if not usedIntrabar
             int kl = int(math.floor(low  / vpBin))
             int kh = int(math.floor(high / vpBin))
@@ -3045,18 +3062,18 @@ if vpCtxOn
             float perS = vpBarS / nb
             for k = kl to kl + nb - 1
                 float tot = f_vpAdd(vpKey, vpVol, vpBuy, vpSell, k, per, perB, perS)
-                vpTotal += per
-                if tot > pocVol
-                    pocVol := tot
-                    pocKey := k
+                sTot += per
+                if tot > sVol
+                    sVol := tot
+                    sKey := k
 
-        vpIntraOk := usedIntrabar
+        sUsed := usedIntrabar
 
     int nLev = array.size(vpKey)
-    if nLev > 0 and not na(pocKey) and not na(vpBin)
-        [pi, pfound] = f_vpLocate(vpKey, pocKey)
+    if nLev > 0 and not na(sKey) and not na(vpBin)
+        [pi, pfound] = f_vpLocate(vpKey, sKey)
         if pfound
-            float target = vpTotal * inpVpVaPct
+            float target = sTot * inpVpVaPct
             int   lo    = pi
             int   hi    = pi
             float acc   = array.get(vpVol, pi)
@@ -3071,9 +3088,32 @@ if vpCtxOn
                 else
                     lo  -= 1
                     acc += vd
-            poc   := (pocKey + 0.5) * vpBin
-            vah   := (array.get(vpKey, hi) + 1.0) * vpBin
-            vaLow := array.get(vpKey, lo) * vpBin
+            sPoc := (sKey + 0.5) * vpBin
+            sVah := (array.get(vpKey, hi) + 1.0) * vpBin
+            sVal := array.get(vpKey, lo) * vpBin
+    [sTot, sKey, sVol, sUsed, sPoc, sVah, sVal]
+
+if vpCtxOn
+    if vpNewSess
+        prevPoc := poc
+        prevVah := vah
+        prevVal := vaLow
+        array.clear(vpKey)
+        array.clear(vpVol)
+        array.clear(vpBuy)
+        array.clear(vpSell)
+        vpTotal := 0.0
+        pocKey  := na
+        pocVol  := 0.0
+        vpBin   := inpVpBinMode == "Fixed ticks" ? math.max(syminfo.mintick, inpVpBinTicks * syminfo.mintick) : math.max(syminfo.mintick, vpATR / inpVpBinsPerAtr)
+    [bTot, bKey, bVol, bUsed, bPoc, bVah, bVal] = f_vpBuild(vpTotal, pocKey, pocVol, vpIntraOk, poc, vah, vaLow)
+    vpTotal   := bTot
+    pocKey    := bKey
+    pocVol    := bVol
+    vpIntraOk := bUsed
+    poc       := bPoc
+    vah       := bVah
+    vaLow     := bVal
 
 // ── naked POC ledger (measured) ──────────────────────────────────────────────
 //  Capped by input rather than at a hard twelve: twelve amber dotted lines on a
@@ -3167,11 +3207,13 @@ plot(vpVwapOn ? vpVwap : na, "VP · Session VWAP", color.new(C_VWAP, 0), 1, plot
 
 // ── histogram (render aggregation into ≤110 rows) ─────────────────────────────
 var array<box> vpBoxes = array.new<box>()
-if barstate.islast
+// Drawn by a function, out of the script's main body; it returns where the
+// tag column starts.
+f_vpRender() =>
     for b in vpBoxes
         box.delete(b)
     array.clear(vpBoxes)
-    tagX := (vpHistOn ? vpRight : bar_index) + VP_GUTTER
+    int tx = (vpHistOn ? vpRight : bar_index) + VP_GUTTER
     if vpHistOn and not na(vpBin) and vpBin > 0 and pocVol > 0
         int maxRight = vpLeft
         int nB = array.size(vpKey)
@@ -3277,83 +3319,68 @@ if barstate.islast
                         else if tV <= lvnTh and trough
                             array.push(vpBoxes, box.new(vpLeft - 2, pc - vpBin * 0.08, vpLeft - 1, pc + vpBin * 0.08, xloc = xloc.bar_index, border_color = na, bgcolor = color.new(C_LVN, 40), force_overlay = true))
             if maxRight > vpLeft
-                tagX := maxRight + VP_GUTTER
-
-// ── right-edge tags for the live levels ───────────────────────────────────────
-var label vpLPoc  = na
-var label vpLVah  = na
-var label vpLVal  = na
-var label vpLVwap = na
-var label vpLIbh  = na
-var label vpLIbl  = na
+                tx := maxRight + VP_GUTTER
+    tx
 if barstate.islast
+    tagX := f_vpRender()
+
+// ── right-edge tags and managed level lines · live tier, IB, prior session,
+//    naked POCs ─────────────────────────────────────────────────────────────
+// Rebuilt on the last bar by one function - out of the script's main body,
+// whose length Pine caps - so every tag, line and box is kept in an array
+// rather than a variable of its own. The live tags come first, as before, so
+// the collision control seats them ahead of the prior session's.
+var array<label> vpLvTags  = array.new<label>()
+var array<line>  vpLvLines = array.new<line>()
+var array<box>   vpLvBoxes = array.new<box>()
+f_vpLevels() =>
+    for lb in vpLvTags
+        label.delete(lb)
+    array.clear(vpLvTags)
+    for ln in vpLvLines
+        line.delete(ln)
+    array.clear(vpLvLines)
+    for bx in vpLvBoxes
+        box.delete(bx)
+    array.clear(vpLvBoxes)
     array.clear(tagRows)
-    vpLPoc  := f_vpTag(vpLPoc,  poc,    "POC",  C_POC,    vpPocOn)
-    vpLVah  := f_vpTag(vpLVah,  vah,    "VAH",  C_VA,     vpVaOn)
-    vpLVal  := f_vpTag(vpLVal,  vaLow,  "VAL",  C_VA,     vpVaOn)
-    vpLVwap := f_vpTag(vpLVwap, vpVwap, "VWAP", C_VWAP,   vpVwapOn)
-    vpLIbh  := f_vpTag(vpLIbh,  vpIbh,  "IBH",  C_VIOLET, vpIbOn)
-    vpLIbl  := f_vpTag(vpLIbl,  vpIbl,  "IBL",  C_VIOLET, vpIbOn)
-
-// ── managed level lines · live tier, IB, prior session, naked POCs ────────────
-var line  vpLnPoc  = na
-var line  vpLnVah  = na
-var line  vpLnVal  = na
-var box   vpVaBand = na
-var line  vpLnIbh  = na
-var line  vpLnIbl  = na
-var line  vpPlnPoc = na
-var line  vpPlnVah = na
-var line  vpPlnVal = na
-var label vpLPp    = na
-var label vpLPvh   = na
-var label vpLPvl   = na
-var array<line> vpNpLines = array.new<line>()
-if barstate.islast
-    line.delete(vpLnPoc)
-    line.delete(vpLnVah)
-    line.delete(vpLnVal)
-    box.delete(vpVaBand)
-    line.delete(vpLnIbh)
-    line.delete(vpLnIbl)
-    line.delete(vpPlnPoc)
-    line.delete(vpPlnVah)
-    line.delete(vpPlnVal)
-    label.delete(vpLPp)
-    label.delete(vpLPvh)
-    label.delete(vpLPvl)
-    for lnN in vpNpLines
-        line.delete(lnN)
-    array.clear(vpNpLines)
+    array.push(vpLvTags, f_vpTag(label(na), poc,    "POC",  C_POC,    vpPocOn))
+    array.push(vpLvTags, f_vpTag(label(na), vah,    "VAH",  C_VA,     vpVaOn))
+    array.push(vpLvTags, f_vpTag(label(na), vaLow,  "VAL",  C_VA,     vpVaOn))
+    array.push(vpLvTags, f_vpTag(label(na), vpVwap, "VWAP", C_VWAP,   vpVwapOn))
+    array.push(vpLvTags, f_vpTag(label(na), vpIbh,  "IBH",  C_VIOLET, vpIbOn))
+    array.push(vpLvTags, f_vpTag(label(na), vpIbl,  "IBL",  C_VIOLET, vpIbOn))
     // Session-anchored. Pine refuses drawings placed more than 10,000 bars into
     // history; every x in this block is bounded by VP_XBACK well inside that. The
     // old bound of 400 cited max_bars_back, which does not govern drawings, and
     // cut session lines short on 24-hour 1-minute charts (1,440 bars a session).
     int xSess = math.max(math.max(not na(vpSessStart) ? vpSessStart : 0, bar_index - VP_XBACK), 0)
     if vpPocOn and not na(poc)
-        vpLnPoc := line.new(xSess, poc, tagX, poc, color = color.new(C_POC, 0), width = 2, force_overlay = true)
+        array.push(vpLvLines, line.new(xSess, poc, tagX, poc, color = color.new(C_POC, 0), width = 2, force_overlay = true))
     if vpVaOn and not na(vah) and not na(vaLow)
-        vpVaBand := box.new(xSess, vah, bar_index, vaLow, border_color = na, bgcolor = color.new(C_VA, 93), force_overlay = true)
-        vpLnVah  := line.new(xSess, vah,   tagX, vah,   color = color.new(C_VA, 20), width = 1, force_overlay = true)
-        vpLnVal  := line.new(xSess, vaLow, tagX, vaLow, color = color.new(C_VA, 20), width = 1, force_overlay = true)
+        array.push(vpLvBoxes, box.new(xSess, vah, bar_index, vaLow, border_color = na, bgcolor = color.new(C_VA, 93), force_overlay = true))
+        array.push(vpLvLines, line.new(xSess, vah,   tagX, vah,   color = color.new(C_VA, 20), width = 1, force_overlay = true))
+        array.push(vpLvLines, line.new(xSess, vaLow, tagX, vaLow, color = color.new(C_VA, 20), width = 1, force_overlay = true))
     if vpIbOn and not na(vpIbh)
-        vpLnIbh := line.new(xSess, vpIbh, tagX, vpIbh, color = color.new(C_VIOLET, 20), width = 1, style = line.style_dashed, force_overlay = true)
-        vpLnIbl := line.new(xSess, vpIbl, tagX, vpIbl, color = color.new(C_VIOLET, 20), width = 1, style = line.style_dashed, force_overlay = true)
+        array.push(vpLvLines, line.new(xSess, vpIbh, tagX, vpIbh, color = color.new(C_VIOLET, 20), width = 1, style = line.style_dashed, force_overlay = true))
+        array.push(vpLvLines, line.new(xSess, vpIbl, tagX, vpIbl, color = color.new(C_VIOLET, 20), width = 1, style = line.style_dashed, force_overlay = true))
     if vpPrevOn and not na(prevPoc)
         int xA = math.max(0, bar_index - 30)
-        vpPlnPoc := line.new(xA, prevPoc, tagX, prevPoc, color = color.new(C_POC, 55), width = 1, style = line.style_dotted, force_overlay = true)
-        vpPlnVah := line.new(xA, prevVah, tagX, prevVah, color = color.new(C_VA, 55),  width = 1, style = line.style_dotted, force_overlay = true)
-        vpPlnVal := line.new(xA, prevVal, tagX, prevVal, color = color.new(C_VA, 55),  width = 1, style = line.style_dotted, force_overlay = true)
-        vpLPp  := f_vpTag(vpLPp,  prevPoc, "pPOC", C_POC, vpPrevOn)
-        vpLPvh := f_vpTag(vpLPvh, prevVah, "pVAH", C_VA,  vpPrevOn)
-        vpLPvl := f_vpTag(vpLPvl, prevVal, "pVAL", C_VA,  vpPrevOn)
+        array.push(vpLvLines, line.new(xA, prevPoc, tagX, prevPoc, color = color.new(C_POC, 55), width = 1, style = line.style_dotted, force_overlay = true))
+        array.push(vpLvLines, line.new(xA, prevVah, tagX, prevVah, color = color.new(C_VA, 55),  width = 1, style = line.style_dotted, force_overlay = true))
+        array.push(vpLvLines, line.new(xA, prevVal, tagX, prevVal, color = color.new(C_VA, 55),  width = 1, style = line.style_dotted, force_overlay = true))
+        array.push(vpLvTags, f_vpTag(label(na), prevPoc, "pPOC", C_POC, vpPrevOn))
+        array.push(vpLvTags, f_vpTag(label(na), prevVah, "pVAH", C_VA,  vpPrevOn))
+        array.push(vpLvTags, f_vpTag(label(na), prevVal, "pVAL", C_VA,  vpPrevOn))
     if vpNakedOn and array.size(vpNpY) > 0
         int xMinN = math.max(0, bar_index - math.min(inpVpNakedAge, VP_XBACK))
         int nN    = array.size(vpNpY)
         for i = 0 to nN - 1
             float ny = array.get(vpNpY, i)
             int   x1 = math.max(xMinN, array.get(vpNpX, i))
-            array.push(vpNpLines, line.new(x1, ny, bar_index, ny, color = color.new(C_POC, 30), width = 1, style = line.style_dotted, force_overlay = true))
+            array.push(vpLvLines, line.new(x1, ny, bar_index, ny, color = color.new(C_POC, 30), width = 1, style = line.style_dotted, force_overlay = true))
+if barstate.islast
+    f_vpLevels()
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  9 · PRESENTATION STATE        display-only · nothing below reaches the engine
@@ -3491,12 +3518,14 @@ color vpLocCol = na(poc) ? C_SOFT :
 // Built ONCE and written into. The row count depends only on inputs, which are
 // constant for the life of the script, so there is nothing to rebuild - and
 // deleting and recreating the table on every realtime tick was pure churn.
-if tblOn and barstate.islast
-    if na(tb)
-        tb := table.new(position.middle_right, 2, tblFull ? (vpChartOn ? 20 : 17) : 8, bgcolor = C_PANEL,
-             frame_color = C_GRID, frame_width = 1, border_color = color.new(C_NEUT, 88),
-             border_width = 1)
+if tblOn and barstate.islast and na(tb)
+    tb := table.new(position.middle_right, 2, tblFull ? (vpChartOn ? 20 : 17) : 8, bgcolor = C_PANEL,
+         frame_color = C_GRID, frame_width = 1, border_color = color.new(C_NEUT, 88),
+         border_width = 1)
 
+// The panel's cells are written by a function, so the weight of its rows sits
+// outside the script's main body, whose length Pine caps.
+f_panel() =>
     string head = not ready ? "WARMING UP" :
          trConv ? (osc >=  inpZ2 ? "BUYERS · extreme" : osc >=  inpZ1 ? "BUYERS · stretched" : osc > 0.0 ? "buyers in control" :
                    osc <= -inpZ2 ? "SELLERS · extreme" : osc <= -inpZ1 ? "SELLERS · stretched" : "sellers in control") :
@@ -3596,6 +3625,9 @@ if tblOn and barstate.islast
                  na(poc) ? "no profile" : vpLocTxt + " · POC " + f_px(poc),
                  vpLocCol,
                  "Where price sits in the developing " + vpAnchorTf + " profile.\n\nABOVE / BELOW VALUE is an unaccepted price — the market has not yet agreed to trade there, which is what makes a divergence at such a level a statement rather than a guess. It is shown in GOLD, not red or green: unaccepted price can resolve by rejection or by acceptance, and the colour does not pretend to know which.\n\nNothing in the oscillator reads this: the profile is display-only in this build. It is the WHERE the pane cannot supply on its own. Value area " + f_px(vaLow) + " – " + f_px(vah) + ", VWAP " + f_px(vpVwap) + ", naked POCs carried " + str.tostring(array.size(vpNpY)) + " of " + str.tostring(inpVpNakedMax) + ".")
+
+if tblOn and barstate.islast
+    f_panel()
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  OPEN INTEREST · INSTITUTIONAL READOUT      (a readout row, display-only)
@@ -3785,15 +3817,6 @@ var int    oiSpan     = 0
 oiSpan     := oiHas and oiChar == oiPrevChar ? oiSpan + 1 : oiHas ? 1 : 0
 oiPrevChar := oiHas ? oiChar : ""
 
-// The character in the readout's words, who is doing it, and a crowded book.
-string oiState = not oiHas ? (oiFeed == "stale" ? "Stale feed" : oiFeed == "daily only" ? "Daily only" : oiFeed == "no symbol" ? "No symbol" : "No OI") :
-     oiRoll ? "Expiry / roll" : oiChar == "LONG BUILDUP" ? "Long build-up" : oiChar == "SHORT BUILDUP" ? "Short build-up" :
-     oiChar == "SHORT COVERING" ? "Short covering" : oiChar == "LONG UNWINDING" ? "Long unwinding" : "Balanced"
-string oiWho   = not oiHas ? (oiFeed == "stale" ? "too few updates here" : oiFeed == "daily only" ? "not at this timeframe" : oiFeed == "no symbol" ? "chart modifier" : "no open interest") :
-     oiRoll ? "structural" : oiChar == "LONG BUILDUP" ? "new longs" : oiChar == "SHORT BUILDUP" ? "new shorts" :
-     oiChar == "SHORT COVERING" ? "shorts exiting" : oiChar == "LONG UNWINDING" ? "longs exiting" : "no net change"
-bool   oiCrowd = oiHas and nz(oiRank, 0.0) >= 80
-
 // ══════════════════════════════════════════════════════════════════════════════
 //  CONVICTION-VALUE GRID · PRAGYAM'S STYLE, READ ON THIS CHART   (display-only)
 //  ------------------------------------------------------------------------------
@@ -3890,23 +3913,27 @@ int   gCPh  = not gRead or gRow == 0 or gSideC == 0.0 ? 0 : gSideC == gRow ? 1 :
 int   gVPh  = not gRead or gCol == 1 or gSideV == 0.0 ? 0 : gSideV == (gCol == 0 ? 1.0 : -1.0) ? 1 : -1
 
 // ── where the graded map places it, and what it holds there ─────────────────
-float gRPos = 0.0
-float gCPos = 0.0
-if gRead
-    if gHeld
-        float gHs = gRow > gTgt ? 1.0 : -1.0
-        float gHh = na(gPush) ? 0.0 : math.max(0.0, math.min(1.0, gPush * gHs))
-        int   gNb = gRow + (gTgt > gRow ? 1 : -1)
-        gRPos := gRow * (0.5 + 0.5 * gHh) + gNb * (0.5 - 0.5 * gHh)
-    else if gRow != 0
-        gRPos := gRow * f_gTapeInk(mC, inpZ1, inpZ2)
-    else
-        gRPos := (mC > 0 ? 1.0 : -1.0) * (f_gTapeInk(mC, inpZ1, inpZ2) - 0.12)
-    gCPos := gCol != 1 ? (gCol - 1) * f_gTapeInk(mV, osc_entry, 70.0) : (mV > 0 ? 1.0 : -1.0) * (f_gTapeInk(mV, osc_entry, 70.0) - 0.12)
-    if gRow != 0 and gCPh == -1
-        gRPos := gRPos * 0.5
-    if gCol != 1 and gVPh == -1
-        gCPos := gCPos * 0.5
+f_gPos() =>
+    float posR = 0.0
+    float posC = 0.0
+    if gRead
+        if gHeld
+            float gHs = gRow > gTgt ? 1.0 : -1.0
+            float gHh = na(gPush) ? 0.0 : math.max(0.0, math.min(1.0, gPush * gHs))
+            int   gNb = gRow + (gTgt > gRow ? 1 : -1)
+            posR := gRow * (0.5 + 0.5 * gHh) + gNb * (0.5 - 0.5 * gHh)
+        else if gRow != 0
+            posR := gRow * f_gTapeInk(mC, inpZ1, inpZ2)
+        else
+            posR := (mC > 0 ? 1.0 : -1.0) * (f_gTapeInk(mC, inpZ1, inpZ2) - 0.12)
+        posC := gCol != 1 ? (gCol - 1) * f_gTapeInk(mV, osc_entry, 70.0) : (mV > 0 ? 1.0 : -1.0) * (f_gTapeInk(mV, osc_entry, 70.0) - 0.12)
+        if gRow != 0 and gCPh == -1
+            posR := posR * 0.5
+        if gCol != 1 and gVPh == -1
+            posC := posC * 0.5
+    [posR, posC]
+[gRPos, gCPos] = f_gPos()
+
 float  gUnits = gRead ? f_gAt(gRPos, gCPos) : na
 float  gCell  = gRead ? f_gAt(gRow * (gCPh == -1 ? 0.5 : 1.0), (gCol - 1) * (gVPh == -1 ? 0.5 : 1.0)) : na
 string gName  = gRead ? f_gName(gRow, gCol) : ""
@@ -3931,40 +3958,6 @@ f_span(int n) =>
     string u = timeframe.multiplier != 1 ? " bars" : timeframe.isdaily ? "d" : timeframe.isweekly ? "w" : timeframe.ismonthly ? "mo" : " bars"
     n <= 0 ? "" : n == 1 ? "1 bar" : str.tostring(n) + u
 
-// STATE - the action and the units Pragyam sizes from; the 5 × 5 cell, named
-// as cvgrid names it, for the tooltip.
-int    gWorks = gRead ? f_gWorks(gRow, gCol) : 0
-color  gTone  = not gRead ? C_NEUT : gWorks > 0 ? C_BULL : gWorks < 0 ? C_BEAR : C_SOFT
-string gState = gRead ? f_gAct(gRow, gCol) + " " + f_num(gUnits, "0.00") : "—"
-string gR5    = gRow == 0 ? "FAINT" : (gRow == 1 ? "UP" : "DOWN") + (gCPh == 1 ? " · running" : gCPh == -1 ? " · pullback" : "")
-string gC5    = gCol == 1 ? "fair" : (gCol == 0 ? "cheap" : "rich") + (gVPh == 1 ? " · reverting" : gVPh == -1 ? " · widening" : "")
-
-// WHY - what separates the 5 × 5 cell from its neighbours inside its family:
-// each momentum's phase on its own edge, in plain words, the row's first. An
-// edge without a phase reading adds nothing; with neither, the family itself.
-string gWhyC = gRow == 0 or gCPh == 0 ? "" : (gRow > 0 ? "buyers " : "sellers ") + (gCPh == 1 ? "running" : "pausing")
-string gWhyV = gCol == 1 or gVPh == 0 ? "" : gCol == 0 ? (gVPh == 1 ? "turning up" : "still cheapening") : (gVPh == 1 ? "turning down" : "still richening")
-string gWhy  = not gRead ? (not mtfCOk ? "conviction tape not ready" : "value tape not ready") :
-     (gWhyC != "" and gWhyV != "" ? gWhyC + " · " + gWhyV : gWhyC != "" ? gWhyC : gWhyV != "" ? gWhyV :
-      gRow == 0 and gCol == 1 ? "no edge" : str.lower(gName)) + (gHeld ? " · held" : "")
-
-// PUSH - conviction's histogram as it runs the rows: ↑↑ an impulse, ↑ a push (pressing
-// or decelerating), TURNING or QUIET no push, ↓ and ↓↓ mirrored.
-string gPushTxt = not gRead or na(gGate) ? "—" : gGate > 0 ? (gTier == 0 ? "↑↑" : "↑") : gGate < 0 ? (gTier == 0 ? "↓↓" : "↓") : gQuiet ? "quiet" : "turning"
-color  gPushCol = not gRead or na(gGate) ? C_SOFT : gGate > 0 ? C_BULL : gGate < 0 ? C_BEAR : gQuiet ? C_GOLD : C_SOFT
-
-// CHART - where this chart alone would put the name: its conviction and
-// Samanvaya's value on this chart, on the tapes' own cuts. Each is one rung of its tape, so
-// the chart moves first. ↑ when its family carries more units than the
-// state's, ↓ fewer, = the same units in another family.
-bool   gChOk   = gRead and cvReady and modelBuilt
-int    gChR    = cvOsc >= inpZ1 ? 1 : cvOsc <= -inpZ1 ? -1 : 0
-int    gChC    = unified_osc <= -osc_entry ? 0 : unified_osc >= osc_entry ? 2 : 1
-float  gChD    = gChOk ? f_gUnit(gChR, gChC) - f_gUnit(gRow, gCol) : na
-string gChTxt  = not gChOk ? "—" : gChR == gRow and gChC == gCol ? "same" :
-     (gChD > 0 ? "↑ " : gChD < 0 ? "↓ " : "= ") + f_gAct(gChR, gChC)
-color  gChTone = not gChOk ? C_SOFT : gChD > 0 ? C_BULL : gChD < 0 ? C_BEAR : C_SOFT
-
 // ══════════════════════════════════════════════════════════════════════════════
 //  THE READOUT · ONE TABLE ON THE PRICE CHART                    (display-only)
 //  ------------------------------------------------------------------------------
@@ -3985,17 +3978,63 @@ color  gChTone = not gChOk ? C_SOFT : gChD > 0 ? C_BULL : gChD < 0 ? C_BEAR : C_
 //  LEFT, the one corner the volume profile's tag column does not claim.
 // ══════════════════════════════════════════════════════════════════════════════
 var table rdTb = na
-if (inpOi or inpGrid) and not coreView and barstate.islast
-    if na(rdTb)
-        rdTb := table.new(
-             inpOiPos == "Top centre"    ? position.top_center    :
-             inpOiPos == "Top right"     ? position.top_right     :
-             inpOiPos == "Bottom centre" ? position.bottom_center :
-             inpOiPos == "Middle left"   ? position.middle_left   :
-             inpOiPos == "Bottom right"  ? position.bottom_right  : position.bottom_left,
-             6, 1 + (inpOi ? 1 : 0) + (inpGrid ? 1 : 0), bgcolor = C_PANEL, frame_color = C_GRID,
-             frame_width = 1, border_color = color.new(C_NEUT, 88), border_width = 1,
-             force_overlay = true)
+if (inpOi or inpGrid) and not coreView and barstate.islast and na(rdTb)
+    rdTb := table.new(
+         inpOiPos == "Top centre"    ? position.top_center    :
+         inpOiPos == "Top right"     ? position.top_right     :
+         inpOiPos == "Bottom centre" ? position.bottom_center :
+         inpOiPos == "Middle left"   ? position.middle_left   :
+         inpOiPos == "Bottom right"  ? position.bottom_right  : position.bottom_left,
+         6, 1 + (inpOi ? 1 : 0) + (inpGrid ? 1 : 0), bgcolor = C_PANEL, frame_color = C_GRID,
+         frame_width = 1, border_color = color.new(C_NEUT, 88), border_width = 1,
+         force_overlay = true)
+
+// The readout's words and cells are written by a function, out of the
+// script's main body, whose length Pine caps. The words are read only here.
+f_readout() =>
+    // The character in the readout's words, who is doing it, and a crowded book.
+    string oiState = not oiHas ? (oiFeed == "stale" ? "Stale feed" : oiFeed == "daily only" ? "Daily only" : oiFeed == "no symbol" ? "No symbol" : "No OI") :
+         oiRoll ? "Expiry / roll" : oiChar == "LONG BUILDUP" ? "Long build-up" : oiChar == "SHORT BUILDUP" ? "Short build-up" :
+         oiChar == "SHORT COVERING" ? "Short covering" : oiChar == "LONG UNWINDING" ? "Long unwinding" : "Balanced"
+    string oiWho   = not oiHas ? (oiFeed == "stale" ? "too few updates here" : oiFeed == "daily only" ? "not at this timeframe" : oiFeed == "no symbol" ? "chart modifier" : "no open interest") :
+         oiRoll ? "structural" : oiChar == "LONG BUILDUP" ? "new longs" : oiChar == "SHORT BUILDUP" ? "new shorts" :
+         oiChar == "SHORT COVERING" ? "shorts exiting" : oiChar == "LONG UNWINDING" ? "longs exiting" : "no net change"
+    bool   oiCrowd = oiHas and nz(oiRank, 0.0) >= 80
+
+    // STATE - the action and the units Pragyam sizes from; the 5 × 5 cell, named
+    // as cvgrid names it, for the tooltip.
+    int    gWorks = gRead ? f_gWorks(gRow, gCol) : 0
+    color  gTone  = not gRead ? C_NEUT : gWorks > 0 ? C_BULL : gWorks < 0 ? C_BEAR : C_SOFT
+    string gState = gRead ? f_gAct(gRow, gCol) + " " + f_num(gUnits, "0.00") : "—"
+    string gR5    = gRow == 0 ? "FAINT" : (gRow == 1 ? "UP" : "DOWN") + (gCPh == 1 ? " · running" : gCPh == -1 ? " · pullback" : "")
+    string gC5    = gCol == 1 ? "fair" : (gCol == 0 ? "cheap" : "rich") + (gVPh == 1 ? " · reverting" : gVPh == -1 ? " · widening" : "")
+
+    // WHY - what separates the 5 × 5 cell from its neighbours inside its family:
+    // each momentum's phase on its own edge, in plain words, the row's first. An
+    // edge without a phase reading adds nothing; with neither, the family itself.
+    string gWhyC = gRow == 0 or gCPh == 0 ? "" : (gRow > 0 ? "buyers " : "sellers ") + (gCPh == 1 ? "running" : "pausing")
+    string gWhyV = gCol == 1 or gVPh == 0 ? "" : gCol == 0 ? (gVPh == 1 ? "turning up" : "still cheapening") : (gVPh == 1 ? "turning down" : "still richening")
+    string gWhy  = not gRead ? (not mtfCOk ? "conviction tape not ready" : "value tape not ready") :
+         (gWhyC != "" and gWhyV != "" ? gWhyC + " · " + gWhyV : gWhyC != "" ? gWhyC : gWhyV != "" ? gWhyV :
+          gRow == 0 and gCol == 1 ? "no edge" : str.lower(gName)) + (gHeld ? " · held" : "")
+
+    // PUSH - conviction's histogram as it runs the rows: ↑↑ an impulse, ↑ a push (pressing
+    // or decelerating), TURNING or QUIET no push, ↓ and ↓↓ mirrored.
+    string gPushTxt = not gRead or na(gGate) ? "—" : gGate > 0 ? (gTier == 0 ? "↑↑" : "↑") : gGate < 0 ? (gTier == 0 ? "↓↓" : "↓") : gQuiet ? "quiet" : "turning"
+    color  gPushCol = not gRead or na(gGate) ? C_SOFT : gGate > 0 ? C_BULL : gGate < 0 ? C_BEAR : gQuiet ? C_GOLD : C_SOFT
+
+    // CHART - where this chart alone would put the name: its conviction and
+    // Samanvaya's value on this chart, on the tapes' own cuts. Each is one rung of its tape, so
+    // the chart moves first. ↑ when its family carries more units than the
+    // state's, ↓ fewer, = the same units in another family.
+    bool   gChOk   = gRead and cvReady and modelBuilt
+    int    gChR    = cvOsc >= inpZ1 ? 1 : cvOsc <= -inpZ1 ? -1 : 0
+    int    gChC    = unified_osc <= -osc_entry ? 0 : unified_osc >= osc_entry ? 2 : 1
+    float  gChD    = gChOk ? f_gUnit(gChR, gChC) - f_gUnit(gRow, gCol) : na
+    string gChTxt  = not gChOk ? "—" : gChR == gRow and gChC == gCol ? "same" :
+         (gChD > 0 ? "↑ " : gChD < 0 ? "↓ " : "= ") + f_gAct(gChR, gChC)
+    color  gChTone = not gChOk ? C_SOFT : gChD > 0 ? C_BULL : gChD < 0 ? C_BEAR : C_SOFT
+
     color rdHead = color.new(C_NEUT, 25)
     table.cell(rdTb, 0, 0, "", text_size = size.tiny)
     table.cell(rdTb, 1, 0, " STATE", text_color = rdHead, text_size = size.tiny, text_halign = text.align_left)
@@ -4048,6 +4087,9 @@ if (inpOi or inpGrid) and not coreView and barstate.islast
         table.cell(rdTb, 5, rGr, (gRead ? f_span(gDays) : "") + " ", text_color = C_SOFT, text_size = size.tiny,
              text_halign = text.align_right,
              tooltip = "How long the name has stood in this action - its family. Days on a daily chart, weeks on a weekly, otherwise bars. Counted at each close, never twice on a live bar.")
+
+if (inpOi or inpGrid) and not coreView and barstate.islast
+    f_readout()
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  PANE
@@ -4194,41 +4236,41 @@ plot(inpMomV and tpOn  ? -MOM_Y + TAPE_H : na, "MTF value momentum tape", tpMCol
 float lblYC = inpMomC ? (TAPE_Y + MOM_Y) / 2.0 : TAPE_Y
 float lblYV = inpMomV ? (TAPE_Y + MOM_Y) / 2.0 : TAPE_Y
 string momTip = "MOMENTUM - the faster view minus the slower, on the outer band. Conviction: BUILDING / TURNING INSIDE on Ladder down (the bar's insides with or against chart conviction), RUNNING AHEAD / PULLBACK on Ladder up (the chart with or against the frames above). Value: WIDENING when it agrees with the value tape, REVERTING when it opposes it. Context only - no signal reads it."
-var label tapeLbA = na
-var label tapeLbV = na
-var label stackLb = na
-var label traceLb = na
-if barstate.islast
-    label.delete(tapeLbA)
-    label.delete(tapeLbV)
-    label.delete(stackLb)
-    label.delete(traceLb)
-    traceLb := label.new(bar_index + 2, trIn, (trConv ? "CONVICTION" : trVal ? "VALUE" : "CONVICTION × VALUE") + " TRACE" + (trConv ? "" : " · θ"),
+// Kept in one array and rebuilt by a function on the last bar, so the labels'
+// text-building sits outside the script's main body, whose length Pine caps.
+var array<label> paneLbs = array.new<label>()
+f_paneLabels() =>
+    for lb in paneLbs
+        label.delete(lb)
+    array.clear(paneLbs)
+    array.push(paneLbs, label.new(bar_index + 2, trIn, (trConv ? "CONVICTION" : trVal ? "VALUE" : "CONVICTION × VALUE") + " TRACE" + (trConv ? "" : " · θ"),
          style = label.style_label_left, color = color.new(C_NEUT, 100), textcolor = trDim ? C_GOLD : C_SOFT, size = size.tiny,
          tooltip = "What the pane draws - the 'Trace' setting under 2 · Trace and MTF tapes. " +
          (trConv ? "The dotted rails are the conviction zones, the dashed the outer zone." : "The dotted rails are θ, the dashed ±60 a 3σ stretch.") +
-         (trDim ? " GOLD: the trace is dimmed - " + (trSplit ? "its ingredients point opposite ways." : "the value basket is settling.") : ""))
+         (trDim ? " GOLD: the trace is dimmed - " + (trSplit ? "its ingredients point opposite ways." : "the value basket is settling.") : "")))
     if inpTape != "Off"
         string cTxt = not multi ? "MTF CONVICTION · no ladder frames on this chart" :
              "MTF CONVICTION · " + ladLbl + (ladFallback ? " ↺" : "") + (ladReady ? "  " + f_num(ladAgree, "+#;-#") : "  warming") +
              (inpMomC ? "  ·  momentum " + (ladMomReady ? ladMomTag + " " + f_num(ladMom, "+#;-#") : "warming") : "")
-        tapeLbA := label.new(bar_index + 2, lblYC, cTxt, style = label.style_label_left,
+        array.push(paneLbs, label.new(bar_index + 2, lblYC, cTxt, style = label.style_label_left,
              color = color.new(C_NEUT, 100), textcolor = multi ? C_SOFT : C_GOLD, size = size.tiny,
              tooltip = (ladFallback ? "↺ FALLBACK - the chosen ladder direction has no frames on this chart, so the other direction is read.\n\n" : "") +
-             (inpMomC ? momTip : ""))
+             (inpMomC ? momTip : "")))
     if inpVLad != "Off"
         string vTxt = not tpOn ? "MTF VALUE · no ladder frames on this chart" :
              "MTF VALUE · rich/cheap · " + tpLadLbl + (tpFallback ? " ↺" : "") +
              (tpReady ? "  " + (tpBias > 0 ? "rich " : "cheap ") + f_num(tpBias, "+#;-#") :
               not modelBuilt ? "  model building " + str.tostring(math.min(anchN, svNeed)) + "/" + str.tostring(svNeed) : "  warming") +
              (inpMomV and tpOn ? "  ·  momentum " + (tpReady ? (tpRev ? "reverting " : "widening ") + f_num(tpMom, "+#;-#") : "warming") : "")
-        tapeLbV := label.new(bar_index + 2, -lblYV, vTxt, style = label.style_label_left,
+        array.push(paneLbs, label.new(bar_index + 2, -lblYV, vTxt, style = label.style_label_left,
              color = color.new(C_NEUT, 100), textcolor = tpOn ? C_SOFT : C_GOLD, size = size.tiny,
              tooltip = (tpFallback ? "↺ FALLBACK - the chosen ladder direction has no frames on this chart, so the other direction is read.\n\n" : "") +
-             (inpMomV ? momTip : ""))
+             (inpMomV ? momTip : "")))
     if not stackOk and (inpState or inpCon or inpDiv or inpHid)
-        stackLb := label.new(bar_index + 2, 0.0, "SIGNALS PAUSED · " + stackWhy, style = label.style_label_left,
-             color = color.new(C_NEUT, 100), textcolor = C_GOLD, size = size.tiny)
+        array.push(paneLbs, label.new(bar_index + 2, 0.0, "SIGNALS PAUSED · " + stackWhy, style = label.style_label_left,
+             color = color.new(C_NEUT, 100), textcolor = C_GOLD, size = size.tiny))
+if barstate.islast
+    f_paneLabels()
 
 // The rails follow the trace: the conviction zones on the Conviction trace,
 // θ and ±60 on the others. Both are inputs, so hline takes them.
